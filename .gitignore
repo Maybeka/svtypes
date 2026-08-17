@@ -1,0 +1,78 @@
+# Local holding area for scratch files and generated artifacts.
+.tmp/
+.sisyphus/
+.codex/
+.agents/
+AGENTS.md
+
+# OS and editor noise
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Python caches and test output
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.egg-info/
+dist/
+bdist_wheel/
+
+# Local implementation-planning and release-review records.
+docs/SVTYPES_1_0_RELEASE_AUDIT.md
+docs/SVTYPES_1_0_REQUIRED_FEATURES.md
+docs/SVTYPES_1_0_REQUIRED_FEATURES_REVIEW.md
+docs/SVTYPES_1_0_REQUIRED_FEATURES_SECOND_REVIEW.md
+docs/SVTYPES_1_0_REQUIRED_FEATURES_THIRD_REVIEW.md
+docs/SVTYPES_1_0_THIRD_REVIEW_IMPLEMENTATION_AUDIT.md
+docs/SVTYPES_MILESTONE_3.md
+docs/SVTYPES_MILESTONE_4.md
+docs/local_milestones.md
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# CMake and native build output
+build/
+build_*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+_svx_native*.so
+_svx_native*.dylib
+
+# SystemVerilog simulator output
+csrc/
+simv
+simv*
+*.daidir/
+ucli.key
+vc_hdrs.h
+*.vcd
+*.vpd
+*.fsdb
+*.wlf
+transcript
+*.log
+
+# Local scratch payloads and binaries used during interop experiments
+input.bin
+output.bin
+interop_test

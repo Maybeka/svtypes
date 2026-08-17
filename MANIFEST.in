@@ -1,0 +1,10 @@
+include LICENSE
+include README.md
+include CHANGELOG.md
+include docs/README.md
+include docs/SVTYPES_1_0_RUNTIME_CAPABILITIES.md
+include docs/reference.md
+include docs/svtypes_architecture_spec.md
+include docs/svtypes_binary_format.md
+include docs/svtypes_support_matrix.md
+recursive-include svtypes_runtime *.sv *.hpp

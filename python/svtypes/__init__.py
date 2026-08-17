@@ -1,0 +1,103 @@
+from .base import FieldOptions, TypeBase, BuiltInType, UserDefinedType
+
+from .bits import Bits
+from .logic import LogicBits, LogicValue
+from .int import Int, LongInt
+from .parameter import Parameter
+from .real import Real, ShortReal, RealTime
+from .string import String
+from .collection import Array, DynArray, Queue, AssocArray
+from .remote_ref import RemoteRef, RemoteRefValue
+from .limits import DecodeLimits
+from .record_schema import GeneratedDataClass, RecordField, RecordSchema
+from .capabilities import (
+    RuntimeCapabilities,
+    STABLE_CAPABILITIES,
+    require_runtime_compatible,
+    runtime_capabilities,
+)
+
+from .object import (
+    ObjectRegistry,
+    CodecSession,
+    PackContext,
+    UnpackContext,
+    SvObject,
+    allocate_object_number,
+    clear_object_registry,
+    get_object,
+    register_object,
+    reset_object_number_allocator,
+    unregister_object,
+    svobj,
+    Object,
+    new,
+    SvStruct,
+)
+from .enum import Enum
+from .errors import (
+    CompatibilityError,
+    DeclarationError,
+    DecodeError,
+    EncodeError,
+    RegistryError,
+    ResourceLimitError,
+    SvTypesError,
+    UnsupportedTypeError,
+)
+
+from .scope import Scope, Package, Namespace, get_package
+from .schema import (
+    BINARY_FORMAT_VERSION,
+    GENERATOR_RUNTIME_ABI_VERSION,
+    OBJECT_ENVELOPE_VERSION,
+    SCHEMA_FORMAT_VERSION,
+    SchemaDescriptor,
+    EncodingDescriptor,
+    unified_type_name,
+    checked_unpack,
+    schema_descriptor,
+    encoding_descriptor,
+)
+from .generator import GenerationResult, generate
+
+from pathlib import Path
+import sysconfig
+
+try:
+    from importlib.metadata import version as _distribution_version
+
+    __version__ = _distribution_version("svtypes")
+except Exception:  # pragma: no cover - source trees without package metadata
+    __version__ = "1.0.0"
+
+
+def package_root() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def runtime_root() -> Path:
+    package_dir = package_root()
+    candidates = (
+        package_dir / "svtypes_runtime",
+        package_dir.parent / "svtypes_runtime",
+        package_dir.parents[1] / "svtypes_runtime",
+        Path(sysconfig.get_path("data")) / "svtypes_runtime",
+    )
+    for candidate in candidates:
+        if (candidate / "sv" / "svtypes_pkg.sv").is_file():
+            return candidate
+    searched = ", ".join(str(path) for path in candidates)
+    raise FileNotFoundError(f"SvTypes runtime assets are not installed; searched: {searched}")
+
+
+def sv_runtime_file() -> Path:
+    return runtime_root() / "sv" / "svtypes_pkg.sv"
+
+
+def sv_weak_runtime_file() -> Path:
+    return runtime_root() / "sv" / "svtypes_pkg_weak.sv"
+
+
+def cpp_include_dir() -> Path:
+    return runtime_root() / "cpp"

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "svtypes"
+version = "1.0.0"
+description = "SystemVerilog-like data modeling, serialization, and code generation"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+]
+
+[tool.setuptools]
+package-dir = {"" = "python"}
+packages = ["svtypes"]
+
+[tool.setuptools.data-files]
+"svtypes_runtime/sv" = [
+    "svtypes_runtime/sv/svtypes_pkg.sv",
+    "svtypes_runtime/sv/svtypes_pkg_weak.sv",
+]
+"svtypes_runtime/cpp" = ["svtypes_runtime/cpp/svtypes.hpp"]
+
+[tool.pytest.ini_options]
+pythonpath = ["python", "."]
+testpaths = ["tests"]
