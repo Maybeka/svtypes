@@ -6,7 +6,7 @@ from typing import Any, TypeVar, Callable, overload
 
 from .base import TypeBase, UserDefinedType
 from .enum import Enum
-from .errors import EncodeError, RegistryError, ResourceLimitError, UnsupportedTypeError
+from .errors import DeclarationError, EncodeError, RegistryError, ResourceLimitError, UnsupportedTypeError
 from .limits import DecodeLimits
 
 
@@ -29,8 +29,8 @@ class ObjectRegistry:
         self._types[reg_name] = cls
         namespace = getattr(self, "path", None)
         if namespace:
-            canonical_namespace = namespace.replace("::", ".")
-            cls._svtypes_unified_type_name = f"{canonical_namespace}.{reg_name}"
+            normalized_namespace = namespace.replace("::", ".")
+            cls._svtypes_unified_type_name = f"{normalized_namespace}.{reg_name}"
 
     def get(self, name: str) -> type[SvObject] | None:
         return self._types.get(name)
@@ -295,6 +295,12 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
     __svtypes_specialized_from: type["SvObject"] | None = None
     __svtypes_parameter_overrides: dict[str, Any] = {}
     __svtypes_emit_specialization_class: bool = True
+    __svtypes_is_template: bool = False
+    __svtypes_constraint_decls: dict[str, Any] = {}
+    __svtypes_constraint_irs: dict[str, Any] = {}
+    __svtypes_layer_table: dict[str, Any] = {}
+    __svtypes_layer_batches: tuple[Any, ...] = ()
+    __svtypes_sv_rand_targets: tuple[str, ...] = ()
 
     def __init__(
         self,
@@ -303,11 +309,19 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         _defer_identity: bool = False,
         **kwargs,
     ) -> None:
+        if type(self).__svtypes_is_template:
+            raise DeclarationError(
+                f"{type(self).__name__} is a parameterized template; bind every Parameter with specialize() first"
+            )
         super().__init__(**kwargs)
         self._codec_session = session or _default_session
         self.__svtypes_object_number = (
             0 if _defer_identity else (svtypes_object_number or self._codec_session.allocate_object_number())
         )
+        self.__svtypes_rand_modes: dict[str, int] = {}
+        self.__svtypes_constraint_modes: dict[str, int] = {}
+        self.__svtypes_randomize_status = None
+        self.__svtypes_layered_randomize_status = None
         if not _defer_identity:
             register_object(self)
 
@@ -331,10 +345,19 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                     setattr(copied, name, copy.deepcopy(getattr(self, name), memo))
                 continue
             getattr(copied, name).value = copy.deepcopy(getattr(self, name).value, memo)
+        rand_modes = getattr(self, "_SvObject__svtypes_rand_modes", None)
+        if rand_modes is not None:
+            copied.__svtypes_rand_modes = dict(rand_modes)
+            copied.__svtypes_constraint_modes = dict(self.__svtypes_constraint_modes)
+            copied.__svtypes_randomize_status = self.__svtypes_randomize_status
+            copied.__svtypes_layered_randomize_status = self.__svtypes_layered_randomize_status
         return copied
 
+    def __copy__(self):
+        return copy.deepcopy(self)
+
     def svtypes_sprint(self, _seen: set[int] | None = None) -> str:
-        from .collection import AssocArray, DynArray, Queue, _Array
+        from .collection import AssocArray, DynArray, Queue, Array
 
         seen = set() if _seen is None else _seen
         identity = id(self)
@@ -356,7 +379,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 return f"{desc.__class__.__name__}{{{', '.join(members)}}}"
             if isinstance(desc, SvObject):
                 return "null" if value is None else value.svtypes_sprint(seen)
-            if isinstance(desc, _Array):
+            if isinstance(desc, Array):
                 return "[" + ", ".join(render(desc._elem_template, item) for item in value) + "]"
             if isinstance(desc, (DynArray, Queue)):
                 return "[" + ", ".join(render(desc._elem_template, item) for item in value) + "]"
@@ -458,6 +481,9 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                         storage_key,
                         copy.deepcopy(m_attr, deepcopy_memo),
                     )
+                    from .constraint.modes import bind_runtime_field
+
+                    bind_runtime_field(getattr(self, storage_key), self, m_name, m_attr)
                 return getattr(self, storage_key)
 
         return object.__getattribute__(self, name)
@@ -503,7 +529,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        from .parameter import Parameter
+        from .parameter import Parameter, ParamRef
 
         seen = set()
         params = []
@@ -519,22 +545,25 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 cls.__svtypes_base_name = base.__name__
                 break
 
-        for base in reversed(mro):
-            if base is object or base.__name__ in ('SvObject', 'SvStruct'): continue
-            for name, attr in base.__dict__.items():
-                if name.startswith('_'): continue
-                if name in seen: continue
-                if isinstance(attr, ObjectDescriptor):
-                    continue
-                if isinstance(attr, Parameter):
-                    seen.add(name)
-                    params.append((name, attr))
+        # Parameters are only those declared in this class body; a subclass
+        # does not inherit the base's parameter table. Constraint analysis can
+        # still see bound base parameters through the MRO.
+        for name, attr in cls.__dict__.items():
+            if name.startswith('_'): continue
+            if isinstance(attr, Parameter):
+                seen.add(name)
+                params.append((name, attr))
 
         for base in reversed(mro):
             if base is object or base.__name__ in ('SvObject', 'SvStruct'): continue
             for name, attr in base.__dict__.items():
                 if name.startswith('_'): continue
                 if name in seen: continue
+                if isinstance(attr, Parameter):
+                    # Parameters are never members; they are collected from the
+                    # class body only, so a base's parameter must not leak in.
+                    seen.add(name)
+                    continue
                 if isinstance(attr, ObjectDescriptor):
                     seen.add(name)
                     ordered_members.append((name, attr))
@@ -550,9 +579,64 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         cls.__svtypes_members = ordered_members
         cls.__svtypes_fields = packed_fields
 
-        from .collection import _Array
-        from .bits import Bits
-        from .logic import LogicBits
+        # Resolve ParamRef forwards declared on the base specialization.
+        cls.__svtypes_param_refs: dict[str, str] = {}
+        direct_base = cls.__bases__[0] if cls.__bases__ else None
+        if (
+            isinstance(direct_base, type)
+            and issubclass(direct_base, SvObject)
+            and direct_base.__name__ not in ('SvObject', 'SvStruct')
+        ):
+            from .constraint.collect import has_unbound_parameters
+
+            is_spec_cls = "_SvObject__svtypes_emit_specialization_class" in cls.__dict__
+            if not is_spec_cls and has_unbound_parameters(direct_base):
+                raise DeclarationError(
+                    f"{cls.__name__} cannot inherit unbound parameter template "
+                    f"{direct_base.__name__}; bind every Parameter with specialize() first"
+                )
+            if not is_spec_cls:
+                db_spec = getattr(direct_base, "_SvObject__svtypes_specialized_from", None)
+                if db_spec is not None:
+                    # A user-declared subclass of a specialization points at the
+                    # intermediate specialization, not the original template.
+                    cls._SvObject__svtypes_specialized_from = direct_base
+                own_params = dict(params)
+                base_overrides = getattr(direct_base, "_SvObject__svtypes_parameter_overrides", {})
+                for name, value in base_overrides.items():
+                    if not isinstance(value, ParamRef):
+                        continue
+                    target = value.name or name
+                    if target not in own_params:
+                        raise DeclarationError(
+                            f"ParamRef({value.name!r}) on {direct_base.__name__}.specialize() refers to "
+                            f"undeclared parameter {target!r} in {cls.__name__}"
+                        )
+                    base_param = next(
+                        (p for p_name, p in getattr(direct_base, "_SvObject__svtypes_params", []) if p_name == name),
+                        None,
+                    )
+                    if base_param is None:
+                        # The original template's parameter list lives on the chain root.
+                        root = direct_base
+                        while root.__svtypes_specialized_from is not None:
+                            root = root.__svtypes_specialized_from
+                        base_param = next(
+                            (p for p_name, p in getattr(root, "_SvObject__svtypes_params", []) if p_name == name),
+                            None,
+                        )
+                    base_dtype = base_param.dtype if base_param is not None else None
+                    if base_dtype is not None and own_params[target].dtype != base_dtype:
+                        raise DeclarationError(
+                            f"ParamRef({value.name!r}) dtype mismatch: base {direct_base.__name__} "
+                            f"parameter {name!r} is {base_dtype!r}, subclass parameter {target!r} "
+                            f"is {own_params[target].dtype!r}"
+                        )
+                    cls.__svtypes_param_refs[name] = target
+
+        from .collection import Array
+        from .bit import Bit
+        from .logic import Logic
         struct_type = globals().get("SvStruct")
         is_struct_class = cls.__name__ == "SvStruct" or (
             struct_type is not None and issubclass(cls, struct_type)
@@ -561,7 +645,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         def packed_struct_member_supported(desc: Any) -> bool:
             from .int import Int, LongInt
 
-            return isinstance(desc, (Bits, LogicBits, Int, LongInt, Enum)) or (
+            return isinstance(desc, (Bit, Logic, Int, LongInt, Enum)) or (
                 struct_type is not None and isinstance(desc, struct_type)
             )
 
@@ -578,19 +662,15 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                     )
 
         def rand_supported(desc: Any) -> bool:
-            if isinstance(desc, (Bits, LogicBits, Enum)) or (
-                struct_type is not None and isinstance(desc, struct_type)
-            ):
-                return True
-            if isinstance(desc, _Array):
-                return rand_supported(desc._elem_template)
-            return False
+            from .randomizable import is_randomizable
+
+            return is_randomizable(desc)
 
         def plusarg_supported(desc: Any) -> bool:
             from .real import Real
             from .string import String
 
-            if isinstance(desc, (Bits, LogicBits, Enum, Real, String)):
+            if isinstance(desc, (Bit, Logic, Enum, Real, String)):
                 return True
             if struct_type is not None and isinstance(desc, struct_type):
                 return all(
@@ -604,7 +684,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         def cov_supported(desc: Any) -> bool:
             from .collection import AssocArray, DynArray, Queue
 
-            return isinstance(desc, (Bits, LogicBits, Enum, DynArray, Queue, AssocArray, ObjectDescriptor)) or (
+            return isinstance(desc, (Bit, Logic, Enum, DynArray, Queue, AssocArray, ObjectDescriptor)) or (
                 isinstance(desc, SvObject) and not (
                     struct_type is not None and isinstance(desc, struct_type)
                 )
@@ -641,9 +721,26 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                         f"pack_bytes=False is illegal for packed SvStruct member {cls.__name__}.{name}"
                     )
 
+        from .constraint.collect import collect_constraints
+
+        collect_constraints(cls)
+
     @classmethod
-    def specialize(cls: type[T], *, emit_class: bool = True, **kwargs) -> type[T]:
-        from .parameter import Parameter
+    def specialize(cls: type[T], **kwargs) -> type[T]:
+        from .parameter import DTYPE_CLASSES, Parameter, ParamRef
+
+        if "_SvObject__svtypes_emit_specialization_class" in cls.__dict__:
+            raise DeclarationError(
+                f"{cls.__name__} is already a specialization of "
+                f"{cls.__svtypes_specialized_from.__name__}; specialize the original template again"
+            )
+
+        unbound = [name for name, parameter in cls.__svtypes_params if parameter.value is None]
+        missing = [name for name in unbound if name not in kwargs]
+        if missing:
+            raise DeclarationError(
+                f"{cls.__name__}.specialize() must bind every unbound Parameter; missing {', '.join(missing)}"
+            )
 
         valid_params = {p_name for p_name, _ in cls.__svtypes_params}
         for name, value in kwargs.items():
@@ -651,6 +748,8 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 raise AttributeError(f"Class {cls.__name__} has no parameter named '{name}'")
 
         def name_part(value: Any) -> str:
+            if isinstance(value, type):
+                value = value.__name__
             text = str(value).replace("-", "neg_")
             return "".join(ch if ch.isalnum() else "_" for ch in text).strip("_") or "value"
 
@@ -660,10 +759,37 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             "__module__": cls.__module__,
             "_SvObject__svtypes_specialized_from": cls,
             "_SvObject__svtypes_parameter_overrides": dict(kwargs),
-            "_SvObject__svtypes_emit_specialization_class": emit_class,
+            # Fixed marker: this class is a Python-side binding of the template;
+            # it never emits a generated SV/C++ class.
+            "_SvObject__svtypes_emit_specialization_class": True,
         }
+        base_dtypes = {p_name: p_attr.dtype for p_name, p_attr in cls.__svtypes_params}
+
         for name, value in kwargs.items():
-            namespace[name] = Parameter(value)
+            if isinstance(value, ParamRef):
+                # Forward this parameter to a parameter declared in the
+                # subclass body; resolved in __init_subclass__.
+                namespace[name] = ParamRef(value.name)
+                continue
+            base_dtype = base_dtypes.get(name)
+            if base_dtype == "type":
+                if not isinstance(value, type):
+                    raise TypeError(
+                        f"type parameter {name!r} must be bound to a class/type, "
+                        f"not {type(value).__name__}"
+                    )
+                namespace[name] = Parameter(type)(value)
+                continue
+            if isinstance(value, type):
+                raise TypeError(
+                    f"value parameter {name!r} cannot be bound to a type; "
+                    "bind an int/str/float value"
+                )
+            param_cls = DTYPE_CLASSES.get(base_dtype) if base_dtype else None
+            if param_cls is not None:
+                namespace[name] = Parameter(param_cls)(value)
+            else:
+                namespace[name] = Parameter(value)
         return type(new_name, (cls,), namespace)
 
     @classmethod
@@ -671,14 +797,84 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         base = cls.__svtypes_specialized_from
         if base is None:
             return None
+        from .parameter import Parameter, ParamRef
+
+        # Flatten to the original template only for a ParamRef-forwarding
+        # subclass (which declares its own param_refs); a specialize() product
+        # keeps extending its own template source (Python-side binding only).
+        is_spec_cls = "_SvObject__svtypes_emit_specialization_class" in cls.__dict__
+        template = base
+        if not is_spec_cls:
+            while template.__svtypes_specialized_from is not None:
+                template = template.__svtypes_specialized_from
+        refs = getattr(cls, "_SvObject__svtypes_param_refs", {})
+        overrides = dict(getattr(cls, "_SvObject__svtypes_parameter_overrides", {}))
         params = []
-        for name, value in cls.__svtypes_parameter_overrides.items():
+        for name, value in overrides.items():
+            if isinstance(value, ParamRef):
+                params.append(f".{name}({refs.get(name, name)})")
+                continue
             param = cls.__dict__.get(name)
             if param is None:
-                from .parameter import Parameter
-                param = Parameter(value)
+                param = Parameter(type)(value) if isinstance(value, type) else Parameter(value)
             params.append(f".{name}({param.sv_repr()})")
-        return f"{base.__name__}#({', '.join(params)})"
+        return f"{template.__name__}#({', '.join(params)})"
+
+    @classmethod
+    def _sv_coverage_sample_type(cls) -> str:
+        """Type used by the nested coverage collector's sample().
+
+        For a template the nested class references the enclosing class with
+        explicit parameter references (e.g. Templated#(.WIDTH(WIDTH))), so
+        no default values are required; all other classes use their plain
+        generated name."""
+        if cls.__svtypes_is_template:
+            refs = ", ".join(f".{p_name}({p_name})" for p_name, _ in cls.__svtypes_params)
+            return f"{cls.__name__}#({refs})"
+        return cls.__name__
+
+    def _svtypes_rand_mode(self, path: str, on: int | None = None) -> int:
+        from .constraint.modes import _require_mode_arg
+
+        if on is None:
+            return self.__svtypes_rand_modes.get(path, 1)
+        self.__svtypes_rand_modes[path] = _require_mode_arg(on)
+        return self.__svtypes_rand_modes[path]
+
+    def randomize(self, *args: Any, **kwargs: Any) -> bool:
+        if args or kwargs:
+            raise TypeError("randomize() does not accept seed or solver options; use RandomContext")
+        from .constraint.randomize import randomize_object
+
+        return randomize_object(self)
+
+    def randomize_with(self, fn: Any, *args: Any, **kwargs: Any) -> bool:
+        if args or kwargs:
+            raise TypeError("randomize_with() does not accept seed or solver options; use RandomContext")
+        from .constraint.randomize import randomize_object_with
+
+        return randomize_object_with(self, fn)
+
+    def layered_randomize(self, *args: Any, **kwargs: Any) -> bool:
+        if args or kwargs:
+            raise TypeError("layered_randomize() does not accept arguments")
+        from .constraint.randomize import layered_randomize_object
+
+        return layered_randomize_object(self)
+
+    def pre_randomize(self) -> None:
+        return None
+
+    def post_randomize(self) -> None:
+        return None
+
+    @property
+    def svtypes_randomize_status(self):
+        return self.__svtypes_randomize_status
+
+    @property
+    def svtypes_layered_randomize_status(self):
+        return self.__svtypes_layered_randomize_status
 
     @classmethod
     def _encoding_type_name(cls) -> str:
@@ -688,6 +884,13 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
     @classmethod
     def _encoding_fingerprint_hex(cls) -> str:
+        if cls.__svtypes_is_template:
+            # Templates share the parameter-independent encoding fingerprint
+            # with every specialization; only the encoding type name varies.
+            from .schema import _descriptors, _fingerprint
+
+            _, encoding = _descriptors(cls, set(), allow_template=True)
+            return _fingerprint(encoding).hex()
         from .schema import schema_descriptor
 
         return schema_descriptor(cls).encoding_fingerprint_hex
@@ -695,34 +898,55 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
     @classmethod
     def _sv_encoding_type_expr(cls) -> str:
         if cls.__svtypes_params and cls.__svtypes_specialized_from is None:
-            canonical = cls._encoding_type_name()
-            prefix = canonical.split("[", 1)[0]
+            type_name = cls._encoding_type_name()
+            prefix = type_name.split("[", 1)[0]
             format_parts = []
             arguments = []
             for name, parameter in cls.__svtypes_params:
-                value = parameter.value
-                if isinstance(value, str):
+                dtype = parameter.dtype
+                if dtype == "type":
+                    format_parts.append(f"{name}:type=%s")
+                    arguments.append(
+                        parameter.sv_type_value() if parameter.is_bound else f"$typename({name})"
+                    )
+                elif dtype == "str":
                     format_parts.append(f"{name}:str=%s")
-                elif isinstance(value, float):
+                    arguments.append(name)
+                elif dtype == "float":
                     format_parts.append(f"{name}:float=%0g")
+                    arguments.append(name)
                 else:
-                    format_parts.append(f"{name}:{type(value).__name__}=%0d")
-                arguments.append(name)
+                    format_parts.append(f"{name}:{dtype or 'int'}=%0d")
+                    arguments.append(name)
             return f'$sformatf("{prefix}[{",".join(format_parts)}]", {", ".join(arguments)})'
         return f'"{cls._encoding_type_name()}"'
 
     @classmethod
     def _cpp_encoding_type_expr(cls) -> str:
         if cls.__svtypes_params and cls.__svtypes_specialized_from is None:
-            canonical = cls._encoding_type_name()
-            prefix = canonical.split("[", 1)[0]
+            type_name = cls._encoding_type_name()
+            prefix = type_name.split("[", 1)[0]
             pieces = [f'std::string("{prefix}[")']
             for index, (name, parameter) in enumerate(cls.__svtypes_params):
                 if index:
                     pieces.append('","')
-                value = parameter.value
-                pieces.append(f'"{name}:{type(value).__name__}="')
-                pieces.append(f"std::to_string({name})")
+                dtype = parameter.dtype
+                if dtype == "type":
+                    pieces.append(f'"{name}:type="')
+                    pieces.append(
+                        f'"{parameter.sv_type_value()}"'
+                        if parameter.is_bound
+                        else f"std::string(typeid({name}).name())"
+                    )
+                elif dtype == "str":
+                    pieces.append(f'"{name}:str="')
+                    pieces.append(name)
+                elif dtype == "float":
+                    pieces.append(f'"{name}:float="')
+                    pieces.append(f"std::to_string({name})")
+                else:
+                    pieces.append(f'"{name}:{dtype or "int"}="')
+                    pieces.append(f"std::to_string({name})")
             pieces.append('"]"')
             return " + ".join(pieces)
         return f'"{cls._encoding_type_name()}"'
@@ -732,17 +956,41 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         base = cls.__svtypes_specialized_from
         if base is None:
             return None
-        values = ", ".join(str(value) for value in cls.__svtypes_parameter_overrides.values())
-        return f"{base.__name__}<{values}>"
+        from .parameter import ParamRef, cpp_param_literal
+
+        is_spec_cls = "_SvObject__svtypes_emit_specialization_class" in cls.__dict__
+        template = base
+        if not is_spec_cls:
+            while template.__svtypes_specialized_from is not None:
+                template = template.__svtypes_specialized_from
+        refs = getattr(cls, "_SvObject__svtypes_param_refs", {})
+        overrides = dict(getattr(cls, "_SvObject__svtypes_parameter_overrides", {}))
+        values = []
+        for name, value in overrides.items():
+            if isinstance(value, ParamRef):
+                values.append(refs.get(name, name))
+                continue
+            if isinstance(value, str):
+                raise DeclarationError(
+                    f"parameter {name!r} of type str cannot be represented as a generated "
+                    "C++ template argument; bind an int/type parameter or skip C++ generation"
+                )
+            if isinstance(value, float):
+                raise DeclarationError(
+                    f"parameter {name!r} of type float cannot be represented as a generated "
+                    "C++ template argument before C++20; bind an int/type parameter"
+                )
+            values.append(getattr(value, "__name__", cpp_param_literal(value)) if isinstance(value, type) else cpp_param_literal(value))
+        return f"{template.__name__}<{', '.join(values)}>"
 
     @staticmethod
     def _sv_type_expr(desc: TypeBase) -> str:
-        from .bits import Bits
-        from .logic import LogicBits
-        from .collection import AssocArray, DynArray, Queue, _Array
+        from .bit import Bit
+        from .logic import Logic
+        from .collection import AssocArray, DynArray, Queue, Array
         from .enum import Enum
         from .int import Int, LongInt
-        from .logic import LogicBits
+        from .logic import Logic
         from .real import Real, ShortReal
         from .remote_ref import RemoteRef
         from .string import String
@@ -751,9 +999,9 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             return "int"
         if isinstance(desc, LongInt):
             return "longint"
-        if isinstance(desc, Bits):
+        if isinstance(desc, Bit):
             return desc.sv_decl("").strip()
-        if isinstance(desc, LogicBits):
+        if isinstance(desc, Logic):
             return desc.sv_decl("").strip()
         if isinstance(desc, Enum):
             return desc.__class__.__name__
@@ -765,7 +1013,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             return "real"
         if isinstance(desc, RemoteRef):
             return "svtypes_pkg::remote_ref"
-        if isinstance(desc, _Array):
+        if isinstance(desc, Array):
             return f"{SvObject._sv_type_expr(desc._elem_template)} [{desc._size}]"
         if isinstance(desc, Queue):
             return f"{SvObject._sv_type_expr(desc._elem_template)} [$]"
@@ -780,10 +1028,9 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         if isinstance(desc, SvStruct):
             return f"{desc.__class__.__name__}_t"
         if isinstance(desc, SvObject):
-            if (
-                desc.__class__.__svtypes_specialized_from is not None
-                and not desc.__class__.__svtypes_emit_specialization_class
-            ):
+            if desc.__class__.__svtypes_specialized_from is not None:
+                # A specialization is a Python-side binding; the target-language
+                # field type is the parameterized template instance.
                 return desc.__class__._sv_specialized_base_expr()
             return desc.__class__.__name__
         raise NotImplementedError(
@@ -792,11 +1039,11 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
     @staticmethod
     def _sv_packer_expr(desc: TypeBase) -> str:
-        from .bits import Bits
-        from .collection import AssocArray, DynArray, Queue, _Array
+        from .bit import Bit
+        from .collection import AssocArray, DynArray, Queue, Array
         from .enum import Enum
         from .int import Int, LongInt
-        from .logic import LogicBits
+        from .logic import Logic
         from .real import Real, ShortReal
         from .remote_ref import RemoteRef
         from .string import String
@@ -805,12 +1052,12 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             return "svtypes_pkg::int_packer"
         if isinstance(desc, LongInt):
             return "svtypes_pkg::longint_packer"
-        if isinstance(desc, Bits):
-            return f"svtypes_pkg::bits_packer#({SvObject._sv_type_expr(desc)})"
-        if isinstance(desc, LogicBits):
-            return f"svtypes_pkg::logic_bits_packer#({SvObject._sv_type_expr(desc)})"
+        if isinstance(desc, Bit):
+            return f"svtypes_pkg::bit_packer#({SvObject._sv_type_expr(desc)})"
+        if isinstance(desc, Logic):
+            return f"svtypes_pkg::logic_packer#({SvObject._sv_type_expr(desc)})"
         if isinstance(desc, Enum):
-            return f"svtypes_pkg::bits_packer#({desc.__class__.__name__})"
+            return f"svtypes_pkg::bit_packer#({desc.__class__.__name__})"
         if isinstance(desc, String):
             return "svtypes_pkg::string_packer"
         if isinstance(desc, ShortReal):
@@ -819,7 +1066,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             return "svtypes_pkg::real_packer"
         if isinstance(desc, RemoteRef):
             return "svtypes_pkg::remote_ref_packer"
-        if isinstance(desc, _Array):
+        if isinstance(desc, Array):
             elem_t = SvObject._sv_type_expr(desc._elem_template)
             elem_packer = SvObject._sv_packer_expr(desc._elem_template)
             return f"svtypes_pkg::fixed_array_packer#({elem_t}, {desc._size}, {elem_packer})"
@@ -849,10 +1096,10 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
     @staticmethod
     def _sv_pack_lines(name: str, desc: TypeBase, indent: str) -> list[str]:
-        from .bits import Bits
+        from .bit import Bit
         from .enum import Enum
         from .int import Int, LongInt
-        from .logic import LogicBits
+        from .logic import Logic
         from .real import Real, ShortReal
         from .remote_ref import RemoteRef
         from .string import String
@@ -861,11 +1108,11 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             return [f"{indent}{SvObject._sv_packer_expr(desc)}::pack({name}, bytes);"]
         if isinstance(desc, LongInt):
             return [f"{indent}{SvObject._sv_packer_expr(desc)}::pack({name}, bytes);"]
-        if isinstance(desc, Bits):
+        if isinstance(desc, Bit):
             return [
                 f"{indent}{SvObject._sv_packer_expr(desc)}::pack({name}, bytes);"
             ]
-        if isinstance(desc, LogicBits):
+        if isinstance(desc, Logic):
             return [f"{indent}{SvObject._sv_packer_expr(desc)}::pack({name}, bytes);"]
         if isinstance(desc, String):
             return [f"{indent}{SvObject._sv_packer_expr(desc)}::pack({name}, bytes);"]
@@ -891,10 +1138,10 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
     @staticmethod
     def _sv_unpack_lines(name: str, desc: TypeBase, indent: str) -> list[str]:
-        from .bits import Bits
+        from .bit import Bit
         from .enum import Enum
         from .int import Int, LongInt
-        from .logic import LogicBits
+        from .logic import Logic
         from .real import Real, ShortReal
         from .remote_ref import RemoteRef
         from .string import String
@@ -903,11 +1150,11 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             return [f"{indent}{SvObject._sv_packer_expr(desc)}::unpack({name}, bytes, offset);"]
         if isinstance(desc, LongInt):
             return [f"{indent}{SvObject._sv_packer_expr(desc)}::unpack({name}, bytes, offset);"]
-        if isinstance(desc, Bits):
+        if isinstance(desc, Bit):
             return [
                 f"{indent}{SvObject._sv_packer_expr(desc)}::unpack({name}, bytes, offset);"
             ]
-        if isinstance(desc, LogicBits):
+        if isinstance(desc, Logic):
             return [f"{indent}{SvObject._sv_packer_expr(desc)}::unpack({name}, bytes, offset);"]
         if isinstance(desc, String):
             return [f"{indent}{SvObject._sv_packer_expr(desc)}::unpack({name}, bytes, offset);"]
@@ -933,15 +1180,16 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
     @classmethod
     def to_sv_obj(cls, level=0):
-        if cls.__svtypes_specialized_from is not None and not cls.__svtypes_emit_specialization_class:
-            raise NotImplementedError(
-                f"{cls.__name__} is a non-emitted parameterized specialization. "
-                "Use it as a member type, not as a generated SV class."
+        if "_SvObject__svtypes_emit_specialization_class" in cls.__dict__:
+            raise DeclarationError(
+                f"{cls.__name__} is a Python-side binding of "
+                f"{cls.__svtypes_specialized_from.__name__}; specializations are not generated "
+                "classes — use the template with parameters (Tpl#(.W(4))) in the target language"
             )
         ind_str = cls.IND * level
         header = f"{ind_str}class {cls.__name__}"
         specialized_base = cls._sv_specialized_base_expr()
-        if cls.__svtypes_params and specialized_base is None:
+        if cls.__svtypes_params:
             params_str = ", ".join([p_attr.to_sv_code(name=p_name).strip().strip(';') for p_name, p_attr in cls.__svtypes_params])
             header += f" #({params_str})"
         if specialized_base is not None:
@@ -972,6 +1220,16 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                  )
              lines.append(declaration)
 
+        from .constraint.backend.sv import render_constraint_blocks, render_layered_randomize
+
+        if "_SvObject__svtypes_emit_specialization_class" not in cls.__dict__:
+            # Constraints render only on the class that declares them. A
+            # specialize() product inherits the template's blocks (written with
+            # parameter names) via extends and must not re-declare them;
+            # templates and ParamRef-forwarding subclasses render their own.
+            lines.extend(render_constraint_blocks(cls, ind_str, cls.IND))
+            lines.extend(render_layered_randomize(cls, ind_str, cls.IND))
+
         lines.append("")
         lines.append(f"{ind_str}{cls.IND}static function svtypes_pkg::encoding_descriptor svtypes_encoding_descriptor();")
         lines.append(f"{ind_str}{cls.IND}{cls.IND}svtypes_pkg::encoding_descriptor descriptor;")
@@ -988,9 +1246,9 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
         lines.append("")
         lines.append(f'{ind_str}{cls.IND}virtual function void apply_plusargs(string prefix = "");')
-        from .bits import Bits
+        from .bit import Bit
         from .enum import Enum
-        from .logic import LogicBits
+        from .logic import Logic
         from .real import Real
         from .string import String
         plusarg_declarations = [
@@ -1058,9 +1316,9 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 value_format = "%s"
             elif isinstance(desc, Real):
                 value_format = "%f"
-            elif isinstance(desc, LogicBits):
+            elif isinstance(desc, Logic):
                 value_format = "%h"
-            elif isinstance(desc, Bits):
+            elif isinstance(desc, Bit):
                 value_format = "%d" if desc.signed else "%h"
             else:
                 return
@@ -1091,14 +1349,14 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         lines.append(f"{ind_str}{cls.IND}{cls.IND}svtypes_pkg::end_plusarg_object();")
         lines.append(f"{ind_str}{cls.IND}endfunction")
 
-        from .collection import AssocArray, DynArray, Queue, _Array
+        from .collection import AssocArray, DynArray, Queue, Array
         dump_declarations = []
         dump_body = []
         dump_temp_index = 0
 
         def emit_dump_value(desc, expression, indent):
             nonlocal dump_temp_index
-            if isinstance(desc, (_Array, DynArray, Queue)):
+            if isinstance(desc, (Array, DynArray, Queue)):
                 suffix = dump_temp_index
                 dump_temp_index += 1
                 index = f"__svtypes_index_{suffix}"
@@ -1166,10 +1424,10 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 return
             from .int import Int, LongInt
             from .remote_ref import RemoteRef
-            if isinstance(desc, (Int, LongInt)) or (isinstance(desc, Bits) and desc.signed):
+            if isinstance(desc, (Int, LongInt)) or (isinstance(desc, Bit) and desc.signed):
                 dump_body.append(f'{indent}result = {{result, $sformatf("%0d", {expression})}};')
                 return
-            if isinstance(desc, (Bits, LogicBits)):
+            if isinstance(desc, (Bit, Logic)):
                 dump_body.append(f'{indent}result = {{result, $sformatf("%0h", {expression})}};')
                 return
             if isinstance(desc, Real):
@@ -1271,14 +1529,13 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                     lines.extend(cls._sv_unpack_lines(name, desc, ind_str + cls.IND + cls.IND))
         lines.append(f"{ind_str}{cls.IND}endfunction")
 
-        lines.append(f"{ind_str}endclass")
         from .collection import AssocArray, DynArray, Queue
         coverage_fields = []
         for name, desc in cls.__svtypes_members:
             enabled = desc.cov if isinstance(desc, TypeBase) else isinstance(desc, ObjectDescriptor)
             if not enabled:
                 continue
-            if isinstance(desc, (Bits, LogicBits, Enum)):
+            if isinstance(desc, (Bit, Logic, Enum)):
                 expression = f"item.{name}"
             elif isinstance(desc, (DynArray, Queue)):
                 expression = f"item.{name}.size()"
@@ -1292,37 +1549,56 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 continue
             coverage_fields.append((name, expression))
         if coverage_fields:
+            # The coverage collector is emitted as a nested class of the
+            # generated class, so it can reference the enclosing class
+            # parameters and coverpoints always sample the enclosing type.
+            sample_type = cls._sv_coverage_sample_type()
             lines.append("")
-            lines.append(f"{ind_str}class {cls.__name__}__svtypes_coverage;")
-            lines.append(f"{ind_str}{cls.IND}covergroup cg with function sample({cls.__name__} item);")
-            lines.append(f"{ind_str}{cls.IND * 2}option.per_instance = 1;")
+            lines.append(f"{ind_str}{cls.IND}class {cls.__name__}__svtypes_coverage;")
+            lines.append(f"{ind_str}{cls.IND * 2}covergroup cg with function sample({sample_type} item);")
+            lines.append(f"{ind_str}{cls.IND * 3}option.per_instance = 1;")
             for name, expression in coverage_fields:
-                lines.append(f"{ind_str}{cls.IND * 2}{name}_cp: coverpoint {expression};")
-            lines.append(f"{ind_str}{cls.IND}endgroup")
+                lines.append(f"{ind_str}{cls.IND * 3}{name}_cp: coverpoint {expression};")
+            lines.append(f"{ind_str}{cls.IND * 2}endgroup")
             lines.append("")
-            lines.append(f"{ind_str}{cls.IND}function new();")
-            lines.append(f"{ind_str}{cls.IND * 2}cg = new();")
-            lines.append(f"{ind_str}{cls.IND}endfunction")
+            lines.append(f"{ind_str}{cls.IND * 2}function new();")
+            lines.append(f"{ind_str}{cls.IND * 3}cg = new();")
+            lines.append(f"{ind_str}{cls.IND * 2}endfunction")
             lines.append("")
-            lines.append(f"{ind_str}{cls.IND}function void sample({cls.__name__} item);")
-            lines.append(f"{ind_str}{cls.IND * 2}cg.sample(item);")
-            lines.append(f"{ind_str}{cls.IND}endfunction")
-            lines.append(f"{ind_str}endclass")
+            lines.append(f"{ind_str}{cls.IND * 2}function void sample({sample_type} item);")
+            lines.append(f"{ind_str}{cls.IND * 3}cg.sample(item);")
+            lines.append(f"{ind_str}{cls.IND * 2}endfunction")
+            lines.append(f"{ind_str}{cls.IND}endclass")
+
+        lines.append(f"{ind_str}endclass")
         return "\n".join(lines)
 
     @classmethod
     def to_cpp_obj(cls, level=0):
-        if cls.__svtypes_specialized_from is not None and not cls.__svtypes_emit_specialization_class:
-            raise NotImplementedError(
-                f"{cls.__name__} is a non-emitted parameterized specialization. "
-                "Use it as a member type, not as a generated C++ class."
+        if "_SvObject__svtypes_emit_specialization_class" in cls.__dict__:
+            raise DeclarationError(
+                f"{cls.__name__} is a Python-side binding of "
+                f"{cls.__svtypes_specialized_from.__name__}; specializations are not generated "
+                "classes — use the template with parameters (Tpl<4>) in the target language"
             )
         ind_str = cls.IND * level
         lines = []
         specialized_base = cls._cpp_specialized_base_expr()
-        if cls.__svtypes_params and specialized_base is None:
-            template_str = "template <" + ", ".join([p_attr.cpp_decl(p_name).replace("static constexpr ", "") + f" = {p_attr.value}" for p_name, p_attr in cls.__svtypes_params]) + ">"
-            lines.append(f"{ind_str}{template_str}")
+        if cls.__svtypes_params:
+            from .parameter import cpp_param_literal
+
+            param_parts = []
+            for p_name, p_attr in cls.__svtypes_params:
+                if p_attr.dtype in ("str", "float"):
+                    raise DeclarationError(
+                        f"parameter {p_name!r} of type {p_attr.dtype!r} cannot be a generated "
+                        "C++ template parameter; bind an int/type parameter or skip C++ generation"
+                    )
+                decl = p_attr.cpp_decl(p_name).replace("static constexpr ", "")
+                if p_attr.is_bound and p_attr.dtype != "type":
+                    decl += f" = {cpp_param_literal(p_attr.value)}"
+                param_parts.append(decl)
+            lines.append(f"{ind_str}template <{', '.join(param_parts)}>")
 
         if specialized_base is not None:
             base_clause = f" : public {specialized_base}"
@@ -1437,16 +1713,13 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         return f"{self.IND * level}{self.sv_decl(name)};"
 
     def cpp_decl(self, name: str):
-        if (
-            self.__class__.__svtypes_specialized_from is not None
-            and not self.__class__.__svtypes_emit_specialization_class
-        ):
+        if self.__class__.__svtypes_specialized_from is not None:
             return f"{self.__class__._cpp_specialized_base_expr()} {name}"
         return f"{self.__class__.__name__} {name}"
 
     @staticmethod
     def _pack_field_value(desc: Any, value: Any, ctx: _PackContext) -> bytes:
-        from .collection import AssocArray, DynArray, Queue, _Array
+        from .collection import AssocArray, DynArray, Queue, Array
 
         if isinstance(desc, ObjectDescriptor):
             cls = desc.registry.get(desc.cls_name)
@@ -1462,7 +1735,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             return desc.pack(value)
         if isinstance(desc, SvObject):
             return desc.pack(value, ctx)
-        if isinstance(desc, _Array):
+        if isinstance(desc, Array):
             if len(value) != desc._size:
                 raise ValueError(f"Expected list of size {desc._size}")
             data = b""
@@ -1493,7 +1766,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
     @staticmethod
     def _unpack_field_value(desc: Any, bytes_: bytes, ctx: _UnpackContext) -> tuple[Any, int]:
-        from .collection import AssocArray, DynArray, Queue, _Array
+        from .collection import AssocArray, DynArray, Queue, Array
 
         if isinstance(desc, ObjectDescriptor):
             cls = desc.registry.get(desc.cls_name)
@@ -1507,7 +1780,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             return desc.unpack(bytes_)
         if isinstance(desc, SvObject):
             return desc.unpack(bytes_, ctx)
-        if isinstance(desc, _Array):
+        if isinstance(desc, Array):
             offset = 0
             values = []
             for _ in range(desc._size):
@@ -1559,7 +1832,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
     @staticmethod
     def _assign_unpacked_field(obj: "SvObject", name: str, desc: Any, value: Any) -> None:
-        from .collection import AssocArray, DynArray, Queue, _Array
+        from .collection import AssocArray, DynArray, Queue, Array
 
         if isinstance(desc, ObjectDescriptor):
             setattr(obj, name, value)
@@ -1568,7 +1841,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             object.__setattr__(obj, desc._storage_key, value)
             return
         field = getattr(obj, name)
-        if isinstance(desc, _Array):
+        if isinstance(desc, Array):
             for index, item in enumerate(value):
                 elem_desc = desc._elem_template
                 if isinstance(elem_desc, ObjectDescriptor):

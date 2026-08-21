@@ -33,6 +33,16 @@
 | `svtypes.record-schema.v1` | 可由外部提供记录名称及有序字段描述，生成普通对象记录。 |
 | `svtypes.remote-reference.v1` | 支持固定八字节的可空外来对象引用值。 |
 
+## `1.1.0` 能力名称
+
+`1.1.0` 在 `1.0.0` 集合上增加：
+
+| 名称 | 含义 |
+|---|---|
+| `svtypes.constraint-ir.v1` | 类级 Typed Constraint IR 与源 schema `constraints` / `ir_digest` / `rand_layers`。 |
+| `svtypes.constraint-sample.v1` | Python `randomize()` 使用冻结的位级抽样算法。 |
+
 Python 使用 `RuntimeCapabilities`、`runtime_capabilities()` 和
 `require_runtime_compatible()`。SystemVerilog 与 C++ 运行时提供同等描述和
 比较入口；生成类型也提供转发至其运行时的静态入口。
+`1.1.0` 运行时必须宣称上述新增能力名称。

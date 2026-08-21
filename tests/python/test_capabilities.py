@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from svtypes import (
-    Bits,
+    Bit,
     CompatibilityError,
     RuntimeCapabilities,
     SvObject,
@@ -26,9 +26,15 @@ def test_runtime_capabilities_reject_missing_requirement_and_version_mismatch():
         require_runtime_compatible((), RuntimeCapabilities(binary_format_version=99))
 
 
+def test_runtime_capabilities_include_constraint_names():
+    provided = runtime_capabilities().provided
+    assert "svtypes.constraint-ir.v1" in provided
+    assert "svtypes.constraint-sample.v1" in provided
+
+
 def test_generated_types_expose_runtime_capabilities():
     class Payload(SvObject):
-        value = Bits(8)
+        value = Bit(8)
 
     assert "svtypes_runtime_capabilities" in Payload.to_sv_obj()
     assert "svtypes_runtime_capabilities" in Payload.to_cpp_obj()

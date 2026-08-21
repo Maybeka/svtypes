@@ -1,4 +1,4 @@
-"""Canonical public schema and encoding descriptor helpers."""
+"""Stable public schema and encoding descriptor helpers."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ OBJECT_ENVELOPE_VERSION = 2
 GENERATOR_RUNTIME_ABI_VERSION = 1
 
 
-def _canonical_json(value: Mapping[str, Any]) -> bytes:
+def _stable_json(value: Mapping[str, Any]) -> bytes:
     return json.dumps(
         value,
         ensure_ascii=False,
@@ -28,7 +28,7 @@ def _canonical_json(value: Mapping[str, Any]) -> bytes:
 
 
 def _fingerprint(value: Mapping[str, Any]) -> bytes:
-    return hashlib.sha256(_canonical_json(value)).digest()
+    return hashlib.sha256(_stable_json(value)).digest()
 
 
 def _freeze(value: Any) -> Any:
@@ -115,13 +115,23 @@ class SchemaDescriptor:
         }
 
 
+def _render_param_text(name: str, value: Any) -> str:
+    from .parameter import ParamRef
+
+    if isinstance(value, ParamRef):
+        return f"{name}:ref={value.name or name}"
+    if isinstance(value, type):
+        return f"{name}:type={value.__name__}"
+    return f"{name}:{type(value).__name__}={value}"
+
+
 def unified_type_name(codec_or_type: Any) -> str:
     """Return the stable symbolic identity used by public descriptors."""
-    from .bits import Bits
-    from .collection import AssocArray, DynArray, Queue, _Array
+    from .bit import Bit
+    from .collection import AssocArray, DynArray, Queue, Array
     from .enum import Enum
     from .int import Int, LongInt
-    from .logic import LogicBits
+    from .logic import Logic
     from .object import ObjectDescriptor, SvObject
     from .real import Real, RealTime, ShortReal
     from .remote_ref import RemoteRef
@@ -143,7 +153,7 @@ def unified_type_name(codec_or_type: Any) -> str:
                     for name, parameter in parameters
                 }
                 rendered = ",".join(
-                    f"{name}:{type(value).__name__}={value}"
+                    _render_param_text(name, value)
                     for name, value in effective.items()
                 )
                 return f"{base_name}[{rendered}]"
@@ -155,21 +165,22 @@ def unified_type_name(codec_or_type: Any) -> str:
         return "svtypes.Int"
     if isinstance(codec, LongInt):
         return "svtypes.LongInt"
-    if isinstance(codec, Bits):
+    if isinstance(codec, Bit):
         size = (
             "shape=(" + ",".join(str(part) for part in codec.shape) + ")"
             if codec.shape is not None
             else f"width={codec.width}"
         )
         signed = str(codec.signed).lower()
-        return f"svtypes.Bits[{size},signed={signed},state={codec.state_domain}]"
-    if isinstance(codec, LogicBits):
+        return f"svtypes.Bit[{size},signed={signed},state={codec.state_domain}]"
+    if isinstance(codec, Logic):
         size = (
             "shape=(" + ",".join(str(part) for part in codec.shape) + ")"
             if codec.shape is not None
             else f"width={codec.width}"
         )
-        return f"svtypes.LogicBits[{size},state=4state]"
+        signed = str(codec.signed).lower()
+        return f"svtypes.Logic[{size},signed={signed},state=4state]"
     if isinstance(codec, String):
         return "svtypes.String[encoding=utf-8]"
     if isinstance(codec, ShortReal):
@@ -182,7 +193,7 @@ def unified_type_name(codec_or_type: Any) -> str:
         return f"svtypes.RemoteRef[target={codec.target_type_name}]"
     if isinstance(codec, Enum):
         return unified_type_name(codec.__class__)
-    if isinstance(codec, _Array):
+    if isinstance(codec, Array):
         return f"svtypes.Array[size={codec._size},elem={unified_type_name(codec._elem_template)}]"
     if isinstance(codec, Queue):
         return f"svtypes.Queue[elem={unified_type_name(codec._elem_template)}]"
@@ -215,12 +226,16 @@ def _policies(codec: TypeBase) -> dict[str, bool]:
     }
 
 
-def _descriptors(codec_or_type: Any, active: set[type[Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
-    from .bits import Bits
-    from .collection import AssocArray, DynArray, Queue, _Array
+def _descriptors(
+    codec_or_type: Any,
+    active: set[type[Any]],
+    allow_template: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    from .bit import Bit
+    from .collection import AssocArray, DynArray, Queue, Array
     from .enum import Enum
     from .object import ObjectDescriptor, SvObject, SvStruct
-    from .logic import LogicBits
+    from .logic import Logic
     from .parameter import Parameter
     from .real import Real, ShortReal
     from .remote_ref import RemoteRef
@@ -231,6 +246,33 @@ def _descriptors(codec_or_type: Any, active: set[type[Any]]) -> tuple[dict[str, 
         if issubclass(codec, Enum):
             codec = codec()
         elif issubclass(codec, SvObject):
+            if getattr(codec, "_SvObject__svtypes_is_template", False):
+                if not allow_template:
+                    raise DeclarationError(
+                        f"{codec.__name__} is a parameterized template; bind every Parameter with specialize() first"
+                    )
+                # A template has no concrete source schema, but its positional
+                # encoding layout is parameter-independent and identical to every
+                # specialization, so it can still yield an encoding fingerprint.
+                declared_fields = []
+                encoding_fields = []
+                for name, member in codec._SvObject__svtypes_members:
+                    member_schema, member_encoding = _descriptors(member, active)
+                    entry = {
+                        "name": name,
+                        "policies": _policies(member) if isinstance(member, TypeBase) else {},
+                        "type": member_schema,
+                    }
+                    declared_fields.append(entry)
+                    if not isinstance(member, TypeBase) or member.pack_bytes:
+                        encoding_fields.append({"type": member_encoding})
+                encoding = {
+                    "kind": "object",
+                    "binary_format_version": BINARY_FORMAT_VERSION,
+                    "object_envelope_version": OBJECT_ENVELOPE_VERSION,
+                    "fields": encoding_fields,
+                }
+                return {}, encoding
             if codec in active:
                 ref = {"kind": "type_ref", "type_name": unified_type_name(codec)}
                 return ref, ref
@@ -238,7 +280,7 @@ def _descriptors(codec_or_type: Any, active: set[type[Any]]) -> tuple[dict[str, 
             try:
                 declared_fields = []
                 encoding_fields = []
-                for name, member in codec.__svtypes_members:
+                for name, member in codec._SvObject__svtypes_members:
                     member_schema, member_encoding = _descriptors(member, active)
                     entry = {
                         "name": name,
@@ -251,9 +293,24 @@ def _descriptors(codec_or_type: Any, active: set[type[Any]]) -> tuple[dict[str, 
                         # not the positional object encoding layout.
                         encoding_fields.append({"type": member_encoding})
                 params = []
+                overrides = getattr(codec, "_SvObject__svtypes_parameter_overrides", {})
                 for name, parameter in getattr(codec, "_SvObject__svtypes_params", []):
                     if isinstance(parameter, Parameter):
-                        params.append({"name": name, "value": parameter.value})
+                        effective = overrides.get(name, parameter)
+                        if isinstance(effective, Parameter):
+                            is_type = effective.is_type_parameter
+                            value = (
+                                effective.value.__name__
+                                if is_type and effective.is_bound
+                                else (None if is_type else effective.value)
+                            )
+                        else:
+                            is_type = isinstance(effective, type)
+                            value = effective.__name__ if is_type else effective
+                        entry = {"name": name, "value": value}
+                        if is_type:
+                            entry["kind"] = "type"
+                        params.append(entry)
                 kind = "struct" if issubclass(codec, SvStruct) else "object"
                 common = {
                     "kind": kind,
@@ -270,6 +327,16 @@ def _descriptors(codec_or_type: Any, active: set[type[Any]]) -> tuple[dict[str, 
                     "fields": declared_fields,
                     "parameters": params,
                 }
+                if kind == "object":
+                    from .constraint.ir import constraints_schema_entries
+                    from .constraint.layer import layers_schema_entries
+
+                    entries = constraints_schema_entries(
+                        getattr(codec, "_SvObject__svtypes_constraint_irs", {})
+                    )
+                    if entries:
+                        schema["constraints"] = entries
+                    schema["rand_layers"] = layers_schema_entries(codec)
                 encoding = {
                     "kind": kind,
                     "binary_format_version": BINARY_FORMAT_VERSION,
@@ -287,17 +354,24 @@ def _descriptors(codec_or_type: Any, active: set[type[Any]]) -> tuple[dict[str, 
         return {**ref, "strict_set": codec.strict_set}, ref
     if isinstance(codec, SvObject):
         return _descriptors(codec.__class__, active)
-    if isinstance(codec, LogicBits):
+    if isinstance(codec, Logic):
         common = {
             "kind": "bits",
             "planes": ["value", "x", "z"],
             "shape": list(codec.shape) if codec.shape is not None else None,
-            "signed": False,
+            "signed": codec.signed,
             "state_domain": "4state",
             "type_name": unified_type_name(codec),
             "width": codec.width,
         }
-    elif isinstance(codec, Bits):
+        schema = {
+            **common,
+            "policies": _policies(codec),
+            "sv_declaration_style": codec.sv_declaration_style,
+        }
+        encoding = {**common, "binary_format_version": BINARY_FORMAT_VERSION}
+        return schema, encoding
+    elif isinstance(codec, Bit):
         common = {
             "kind": "bits",
             "shape": list(codec.shape) if codec.shape is not None else None,
@@ -329,7 +403,7 @@ def _descriptors(codec_or_type: Any, active: set[type[Any]]) -> tuple[dict[str, 
             "state_domain": codec.state_domain,
             "width": codec.width,
         }
-    elif isinstance(codec, _Array):
+    elif isinstance(codec, Array):
         elem_schema, elem_encoding = _descriptors(codec._elem_template, active)
         common = {"kind": "array", "size": codec._size, "type_name": unified_type_name(codec)}
         schema = {**common, "element": elem_schema, "policies": _policies(codec)}
@@ -420,7 +494,7 @@ def checked_unpack(
         )
     if received.unified_type_name != expected.unified_type_name:
         raise CompatibilityError(
-            "SvTypes canonical type mismatch: "
+            "SvTypes unified type mismatch: "
             f"expected {expected.unified_type_name}, got {received.unified_type_name}"
         )
     if received.encoding_fingerprint != expected.encoding_fingerprint:

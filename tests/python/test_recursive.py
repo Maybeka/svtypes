@@ -1,9 +1,9 @@
-from svtypes import SvObject, SvStruct, Queue, Int, Bits, svobj
+from svtypes import SvObject, SvStruct, Queue, Int, Bit, svobj
 
 @svobj
 class MyPacket(SvStruct):
     id = Int()
-    data = Bits(16)
+    data = Bit(16)
 
 @svobj
 class PacketManager(SvObject):

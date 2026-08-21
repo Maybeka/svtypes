@@ -7,7 +7,7 @@ from .errors import DeclarationError
 from .limits import DEFAULT_MAX_PACKED_BITS
 
 
-class Bits(BuiltInType):
+class Bit(BuiltInType):
     _default_rand = True
     _default_plusarg = True
     Hex = 'h'
@@ -32,16 +32,16 @@ class Bits(BuiltInType):
 
         if isinstance(width, tuple):
             if not width:
-                raise ValueError("Bits shape cannot be empty")
+                raise ValueError("Bit shape cannot be empty")
             if any(not isinstance(size, int) or isinstance(size, bool) for size in width):
-                raise TypeError("Every Bits shape dimension must be an integer")
+                raise TypeError("Every Bit shape dimension must be an integer")
             if any(size <= 0 for size in width):
-                raise ValueError("Every Bits shape dimension must be positive")
+                raise ValueError("Every Bit shape dimension must be positive")
             self._shape = None if len(width) == 1 else tuple(width)
             self._width = prod(width)
         else:
             if not isinstance(width, int) or isinstance(width, bool):
-                raise TypeError("Bits width must be an integer or a tuple of integers")
+                raise TypeError("Bit width must be an integer or a tuple of integers")
             if width <= 0:
                 raise ValueError(f'The width of a bit vector must be positive, while {width} provided.')
             self._shape = None
@@ -49,7 +49,7 @@ class Bits(BuiltInType):
 
         if self._width > DEFAULT_MAX_PACKED_BITS:
             raise DeclarationError(
-                f"Bits width {self._width} exceeds declaration limit {DEFAULT_MAX_PACKED_BITS}"
+                f"Bit width {self._width} exceeds declaration limit {DEFAULT_MAX_PACKED_BITS}"
             )
 
         self._signed = bool(signed)
@@ -114,10 +114,10 @@ class Bits(BuiltInType):
         return 1 << self.width
 
     def _normalize(self, value: int):
-        if isinstance(value, Bits):
+        if isinstance(value, Bit):
             value = value.value
         if not isinstance(value, int):
-             raise TypeError(f"Expected int or Bits, got {type(value)}")
+             raise TypeError(f"Expected int or Bit, got {type(value)}")
 
         # 1. 模拟硬件截断 (无论输入多大，只看目标位宽)
         truncated = value & self._width_mask
@@ -131,7 +131,7 @@ class Bits(BuiltInType):
             else:
                 return truncated
 
-    def __call__(self, data: Bits | int):
+    def __call__(self, data: Bit | int):
         self.value = data
         return self
 
@@ -165,13 +165,13 @@ class Bits(BuiltInType):
     # def __getitem__(self, index):
     #     if not isinstance(index, slice):
     #         raise TypeError(f'bit range must be of tyep "slice", but got "{type(index)}"')
-    #     return Bits(index.stop - index.start + 1)
+    #     return Bit(index.stop - index.start + 1)
 
 
     @staticmethod
-    def _gen_sv_repr(value: int | Bits, width=0, radix=Hex) -> str:
-        if isinstance(value, Bits):
-            return Bits._gen_sv_repr(value.value, value.width, value.radix)
+    def _gen_sv_repr(value: int | Bit, width=0, radix=Hex) -> str:
+        if isinstance(value, Bit):
+            return Bit._gen_sv_repr(value.value, value.width, value.radix)
         else:
             type_str = f'{width}\'{radix}'
             if radix == 'h':
@@ -186,7 +186,7 @@ class Bits(BuiltInType):
                 raise ValueError(f'Illegal radix "{radix}", while it must be in ["h", "d", "o", "b"]')
 
     def sv_repr(self):
-        return Bits._gen_sv_repr(self)
+        return Bit._gen_sv_repr(self)
 
     def sv_decl(self, name: str):
         ranges = (
@@ -208,7 +208,7 @@ class Bits(BuiltInType):
                 t = "int64_t" if self.signed else "uint64_t"
         else:
             signed = "true" if self.signed else "false"
-            t = f"svtypes::BitsValue<{self.width}, {signed}>"
+            t = f"svtypes::BitValue<{self.width}, {signed}>"
         return f"{t} {name}"
 
     def _legacy_cpp_decl(self, name: str):
@@ -231,7 +231,7 @@ class Bits(BuiltInType):
         if self._init_value is None:
             return f'{ind_str}{sv_decl};'
         else:
-            return f'{ind_str}{sv_decl} = {Bits._gen_sv_repr(self._init_value, self.width, self.radix)};'
+            return f'{ind_str}{sv_decl} = {Bit._gen_sv_repr(self._init_value, self.width, self.radix)};'
 
     def to_cpp_code(self, level=0, name: str | None = None) -> str:
         name = name or self._attr_name
@@ -240,6 +240,6 @@ class Bits(BuiltInType):
 
 
 if __name__ == '__main__':
-    bit = Bits(1)
+    bit = Bit(1)
     bit.value = 1
     print(bit)

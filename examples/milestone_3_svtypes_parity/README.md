@@ -24,7 +24,7 @@ the SVX/SystemVerilog target integration boundary.
 
 The transaction covers:
 
-- `Bits(width)`
+- `Bit(width)`
 - `Int`
 - `LongInt`
 - `String`

@@ -1,4 +1,4 @@
-"""Canonical four-state packed values."""
+"""Four-state packed values and their SystemVerilog declaration forms."""
 
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ class LogicValue:
         return "".join(digits)
 
 
-class LogicBits(BuiltInType):
+class Logic(BuiltInType):
     """Packed SystemVerilog logic preserving 0, 1, X, and Z."""
 
     _default_rand = True
@@ -74,28 +74,37 @@ class LogicBits(BuiltInType):
         self,
         width: int | tuple[int, ...] = 1,
         value: LogicValue | str | int | None = None,
+        signed: bool = False,
+        *,
+        _sv_declaration_style: str = "logic",
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
+        if not isinstance(signed, bool):
+            raise TypeError("Logic signed must be a bool")
+        if _sv_declaration_style not in {"logic", "reg"}:
+            raise ValueError("Logic declaration style must be 'logic' or 'reg'")
+        self._signed = signed
+        self._sv_declaration_style = _sv_declaration_style
         if isinstance(width, tuple):
             if not width:
-                raise ValueError("LogicBits shape cannot be empty")
+                raise ValueError("Logic shape cannot be empty")
             if any(not isinstance(size, int) or isinstance(size, bool) for size in width):
-                raise TypeError("Every LogicBits shape dimension must be an integer")
+                raise TypeError("Every Logic shape dimension must be an integer")
             if any(size <= 0 for size in width):
-                raise ValueError("Every LogicBits shape dimension must be positive")
+                raise ValueError("Every Logic shape dimension must be positive")
             self._shape = None if len(width) == 1 else tuple(width)
             self._width = prod(width)
         else:
             if not isinstance(width, int) or isinstance(width, bool):
-                raise TypeError("LogicBits width must be an integer or tuple of integers")
+                raise TypeError("Logic width must be an integer or tuple of integers")
             if width <= 0:
-                raise ValueError("LogicBits width must be positive")
+                raise ValueError("Logic width must be positive")
             self._shape = None
             self._width = width
         if self._width > DEFAULT_MAX_PACKED_BITS:
             raise DeclarationError(
-                f"LogicBits width {self._width} exceeds declaration limit {DEFAULT_MAX_PACKED_BITS}"
+                f"Logic width {self._width} exceeds declaration limit {DEFAULT_MAX_PACKED_BITS}"
             )
         self._value = self._normalize(0 if value is None else value)
 
@@ -112,8 +121,17 @@ class LogicBits(BuiltInType):
         return (self.width + 7) // 8
 
     @property
+    def signed(self) -> bool:
+        return self._signed
+
+    @property
     def state_domain(self) -> str:
         return "4state"
+
+    @property
+    def sv_declaration_style(self) -> str:
+        """The emitted SystemVerilog declaration keyword (``logic`` or ``reg``)."""
+        return self._sv_declaration_style
 
     def _normalize(self, value: LogicValue | str | int) -> LogicValue:
         if isinstance(value, int):
@@ -136,7 +154,7 @@ class LogicBits(BuiltInType):
     def unpack(self, bytes_: bytes) -> tuple[LogicValue, int]:
         required = self.byte_num * 3
         if len(bytes_) < required:
-            raise ValueError(f"Not enough bytes to unpack LogicBits: need {required}, got {len(bytes_)}")
+            raise ValueError(f"Not enough bytes to unpack Logic: need {required}, got {len(bytes_)}")
         planes = [
             int.from_bytes(bytes_[offset:offset + self.byte_num], "little")
             for offset in (0, self.byte_num, self.byte_num * 2)
@@ -149,13 +167,41 @@ class LogicBits(BuiltInType):
             if self.shape is not None
             else f" [{self.width - 1}:0]"
         )
-        return f"logic{ranges} {name}"
+        return f"{self.sv_declaration_style}{' signed' if self.signed else ''}{ranges} {name}"
 
     def cpp_decl(self, name: str) -> str:
-        return f"svtypes::LogicBitsValue<{self.width}> {name}"
+        signed = "true" if self.signed else "false"
+        return f"svtypes::LogicValue<{self.width}, {signed}> {name}"
 
     def to_sv_code(self, level: int = 0, name: str | None = None) -> str:
         return f"{self.IND * level}{self.sv_decl(name or self._attr_name)};"
 
     def to_cpp_code(self, level: int = 0, name: str | None = None) -> str:
         return f"{self.IND * level}{self.cpp_decl(name or self._attr_name)};"
+
+
+class _RegMeta(type):
+    """Virtual type facade for the legacy ``reg`` declaration form."""
+
+    def __call__(cls, *args: Any, **kwargs: Any) -> Logic:
+        if "_sv_declaration_style" in kwargs:
+            raise TypeError("Reg does not accept a declaration-style override")
+        return Logic(*args, _sv_declaration_style="reg", **kwargs)
+
+    def __instancecheck__(cls, instance: Any) -> bool:
+        return isinstance(instance, Logic)
+
+    def __subclasscheck__(cls, subclass: type) -> bool:
+        return issubclass(subclass, Logic)
+
+
+class Reg(metaclass=_RegMeta):
+    """Create a :class:`Logic` value emitted as SystemVerilog ``reg``.
+
+    ``Reg`` and ``Logic`` have one Python runtime data type and one binary
+    representation.  Their only difference is the source declaration spelling.
+    Therefore ``type(Reg(...)) is type(Logic(...))`` and either value satisfies
+    ``isinstance(value, Reg)``.
+    """
+
+    pass

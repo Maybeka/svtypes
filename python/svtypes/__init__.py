@@ -1,9 +1,9 @@
 from .base import FieldOptions, TypeBase, BuiltInType, UserDefinedType
 
-from .bits import Bits
-from .logic import LogicBits, LogicValue
+from .bit import Bit
+from .logic import Logic, LogicValue, Reg
 from .int import Int, LongInt
-from .parameter import Parameter
+from .parameter import ParamRef, Parameter
 from .real import Real, ShortReal, RealTime
 from .string import String
 from .collection import Array, DynArray, Queue, AssocArray
@@ -37,14 +37,31 @@ from .object import (
 from .enum import Enum
 from .errors import (
     CompatibilityError,
+    ConstraintBackendError,
+    ConstraintError,
+    ConstraintNameError,
+    ConstraintSyntaxError,
+    ConstraintTypeError,
+    ConstraintUnsupportedError,
     DeclarationError,
     DecodeError,
     EncodeError,
+    LayeredRandomizationPriorityWarning,
     RegistryError,
     ResourceLimitError,
     SvTypesError,
     UnsupportedTypeError,
 )
+from .constraint import (
+    CONSTRAINT_IR_VERSION,
+    LayeredRandomizeStatus,
+    RandomContext,
+    RandomizeStatus,
+    constraint,
+    rand_layer,
+    set_layered_randomization_reference_policy,
+)
+from .randomizable import is_randomizable
 
 from .scope import Scope, Package, Namespace, get_package
 from .schema import (
@@ -64,12 +81,7 @@ from .generator import GenerationResult, generate
 from pathlib import Path
 import sysconfig
 
-try:
-    from importlib.metadata import version as _distribution_version
-
-    __version__ = _distribution_version("svtypes")
-except Exception:  # pragma: no cover - source trees without package metadata
-    __version__ = "1.0.0"
+__version__ = "1.2.0"
 
 
 def package_root() -> Path:

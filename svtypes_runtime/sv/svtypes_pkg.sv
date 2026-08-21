@@ -39,7 +39,7 @@ package svtypes_pkg;
              expected.binary_format_version, received.binary_format_version);
     end
     if (expected.unified_type_name != received.unified_type_name) begin
-      $fatal(2, "SvTypes canonical type mismatch: expected %s got %s",
+      $fatal(2, "SvTypes unified type mismatch: expected %s got %s",
              expected.unified_type_name, received.unified_type_name);
     end
     if (expected.encoding_fingerprint != received.encoding_fingerprint) begin
@@ -64,6 +64,8 @@ package svtypes_pkg;
       provided = '{
         "svtypes.checked-encoding-descriptor.v1",
         "svtypes.codec-context.v1",
+        "svtypes.constraint-ir.v1",
+        "svtypes.constraint-sample.v1",
         "svtypes.record-schema.v1",
         "svtypes.remote-reference.v1"
       };
@@ -568,7 +570,7 @@ package svtypes_pkg;
     return value;
   endfunction
 
-  class bits_packer #(type T = bit);
+  class bit_packer #(type T = bit);
     localparam int WIDTH = $bits(T);
     localparam int BYTE_COUNT = (WIDTH + 7) / 8;
     localparam int STORAGE_WIDTH = BYTE_COUNT * 8;
@@ -601,7 +603,7 @@ package svtypes_pkg;
     endfunction
   endclass
 
-  class logic_bits_packer #(type T = logic);
+  class logic_packer #(type T = logic);
     static function void pack(input T value, ref byte unsigned bytes[$]);
       logic [$bits(T)-1:0] flat_value;
       byte unsigned value_bytes[$];
@@ -648,7 +650,7 @@ package svtypes_pkg;
   class fixed_array_packer #(
     type T = int,
     int SIZE = 1,
-    type ELEM_PACKER = bits_packer#(int)
+    type ELEM_PACKER = bit_packer#(int)
   );
     static function void pack(input T value[SIZE], ref byte unsigned bytes[$]);
       foreach (value[i]) begin
@@ -665,7 +667,7 @@ package svtypes_pkg;
 
   class dyn_array_packer #(
     type T = int,
-    type ELEM_PACKER = bits_packer#(int)
+    type ELEM_PACKER = bit_packer#(int)
   );
     static function void pack(ref T value[], ref byte unsigned bytes[$]);
       pack_length(value.size(), bytes);
@@ -685,7 +687,7 @@ package svtypes_pkg;
 
   class queue_packer #(
     type T = int,
-    type ELEM_PACKER = bits_packer#(int)
+    type ELEM_PACKER = bit_packer#(int)
   );
     static function void pack(ref T value[$], ref byte unsigned bytes[$]);
       pack_length(value.size(), bytes);
@@ -708,8 +710,8 @@ package svtypes_pkg;
   class assoc_array_packer #(
     type K = int,
     type V = int,
-    type KEY_PACKER = bits_packer#(int),
-    type VALUE_PACKER = bits_packer#(int)
+    type KEY_PACKER = bit_packer#(int),
+    type VALUE_PACKER = bit_packer#(int)
   );
     static function bit encoded_key_less(input K lhs, input K rhs);
       byte unsigned lhs_bytes[$];
@@ -839,21 +841,21 @@ package svtypes_pkg;
 
   class int_packer;
     static function void pack(input int value, ref byte unsigned bytes[$]);
-      bits_packer#(int)::pack(value, bytes);
+      bit_packer#(int)::pack(value, bytes);
     endfunction
 
     static function void unpack(ref int value, ref byte unsigned bytes[$], ref int offset);
-      bits_packer#(int)::unpack(value, bytes, offset);
+      bit_packer#(int)::unpack(value, bytes, offset);
     endfunction
   endclass
 
   class longint_packer;
     static function void pack(input longint value, ref byte unsigned bytes[$]);
-      bits_packer#(longint)::pack(value, bytes);
+      bit_packer#(longint)::pack(value, bytes);
     endfunction
 
     static function void unpack(ref longint value, ref byte unsigned bytes[$], ref int offset);
-      bits_packer#(longint)::unpack(value, bytes, offset);
+      bit_packer#(longint)::unpack(value, bytes, offset);
     endfunction
   endclass
 

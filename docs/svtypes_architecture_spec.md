@@ -45,8 +45,8 @@ class OpEnum(Enum, width=8, signed=False):
 
 @svobj
 class MyTransaction(SvObject):
-    addr = Bits(32)
-    data = Bits(64)
+    addr = Bit(32)
+    data = Bit(64)
     op   = OpEnum(OpEnum.READ)
 ```
 
@@ -76,7 +76,7 @@ And gets, for free:
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                  USER API LAYER                           │
-│  Public Python API: @svobj, Int(), Bits(), Package, etc. │
+│  Public Python API: @svobj, Int(), Bit(), Package, etc. │
 │  What the verification engineer writes                   │
 ├─────────────────────────────────────────────────────────┤
 │                  CORE MODEL LAYER                         │
@@ -105,7 +105,7 @@ And gets, for free:
                     ┌──────────────────┐
                     │   User writes:   │
                     │ @svobj / Int() / │
-                    │ Bits() / Array() │
+                    │ Bit() / Array() │
                     └────────┬─────────┘
                              │
                     ┌────────▼─────────┐
@@ -186,8 +186,8 @@ TypeBase (abstract)
 │   ├── IntegerType
 │   │   ├── Int          — 32-bit signed   → SV: int       C++: int32_t
 │   │   └── LongInt      — 64-bit signed   → SV: longint   C++: int64_t
-│   ├── Bits(width, signed) — arbitrary width → SV: bit [N-1:0]  C++: uintN_t
-│   ├── LogicBits(width/shape) — four-state packed value with value/X/Z planes
+│   ├── Bit(width, signed) — arbitrary width → SV: bit [N-1:0]  C++: uintN_t
+│   ├── Logic(width/shape) — four-state packed value with value/X/Z planes
 │   ├── RealType
 │   │   ├── Real         — 64-bit float    → SV: real      C++: double
 │   │   └── ShortReal    — 32-bit float    → SV: shortreal C++: float
@@ -255,7 +255,7 @@ Serialization Order:
 | Type | Encoding | Bytes |
 |---|---|---|
 | Int / LongInt / Byte | 2's complement LE | 4 / 8 / 1 |
-| Bits(N) | Unsigned LE, padded to ceil(N/8) | ceil(N/8) |
+| Bit(N) | Unsigned LE, padded to ceil(N/8) | ceil(N/8) |
 | Real / ShortReal | IEEE 754 LE | 8 / 4 |
 | String | 4-byte LE length + UTF-8 bytes | 4 + len |
 | Array(T,N) | N × pack(T) | N × sizeof(T) |
@@ -392,7 +392,7 @@ transport integration such as SVX and are not SvTypes data-model APIs.
 | 1 | Stable scalar, collection, `SvStruct`, `SvObject`, graph, and `RemoteRef` data contracts |
 | 2 | Deterministic Package/Scope registration without factory override |
 | 3 | SystemVerilog and C++20 code generation and runtime libraries |
-| 4 | Codegen compile verification and canonical byte parity |
+| 4 | Codegen compile verification and stable byte parity |
 | 5 | Serialization/schema versioning and compatibility checks |
 | 6 | `rand`, `cov`, `plusarg`, `dump`, and `pack_bytes` generation policies |
 | 7 | Explicit enum width/signedness and multidimensional packed values |
@@ -406,6 +406,6 @@ transport integration such as SVX and are not SvTypes data-model APIs.
 | Public generated C API or DPI imports | Not supported in SvTypes 1.0 |
 | SV interface/modport/clocking generation | Not supported |
 | UVM base classes | Owned by a future UVMX layer, not SvTypes |
-| Constraint solver | Post-1.0 |
+| Constraint solver | 1.1 Python SMT + generated SV `constraint {}` / `layered_randomize()` |
 | VS Code extension | Not planned |
 | Qualified Verilator target | Not supported for 1.0 |

@@ -21,7 +21,7 @@ The project uses the Python module system to define scopes:
 
 ### 2. Type System (`TypeBase`)
 All modeled types inherit from `TypeBase`, which provides the foundation for:
--   **Basic Types**: `Int`, `Bits`, `Real`, `String`, `Enum`, and `Parameter`.
+-   **Basic Types**: `Int`, `Bit`, `Real`, `String`, `Enum`, and `Parameter`.
 -   **Strict Access**: Direct assignment to these types is disabled. Users must use the `.value` property (e.g., `obj.status.value = 1`).
 -   **Codegen**: Every type implements `to_sv_code()` and `to_cpp_code()`.
 
@@ -49,7 +49,10 @@ All types inherit from `TypeBase`, which defines the core interface:
 ### 2. Basic Value Types
 These types wrap standard Python values with hardware-specific constraints:
 - **`Int`**: Models a 32-bit signed integer. Maps to SV `int` and C++ `int32_t`. Serialized as 4-byte little-endian.
-- **`Bits(width)`**: Models a bit-vector of arbitrary width. Maps to SV `bit [width-1:0]` and C++ `uint64_t` (or custom bit-vector). Serialized into the minimum required bytes.
+- **`Bit(width_or_shape, signed=False)`**: Models an arbitrary-width two-state packed value. It maps to SV `bit`; a tuple shape becomes packed dimensions, for example `Bit((2, 8))` becomes `bit [1:0] [7:0]`.
+- **`Logic(width_or_shape, signed=False)`**: Models an arbitrary-width four-state packed value. It maps to SV `logic`, preserves 0/1/X/Z in three byte planes, and is randomized as its SystemVerilog two-state projection.
+- **`Reg(...)`**: Creates the same Python runtime type and byte representation as `Logic(...)`, while emitting the historical SV declaration spelling `reg`. Thus `type(Reg(8)) == type(Logic(8))`, and both values satisfy `isinstance(value, Reg)`.
+- **`Array(element, size)`**: A real fixed-array class. A tuple shape is recursively expanded: `Array(Bit(8), (3, 2))` is represented exactly as `Array(Array(Bit(8), 2), 3)`; outer field options apply only to the outer array.
 - **`Real`**: Models a 64-bit float. Maps to SV `real` and C++ `double`. Serialized as 8-byte IEEE 754.
 - **`String`**: Models a variable-length string. Maps to SV `string` and C++ `std::string`.
 
@@ -76,16 +79,16 @@ Specialized types that behave like constants in SV/C++:
 ### 5. Schema-defined generated records (`RecordSchema`)
 
 Integrations can construct typed records without generating or importing Python
-source code. `RecordSchema` accepts an explicit canonical type name and ordered
+source code. `RecordSchema` accepts an explicit unified type name and ordered
 `RecordField` values, then returns an unregistered `SvObject` class with the
 normal schema, encoding fingerprint, pack/unpack, SV, and C++ generation behavior.
 
 ```python
-from svtypes import Bits, RecordSchema
+from svtypes import Bit, RecordSchema
 
 request_type = RecordSchema(
     "svx.generated.bus.drive.request",
-    [("address", Bits(32)), ("data", Bits(64))],
+    [("address", Bit(32)), ("data", Bit(64))],
     class_name="DriveRequest",
 ).build()
 ```
@@ -111,15 +114,18 @@ record name and ordered fields.
 - **Cloning Mechanism**: `SvObject.__getattribute__` clones class-level `TypeBase` attributes into the instance's `__dict__` on first access, ensuring instance independence.
 - **`ObjectDescriptor`**: Handles nested `SvObject` instances, ensuring they are properly instantiated and linked.
 - **Strict Access**: `SvObject.__setattr__` blocks direct assignment (e.g., `obj.x = 10` is banned), forcing the use of `obj.x.value = 10`.
+- **Constrained random**: `@constraint` declares predicates. `@rand_layer(priority)` groups rand members and constraints, including fixed unpacked-array elements such as `self.words[0]`. `layered_randomize()` solves those groups from high priority to low, with unlisted members in implicit `builtin` (priority 0). Python returns `bool`; generated SV is `virtual function int layered_randomize()`. `randomize()` / `randomize_with()` / `layered_randomize()` cannot be overridden. Users may override `pre_randomize()` / `post_randomize()`.
 
 ---
 
 ## Type Mapping Summary
 
-| Type | Python Base | SV Mapping | C++ Mapping | Width (Bits) |
+| Type | Python Base | SV Mapping | C++ Mapping | Width (Bit) |
 | :--- | :--- | :--- | :--- | :--- |
 | `Int` | `int` | `int` | `int32_t` | 32 |
-| `Bits(w)` | `int` | `bit [w-1:0]` | `uintN_t` | `w` |
+| `Bit(w)` | `int` | `bit [w-1:0]` | `uintN_t` | `w` |
+| `Logic(w)` | `LogicValue` | `logic [w-1:0]` | `LogicValue<w>` | `w` |
+| `Reg(w)` | `LogicValue` | `reg [w-1:0]` | `LogicValue<w>` | `w` |
 | `Real` | `float` | `real` | `double` | 64 |
 | `String` | `str` | `string` | `std::string` | Variable |
 | `Enum(width=..., signed=...)` | `IntEnum` member | explicitly sized `enum` | fixed-width `enum class` | 8/16/32/64 |

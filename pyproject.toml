@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "svtypes"
-version = "1.0.0"
+version = "1.2.0"
 description = "SystemVerilog-like data modeling, serialization, and code generation"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,9 +16,17 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
 ]
 
+[project.optional-dependencies]
+constraint = ["z3-solver"]
+
 [tool.setuptools]
 package-dir = {"" = "python"}
-packages = ["svtypes"]
+
+[tool.setuptools.packages.find]
+where = ["python"]
+
+[tool.setuptools.package-data]
+svtypes = ["py.typed", "*.pyi"]
 
 [tool.setuptools.data-files]
 "svtypes_runtime/sv" = [

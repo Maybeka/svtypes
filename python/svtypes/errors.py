@@ -31,3 +31,31 @@ class RegistryError(SvTypesError, ValueError):
 
 class ResourceLimitError(DecodeError):
     """A decoder resource limit was exceeded."""
+
+
+class ConstraintError(SvTypesError):
+    """A constrained-random declaration or runtime operation is invalid."""
+
+
+class ConstraintSyntaxError(ConstraintError, DeclarationError):
+    """Constraint source is outside the allowed Python subset."""
+
+
+class ConstraintNameError(ConstraintError, DeclarationError):
+    """A constraint symbol cannot be resolved."""
+
+
+class ConstraintTypeError(ConstraintError, DeclarationError):
+    """A constraint expression violates the Typed IR type rules."""
+
+
+class ConstraintUnsupportedError(ConstraintError, DeclarationError):
+    """A constraint construct is outside the first-phase language."""
+
+
+class ConstraintBackendError(ConstraintError):
+    """The selected constraint backend cannot complete a solve."""
+
+
+class LayeredRandomizationPriorityWarning(UserWarning):
+    """A constraint refers to a random variable of lower layered-randomize priority."""

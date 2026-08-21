@@ -14,6 +14,12 @@ class CollectionBase(BuiltInType):
     def sv_unpack_loop(self, name: str, level: int, indent: str) -> list[str]:
         raise NotImplementedError
 
+
+class _ArrayMeta(type):
+    """Metaclass reserved for static constructor typing of :class:`Array`."""
+
+    pass
+
 T = TypeVar("T", bound=TypeBase)
 K = TypeVar("K", bound=TypeBase)
 V = TypeVar("V", bound=TypeBase)
@@ -30,10 +36,56 @@ def _validate_element_template(codec: TypeBase, location: str) -> None:
             )
 
 
-class _Array(CollectionBase, Generic[T]):
-    """Internal implementation class for Fixed-size arrays."""
+class Array(CollectionBase, Generic[T], metaclass=_ArrayMeta):
+    """Fixed-size SystemVerilog array.
+
+    A tuple ``size`` is expanded recursively, so ``Array(T, (3, 2))`` has
+    the same concrete nested representation as ``Array(Array(T, 2), 3)``.
+    Field policies supplied to the tuple form apply to its outermost array,
+    exactly as they do in the explicit nested form.
+    """
     _default_cov = False
-    def __init__(self, elem_type: T, size: int, **kwargs):
+
+    @overload
+    def __new__(cls, elem_type: T, size: int, **kwargs: Any) -> "Array[T]": ...
+
+    @overload
+    def __new__(cls, elem_type: T, size: tuple[int], **kwargs: Any) -> "Array[T]": ...
+
+    @overload
+    def __new__(cls, elem_type: T, size: tuple[int, int], **kwargs: Any) -> "Array[Array[T]]": ...
+
+    @overload
+    def __new__(cls, elem_type: T, size: tuple[int, int, int], **kwargs: Any) -> "Array[Array[Array[T]]]": ...
+
+    @overload
+    def __new__(cls, elem_type: T, size: tuple[int, int, int, int], **kwargs: Any) -> "Array[Array[Array[Array[T]]]]": ...
+
+    @overload
+    def __new__(cls, elem_type: T, size: tuple[int, ...], **kwargs: Any) -> "Array[Any]": ...
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> "Array[Any]":
+        return super().__new__(cls)
+
+    def __init__(self, elem_type: T, size: int | tuple[int, ...], **kwargs: Any):
+        if isinstance(size, tuple):
+            if not size:
+                raise ValueError("Array size tuple cannot be empty")
+            if any(not isinstance(part, int) or isinstance(part, bool) or part <= 0 for part in size):
+                raise DeclarationError("Every Array dimension must be a positive integer")
+            from math import prod
+            if prod(size) > DEFAULT_MAX_DYNAMIC_LENGTH:
+                raise DeclarationError(
+                    f"Array element count {prod(size)} exceeds declaration limit {DEFAULT_MAX_DYNAMIC_LENGTH}"
+                )
+            if len(size) == 1:
+                elem_type, size = elem_type, size[0]
+            else:
+                # Do not propagate outer field policies into nested elements.
+                elem_type, size = Array(elem_type, size[1:]), size[0]
+        elif not isinstance(size, int):
+            raise TypeError("size must be int or tuple of ints")
+
         super().__init__(**kwargs)
         _validate_element_template(elem_type, "Array element template")
         if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
@@ -147,53 +199,6 @@ class _Array(CollectionBase, Generic[T]):
         return [
             f"{indent}svtypes_pkg::fixed_array_packer#({elem_t}, {self._size}, {elem_packer})::unpack({name}, bytes, offset);"
         ]
-
-# --- Overloaded Factory for Static Analysis ---
-
-@overload
-def Array(elem_type: T, size: int) -> _Array[T]: ...
-
-@overload
-def Array(elem_type: T, size: tuple[int]) -> _Array[T]: ...
-
-@overload
-def Array(elem_type: T, size: tuple[int, int]) -> _Array[_Array[T]]: ...
-
-@overload
-def Array(elem_type: T, size: tuple[int, int, int]) -> _Array[_Array[_Array[T]]]: ...
-
-@overload
-def Array(elem_type: T, size: tuple[int, int, int, int]) -> _Array[_Array[_Array[_Array[T]]]]: ...
-
-@overload
-def Array(elem_type: T, size: tuple[int, ...]) -> _Array[Any]: ...
-
-def Array(elem_type: Any, size: int | tuple[int, ...], **kwargs) -> Any:
-    """
-    Factory function for Fixed-size arrays.
-    Supports recursive tuple dimensions for enhanced static analysis.
-    """
-    if isinstance(size, int):
-        return _Array(elem_type, size, **kwargs)
-
-    if isinstance(size, tuple):
-        if not size:
-            raise ValueError("Array size tuple cannot be empty")
-        if any(not isinstance(part, int) or isinstance(part, bool) or part <= 0 for part in size):
-            raise DeclarationError("Every Array dimension must be a positive integer")
-        from math import prod
-        if prod(size) > DEFAULT_MAX_DYNAMIC_LENGTH:
-            raise DeclarationError(
-                f"Array element count {prod(size)} exceeds declaration limit {DEFAULT_MAX_DYNAMIC_LENGTH}"
-            )
-        if len(size) == 1:
-            return _Array(elem_type, size[0], **kwargs)
-
-        # Recursive construction: Array(Int(), (3, 2)) -> Array(Array(Int(), 2), 3)
-        return Array(Array(elem_type, size[1:]), size[0], **kwargs)
-
-    raise TypeError("size must be int or tuple of ints")
-
 
 class DynArray(CollectionBase, Generic[T]):
     """Dynamic array: type name []"""

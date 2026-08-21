@@ -17,6 +17,8 @@ from .schema import (
 STABLE_CAPABILITIES = (
     "svtypes.checked-encoding-descriptor.v1",
     "svtypes.codec-context.v1",
+    "svtypes.constraint-ir.v1",
+    "svtypes.constraint-sample.v1",
     "svtypes.record-schema.v1",
     "svtypes.remote-reference.v1",
 )

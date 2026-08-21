@@ -1,7 +1,7 @@
-from .bits import Bits
+from .bit import Bit
 
-class Int(Bits):
-    def __init__(self, value=0, radix=Bits.Dec, rand=None, plusarg=None, dump=None, cov=None, intelli=None, pack_bytes=True) -> None:
+class Int(Bit):
+    def __init__(self, value=0, radix=Bit.Dec, rand=None, plusarg=None, dump=None, cov=None, intelli=None, pack_bytes=True) -> None:
         super().__init__(
             width=32,
             value=value,
@@ -32,8 +32,8 @@ class Int(Bits):
         return f"{ind_str}{self.cpp_decl(name)};"
 
 
-class LongInt(Bits):
-    def __init__(self, value=0, radix=Bits.Dec, rand=None, plusarg=None, dump=None, cov=None, intelli=None, pack_bytes=True) -> None:
+class LongInt(Bit):
+    def __init__(self, value=0, radix=Bit.Dec, rand=None, plusarg=None, dump=None, cov=None, intelli=None, pack_bytes=True) -> None:
         super().__init__(
             width=64,
             value=value,

@@ -1,13 +1,13 @@
 import subprocess
 from pathlib import Path
 
-from svtypes import SvObject, SvStruct, Int, Bits, Array, DynArray, Queue, AssocArray, String, svobj
+from svtypes import SvObject, SvStruct, Int, Bit, Array, DynArray, Queue, AssocArray, String, svobj
 
 @svobj
 class Pixel(SvStruct):
-    r = Bits(8)
-    g = Bits(8)
-    b = Bits(8)
+    r = Bit(8)
+    g = Bit(8)
+    b = Bit(8)
 
 @svobj
 class Image(SvObject):

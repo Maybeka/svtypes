@@ -226,9 +226,14 @@ class Scope(ObjectRegistry):
         content_ind = self.IND * content_level
         for name, attr in sorted(all_params.items()):
             if isinstance(attr, Parameter):
+                 if attr.is_type_parameter:
+                     lines.append(f"{content_ind}{attr.cpp_decl(name)};")
+                     continue
                  val = attr.value
                  if isinstance(val, str):
                      val = f'"{val}"'
+                 elif isinstance(val, bool):
+                     val = "true" if val else "false"
                  lines.append(f"{content_ind}{attr.cpp_decl(name)} = {val};")
             elif isinstance(attr, TypeBase):
                  lines.append(f"{content_ind}{attr.cpp_decl(name)};")

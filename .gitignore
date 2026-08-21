@@ -4,6 +4,7 @@
 .codex/
 .agents/
 AGENTS.md
+.omo
 
 # OS and editor noise
 .DS_Store
@@ -35,6 +36,7 @@ docs/SVTYPES_1_0_THIRD_REVIEW_IMPLEMENTATION_AUDIT.md
 docs/SVTYPES_MILESTONE_3.md
 docs/SVTYPES_MILESTONE_4.md
 docs/local_milestones.md
+docs/SVTYPES_1_1_CHANGES_REVIEW.md
 
 # Virtual environments
 .venv/

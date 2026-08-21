@@ -1,6 +1,6 @@
 # SvTypes Binary Format
 
-This file defines the canonical byte format used by Python SvTypes,
+This file defines the stable byte format used by Python SvTypes,
 generated SystemVerilog SvTypes, and SVX typed payload channels.
 
 ## General Rules
@@ -14,18 +14,18 @@ generated SystemVerilog SvTypes, and SVX typed payload channels.
 - Base-class fields are serialized before derived-class fields.
 - Fields with `pack_bytes=False` are omitted from the byte stream.
 - Bare scalar, struct, and collection values contain only value bytes. A
-  non-null `SvObject` envelope additionally contains its canonical type name and
+  non-null `SvObject` envelope additionally contains its unified type name and
   encoding fingerprint. Transport-level payload kind remains outside SvTypes.
 
 ## Primitive Types
 
 | Type | Encoding |
 |---|---|
-| `Bits(width, signed=False)` | `(width + 7) // 8` little-endian bytes. Unused high bits in the final byte are zero on pack. |
-| `Bits(width, signed=True)` | Same byte width as unsigned bits. Values are normalized to two's-complement width before packing. |
-| `LogicBits(width_or_shape)` | Three consecutive `(width + 7) // 8` little-endian planes: known value bits, X mask, then Z mask. X and Z masks are disjoint; value bits under X/Z are zero; unused high bits in every plane are zero. |
-| `Int` | 32-bit signed value, same encoding as `Bits(32, signed=True)`. |
-| `LongInt` | 64-bit signed value, same encoding as `Bits(64, signed=True)`. |
+| `Bit(width, signed=False)` | `(width + 7) // 8` little-endian bytes. Unused high bits in the final byte are zero on pack. |
+| `Bit(width, signed=True)` | Same byte width as unsigned bits. Values are normalized to two's-complement width before packing. |
+| `Logic(width_or_shape)` | Three consecutive `(width + 7) // 8` little-endian planes: known value bits, X mask, then Z mask. X and Z masks are disjoint; value bits under X/Z are zero; unused high bits in every plane are zero. |
+| `Int` | 32-bit signed value, same encoding as `Bit(32, signed=True)`. |
+| `LongInt` | 64-bit signed value, same encoding as `Bit(64, signed=True)`. |
 | `Enum(width=8/16/32/64, signed=...)` | Exactly `width / 8` little-endian two's-complement bytes. Width and signedness are mandatory declaration arguments; decoded values not present in the enum are rejected. |
 | `String` | 4-byte byte length followed by UTF-8 bytes on Python. Generated SV strings are byte strings and pack one byte per character. |
 | `Real` | 8 IEEE-754 bytes matching SystemVerilog `$realtobits` / `$bitstoreal`. |
@@ -38,9 +38,9 @@ generated SystemVerilog SvTypes, and SVX typed payload channels.
 | fixed `Array(T, N)` | `N` elements serialized in index order, without a length prefix. |
 | `DynArray(T)` | 4-byte element count followed by elements in index order. |
 | `Queue(T)` | Same as `DynArray(T)`. |
-| `AssocArray(K, V)` | 4-byte entry count followed by key/value pairs sorted lexicographically by each key's canonical encoded bytes. Python, generated SV, and generated C++ use the same ordering; insertion and simulator iteration order do not affect the payload. |
+| `AssocArray(K, V)` | 4-byte entry count followed by key/value pairs sorted lexicographically by each key's stable encoded bytes. Python, generated SV, and generated C++ use the same ordering; insertion and simulator iteration order do not affect the payload. |
 | `SvObject` | 1-byte presence marker. `0` means null and no more object bytes follow. `1` means an object envelope follows. |
-| object envelope | Magic bytes `SVXO`, 2-byte little-endian format version, 2-byte little-endian encoding-field count, 8-byte little-endian object number, canonical type name as a SvTypes `String`, the raw 32-byte SHA-256 encoding fingerprint, then field bytes. The frozen `1.0.0` envelope version is `2`; prototype version `1` is rejected rather than interpreted as version `2`. |
+| object envelope | Magic bytes `SVXO`, 2-byte little-endian format version, 2-byte little-endian encoding-field count, 8-byte little-endian object number, unified type name as a SvTypes `String`, the raw 32-byte SHA-256 encoding fingerprint, then field bytes. The frozen `1.0.0` envelope version is `2`; prototype version `1` is rejected rather than interpreted as version `2`. |
 | nested `SvObject` | Same `SvObject` encoding inline at the field position. |
 | object arrays/queues | Elements are serialized as `SvObject` values in container order, so each element has its own presence marker and envelope when present. |
 | object arrays/queues in generated C++ | SvTypes object elements are represented as object pointers in generated C++ containers so identity is preserved. This applies to both `Queue(GraphNode())`-style object element declarations and explicit `Queue(Object("GraphNode"))` reference declarations. |

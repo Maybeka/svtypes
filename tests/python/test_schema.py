@@ -4,7 +4,7 @@ import pytest
 
 from svtypes import (
     Array,
-    Bits,
+    Bit,
     CompatibilityError,
     Int,
     String,
@@ -20,11 +20,11 @@ from svtypes import (
 
 
 def test_bits_shape_has_distinct_identity_but_flat_encoding_bytes():
-    shaped = Bits((2, 8))
-    flat = Bits(16)
+    shaped = Bit((2, 8))
+    flat = Bit(16)
 
-    assert unified_type_name(shaped) == "svtypes.Bits[shape=(2,8),signed=false,state=2state]"
-    assert unified_type_name(flat) == "svtypes.Bits[width=16,signed=false,state=2state]"
+    assert unified_type_name(shaped) == "svtypes.Bit[shape=(2,8),signed=false,state=2state]"
+    assert unified_type_name(flat) == "svtypes.Bit[width=16,signed=false,state=2state]"
     assert shaped.pack(0x1234) == flat.pack(0x1234)
     assert encoding_descriptor(shaped) != encoding_descriptor(flat)
 
@@ -69,7 +69,7 @@ def test_registered_object_uses_qualified_package_type_id():
 
 
 def test_encoding_descriptor_text_roundtrip_and_immutability():
-    descriptor = encoding_descriptor(Bits((2, 8)))
+    descriptor = encoding_descriptor(Bit((2, 8)))
     restored = EncodingDescriptor.from_dict(descriptor.to_dict())
 
     assert restored == descriptor
@@ -90,7 +90,7 @@ def test_checked_unpack_rejects_before_decoding():
     assert checked_unpack(codec, codec.pack(42), descriptor) == (42, 4)
 
     wrong_type = EncodingDescriptor("svtypes.String[encoding=utf-8]", descriptor.encoding_fingerprint)
-    with pytest.raises(CompatibilityError, match="canonical type mismatch"):
+    with pytest.raises(CompatibilityError, match="unified type mismatch"):
         checked_unpack(codec, b"", wrong_type)
 
     wrong_fingerprint = EncodingDescriptor(descriptor.unified_type_name, bytes(32))

@@ -42,7 +42,7 @@ inline void require_encoding_compatible(
         throw std::runtime_error("SvTypes binary format mismatch");
     }
     if (expected.unified_type_name != received.unified_type_name) {
-        throw std::runtime_error("SvTypes canonical type mismatch");
+        throw std::runtime_error("SvTypes unified type mismatch");
     }
     if (expected.encoding_fingerprint != received.encoding_fingerprint) {
         throw std::runtime_error("SvTypes encoding fingerprint mismatch");
@@ -58,6 +58,8 @@ struct RuntimeCapabilities {
     std::vector<std::string> provided{
         "svtypes.checked-encoding-descriptor.v1",
         "svtypes.codec-context.v1",
+        "svtypes.constraint-ir.v1",
+        "svtypes.constraint-sample.v1",
         "svtypes.record-schema.v1",
         "svtypes.remote-reference.v1",
     };
@@ -92,14 +94,15 @@ struct RemoteRefValue {
     bool operator==(const RemoteRefValue&) const = default;
 };
 
-template <size_t Width>
-struct LogicBitsValue {
+template <size_t Width, bool Signed = false>
+struct LogicValue {
     static constexpr size_t byte_count = (Width + 7) / 8;
+    static constexpr bool is_signed = Signed;
     std::array<uint8_t, byte_count> value{};
     std::array<uint8_t, byte_count> x{};
     std::array<uint8_t, byte_count> z{};
 
-    bool operator==(const LogicBitsValue&) const = default;
+    bool operator==(const LogicValue&) const = default;
 };
 
 inline constexpr uint64_t SVTYPES_OBJECT_NUMBER_ORIGIN = 0x0003000000000000ULL;
@@ -166,25 +169,25 @@ inline bool unregister_object(uint64_t object_number) {
 }
 
 template <size_t Width, bool Signed = false>
-struct BitsValue {
+struct BitValue {
     static constexpr size_t byte_count = (Width + 7) / 8;
     std::array<uint8_t, byte_count> bytes{};
 
-    BitsValue() = default;
+    BitValue() = default;
 
     template <typename T, std::enable_if_t<std::is_integral_v<T>, int> = 0>
-    BitsValue(T value) {
+    BitValue(T value) {
         *this = value;
     }
 
-    BitsValue(std::initializer_list<uint8_t> init) {
+    BitValue(std::initializer_list<uint8_t> init) {
         *this = init;
     }
 
     uint8_t& operator[](size_t index) { return bytes[index]; }
     const uint8_t& operator[](size_t index) const { return bytes[index]; }
 
-    BitsValue& operator=(std::initializer_list<uint8_t> init) {
+    BitValue& operator=(std::initializer_list<uint8_t> init) {
         bytes.fill(0);
         size_t i = 0;
         for (uint8_t value : init) {
@@ -196,7 +199,7 @@ struct BitsValue {
     }
 
     template <typename T, std::enable_if_t<std::is_integral_v<T>, int> = 0>
-    BitsValue& operator=(T value) {
+    BitValue& operator=(T value) {
         using U = std::make_unsigned_t<T>;
         U raw = static_cast<U>(value);
         for (size_t i = 0; i < byte_count; ++i) {
@@ -318,7 +321,7 @@ std::string dump_value(T value) {
 }
 
 template <size_t Width, bool Signed>
-std::string dump_value(const BitsValue<Width, Signed>& value) {
+std::string dump_value(const BitValue<Width, Signed>& value) {
     if constexpr (Signed && Width <= 64) return std::to_string(value.to_int64());
     if constexpr (Width <= 64) return std::to_string(value.to_uint64());
     std::ostringstream stream;
@@ -329,10 +332,10 @@ std::string dump_value(const BitsValue<Width, Signed>& value) {
     return stream.str();
 }
 
-template <size_t Width>
-std::string dump_value(const LogicBitsValue<Width>& value) {
+template <size_t Width, bool Signed>
+std::string dump_value(const LogicValue<Width, Signed>& value) {
     std::ostringstream stream;
-    stream << "LogicBits(value=0x" << std::hex;
+    stream << "Logic(value=0x" << std::hex;
     for (auto it = value.value.rbegin(); it != value.value.rend(); ++it) {
         stream << std::setw(2) << std::setfill('0') << static_cast<unsigned>(*it);
     }
@@ -462,16 +465,16 @@ inline void unpack(RemoteRefValue& value, const std::vector<uint8_t>& buf, size_
     offset += 8;
 }
 
-template <size_t Width>
-void pack(const LogicBitsValue<Width>& value, std::vector<uint8_t>& buf) {
+template <size_t Width, bool Signed>
+void pack(const LogicValue<Width, Signed>& value, std::vector<uint8_t>& buf) {
     buf.insert(buf.end(), value.value.begin(), value.value.end());
     buf.insert(buf.end(), value.x.begin(), value.x.end());
     buf.insert(buf.end(), value.z.begin(), value.z.end());
 }
 
-template <size_t Width>
-void unpack(LogicBitsValue<Width>& value, const std::vector<uint8_t>& buf, size_t& offset) {
-    constexpr size_t count = LogicBitsValue<Width>::byte_count;
+template <size_t Width, bool Signed>
+void unpack(LogicValue<Width, Signed>& value, const std::vector<uint8_t>& buf, size_t& offset) {
+    constexpr size_t count = LogicValue<Width, Signed>::byte_count;
     require_available(buf, offset, count * 3);
     std::copy_n(buf.begin() + static_cast<std::ptrdiff_t>(offset), count, value.value.begin());
     offset += count;
@@ -759,15 +762,15 @@ void unpack(T*& v, const std::vector<uint8_t>& b, size_t& o) {
 
 // Fixed Array (std::array)
 template <size_t Width, bool Signed>
-void pack(const BitsValue<Width, Signed>& v, std::vector<uint8_t>& b) {
+void pack(const BitValue<Width, Signed>& v, std::vector<uint8_t>& b) {
     b.insert(b.end(), v.bytes.begin(), v.bytes.end());
 }
 
 template <size_t Width, bool Signed>
-void unpack(BitsValue<Width, Signed>& v, const std::vector<uint8_t>& b, size_t& o) {
-    require_available(b, o, BitsValue<Width, Signed>::byte_count);
-    std::copy_n(b.begin() + static_cast<std::ptrdiff_t>(o), BitsValue<Width, Signed>::byte_count, v.bytes.begin());
-    o += BitsValue<Width, Signed>::byte_count;
+void unpack(BitValue<Width, Signed>& v, const std::vector<uint8_t>& b, size_t& o) {
+    require_available(b, o, BitValue<Width, Signed>::byte_count);
+    std::copy_n(b.begin() + static_cast<std::ptrdiff_t>(o), BitValue<Width, Signed>::byte_count, v.bytes.begin());
+    o += BitValue<Width, Signed>::byte_count;
 }
 
 template <typename T, size_t N>

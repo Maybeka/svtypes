@@ -1,6 +1,6 @@
 """Public construction API for generated, schema-defined data classes.
 
-This module deliberately accepts a complete canonical type name from its caller.
+This module deliberately accepts a complete unified type name from its caller.
 Callable naming and invocation semantics remain transport concerns; an
 integration such as SVX supplies the resulting identity after applying its own
 approved manifest rules.

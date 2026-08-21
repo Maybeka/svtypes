@@ -21,7 +21,7 @@ class Inner extends svtypes_pkg::sv_object;
     svtypes_pkg::register_object(this);
     svtypes_pkg::pack_object_header("Inner", 2, __svtypes_object_number, bytes);
     svtypes_pkg::int_packer::pack(a, bytes);
-    svtypes_pkg::bits_packer#(bit [7:0])::pack(b, bytes);
+    svtypes_pkg::bit_packer#(bit [7:0])::pack(b, bytes);
   endfunction
 
   virtual function void unpack(ref byte unsigned bytes[$], ref int offset);
@@ -44,7 +44,7 @@ class Inner extends svtypes_pkg::sv_object;
     __svtypes_object_number = incoming_svtypes_object_number;
     svtypes_pkg::register_object(this);
     svtypes_pkg::int_packer::unpack(a, bytes, offset);
-    svtypes_pkg::bits_packer#(bit [7:0])::unpack(b, bytes, offset);
+    svtypes_pkg::bit_packer#(bit [7:0])::unpack(b, bytes, offset);
   endfunction
 endclass
 
@@ -114,9 +114,9 @@ class M3Tx extends BaseTx;
     svtypes_pkg::int_packer::pack(id, bytes);
     svtypes_pkg::fixed_array_packer#(int, 2, svtypes_pkg::int_packer)::pack(data, bytes);
     svtypes_pkg::string_packer::pack(label, bytes);
-    svtypes_pkg::bits_packer#(bit [15:0])::pack(addr, bytes);
+    svtypes_pkg::bit_packer#(bit [15:0])::pack(addr, bytes);
     svtypes_pkg::longint_packer::pack(serial, bytes);
-    svtypes_pkg::bits_packer#(Color)::pack(color, bytes);
+    svtypes_pkg::bit_packer#(Color)::pack(color, bytes);
     svtypes_pkg::real_packer::pack(ratio, bytes);
     svtypes_pkg::shortreal_packer::pack(temp, bytes);
     svtypes_pkg::dyn_array_packer#(int, svtypes_pkg::int_packer)::pack(dyn, bytes);
@@ -146,9 +146,9 @@ class M3Tx extends BaseTx;
     svtypes_pkg::int_packer::unpack(id, bytes, offset);
     svtypes_pkg::fixed_array_packer#(int, 2, svtypes_pkg::int_packer)::unpack(data, bytes, offset);
     svtypes_pkg::string_packer::unpack(label, bytes, offset);
-    svtypes_pkg::bits_packer#(bit [15:0])::unpack(addr, bytes, offset);
+    svtypes_pkg::bit_packer#(bit [15:0])::unpack(addr, bytes, offset);
     svtypes_pkg::longint_packer::unpack(serial, bytes, offset);
-    svtypes_pkg::bits_packer#(Color)::unpack(color, bytes, offset);
+    svtypes_pkg::bit_packer#(Color)::unpack(color, bytes, offset);
     svtypes_pkg::real_packer::unpack(ratio, bytes, offset);
     svtypes_pkg::shortreal_packer::unpack(temp, bytes, offset);
     svtypes_pkg::dyn_array_packer#(int, svtypes_pkg::int_packer)::unpack(dyn, bytes, offset);
@@ -178,8 +178,8 @@ class LargeMixedTx extends svtypes_pkg::sv_object;
     svtypes_pkg::fixed_array_packer#(int, 4, svtypes_pkg::int_packer)::pack(header, bytes);
     svtypes_pkg::dyn_array_packer#(int, svtypes_pkg::int_packer)::pack(payload, bytes);
     svtypes_pkg::queue_packer#(int, svtypes_pkg::int_packer)::pack(samples, bytes);
-    svtypes_pkg::dyn_array_packer#(bit [15:0], svtypes_pkg::bits_packer#(bit [15:0]))::pack(flags, bytes);
-    svtypes_pkg::bits_packer#(bit [63:0])::pack(marker, bytes);
+    svtypes_pkg::dyn_array_packer#(bit [15:0], svtypes_pkg::bit_packer#(bit [15:0]))::pack(flags, bytes);
+    svtypes_pkg::bit_packer#(bit [63:0])::pack(marker, bytes);
   endfunction
 
   virtual function void unpack(ref byte unsigned bytes[$], ref int offset);
@@ -205,8 +205,8 @@ class LargeMixedTx extends svtypes_pkg::sv_object;
     svtypes_pkg::fixed_array_packer#(int, 4, svtypes_pkg::int_packer)::unpack(header, bytes, offset);
     svtypes_pkg::dyn_array_packer#(int, svtypes_pkg::int_packer)::unpack(payload, bytes, offset);
     svtypes_pkg::queue_packer#(int, svtypes_pkg::int_packer)::unpack(samples, bytes, offset);
-    svtypes_pkg::dyn_array_packer#(bit [15:0], svtypes_pkg::bits_packer#(bit [15:0]))::unpack(flags, bytes, offset);
-    svtypes_pkg::bits_packer#(bit [63:0])::unpack(marker, bytes, offset);
+    svtypes_pkg::dyn_array_packer#(bit [15:0], svtypes_pkg::bit_packer#(bit [15:0]))::unpack(flags, bytes, offset);
+    svtypes_pkg::bit_packer#(bit [63:0])::unpack(marker, bytes, offset);
   endfunction
 endclass
 
@@ -244,27 +244,27 @@ class ManyTypesTx extends svtypes_pkg::sv_object;
     ensure_svtypes_object_number();
     svtypes_pkg::register_object(this);
     svtypes_pkg::pack_object_header("ManyTypesTx", 23, __svtypes_object_number, bytes);
-    svtypes_pkg::bits_packer#(bit [0:0])::pack(u1, bytes);
-    svtypes_pkg::bits_packer#(bit [6:0])::pack(u7, bytes);
-    svtypes_pkg::bits_packer#(bit [8:0])::pack(u9, bytes);
-    svtypes_pkg::bits_packer#(bit [32:0])::pack(u33, bytes);
-    svtypes_pkg::bits_packer#(bit [64:0])::pack(u65, bytes);
-    svtypes_pkg::bits_packer#(bit signed [4:0])::pack(s5, bytes);
-    svtypes_pkg::bits_packer#(bit signed [11:0])::pack(s12, bytes);
+    svtypes_pkg::bit_packer#(bit [0:0])::pack(u1, bytes);
+    svtypes_pkg::bit_packer#(bit [6:0])::pack(u7, bytes);
+    svtypes_pkg::bit_packer#(bit [8:0])::pack(u9, bytes);
+    svtypes_pkg::bit_packer#(bit [32:0])::pack(u33, bytes);
+    svtypes_pkg::bit_packer#(bit [64:0])::pack(u65, bytes);
+    svtypes_pkg::bit_packer#(bit signed [4:0])::pack(s5, bytes);
+    svtypes_pkg::bit_packer#(bit signed [11:0])::pack(s12, bytes);
     svtypes_pkg::int_packer::pack(i32, bytes);
     svtypes_pkg::longint_packer::pack(i64, bytes);
-    svtypes_pkg::bits_packer#(Color)::pack(color, bytes);
+    svtypes_pkg::bit_packer#(Color)::pack(color, bytes);
     svtypes_pkg::string_packer::pack(text, bytes);
     svtypes_pkg::real_packer::pack(fp64, bytes);
     svtypes_pkg::shortreal_packer::pack(fp32, bytes);
-    svtypes_pkg::fixed_array_packer#(bit [2:0], 4, svtypes_pkg::bits_packer#(bit [2:0]))::pack(fixed_bits, bytes);
-    svtypes_pkg::fixed_array_packer#(bit signed [5:0], 3, svtypes_pkg::bits_packer#(bit signed [5:0]))::pack(fixed_signed, bytes);
+    svtypes_pkg::fixed_array_packer#(bit [2:0], 4, svtypes_pkg::bit_packer#(bit [2:0]))::pack(fixed_bits, bytes);
+    svtypes_pkg::fixed_array_packer#(bit signed [5:0], 3, svtypes_pkg::bit_packer#(bit signed [5:0]))::pack(fixed_signed, bytes);
     foreach (matrix[i]) begin
       svtypes_pkg::fixed_array_packer#(int, 2, svtypes_pkg::int_packer)::pack(matrix[i], bytes);
     end
-    svtypes_pkg::dyn_array_packer#(bit [9:0], svtypes_pkg::bits_packer#(bit [9:0]))::pack(dyn_bits, bytes);
-    svtypes_pkg::dyn_array_packer#(bit signed [8:0], svtypes_pkg::bits_packer#(bit signed [8:0]))::pack(dyn_signed, bytes);
-    svtypes_pkg::queue_packer#(Color, svtypes_pkg::bits_packer#(Color))::pack(q_colors, bytes);
+    svtypes_pkg::dyn_array_packer#(bit [9:0], svtypes_pkg::bit_packer#(bit [9:0]))::pack(dyn_bits, bytes);
+    svtypes_pkg::dyn_array_packer#(bit signed [8:0], svtypes_pkg::bit_packer#(bit signed [8:0]))::pack(dyn_signed, bytes);
+    svtypes_pkg::queue_packer#(Color, svtypes_pkg::bit_packer#(Color))::pack(q_colors, bytes);
     svtypes_pkg::assoc_array_packer#(string, int, svtypes_pkg::string_packer, svtypes_pkg::int_packer)::pack(assoc, bytes);
     svtypes_pkg::queue_packer#(Inner, svtypes_pkg::object_packer#(Inner))::pack(q_inner, bytes);
     svtypes_pkg::fixed_array_packer#(Inner, 2, svtypes_pkg::object_packer#(Inner))::pack(inner_arr, bytes);
@@ -290,27 +290,27 @@ class ManyTypesTx extends svtypes_pkg::sv_object;
     svtypes_pkg::unpack_object_header("ManyTypesTx", 23, incoming_svtypes_object_number, bytes, offset);
     __svtypes_object_number = incoming_svtypes_object_number;
     svtypes_pkg::register_object(this);
-    svtypes_pkg::bits_packer#(bit [0:0])::unpack(u1, bytes, offset);
-    svtypes_pkg::bits_packer#(bit [6:0])::unpack(u7, bytes, offset);
-    svtypes_pkg::bits_packer#(bit [8:0])::unpack(u9, bytes, offset);
-    svtypes_pkg::bits_packer#(bit [32:0])::unpack(u33, bytes, offset);
-    svtypes_pkg::bits_packer#(bit [64:0])::unpack(u65, bytes, offset);
-    svtypes_pkg::bits_packer#(bit signed [4:0])::unpack(s5, bytes, offset);
-    svtypes_pkg::bits_packer#(bit signed [11:0])::unpack(s12, bytes, offset);
+    svtypes_pkg::bit_packer#(bit [0:0])::unpack(u1, bytes, offset);
+    svtypes_pkg::bit_packer#(bit [6:0])::unpack(u7, bytes, offset);
+    svtypes_pkg::bit_packer#(bit [8:0])::unpack(u9, bytes, offset);
+    svtypes_pkg::bit_packer#(bit [32:0])::unpack(u33, bytes, offset);
+    svtypes_pkg::bit_packer#(bit [64:0])::unpack(u65, bytes, offset);
+    svtypes_pkg::bit_packer#(bit signed [4:0])::unpack(s5, bytes, offset);
+    svtypes_pkg::bit_packer#(bit signed [11:0])::unpack(s12, bytes, offset);
     svtypes_pkg::int_packer::unpack(i32, bytes, offset);
     svtypes_pkg::longint_packer::unpack(i64, bytes, offset);
-    svtypes_pkg::bits_packer#(Color)::unpack(color, bytes, offset);
+    svtypes_pkg::bit_packer#(Color)::unpack(color, bytes, offset);
     svtypes_pkg::string_packer::unpack(text, bytes, offset);
     svtypes_pkg::real_packer::unpack(fp64, bytes, offset);
     svtypes_pkg::shortreal_packer::unpack(fp32, bytes, offset);
-    svtypes_pkg::fixed_array_packer#(bit [2:0], 4, svtypes_pkg::bits_packer#(bit [2:0]))::unpack(fixed_bits, bytes, offset);
-    svtypes_pkg::fixed_array_packer#(bit signed [5:0], 3, svtypes_pkg::bits_packer#(bit signed [5:0]))::unpack(fixed_signed, bytes, offset);
+    svtypes_pkg::fixed_array_packer#(bit [2:0], 4, svtypes_pkg::bit_packer#(bit [2:0]))::unpack(fixed_bits, bytes, offset);
+    svtypes_pkg::fixed_array_packer#(bit signed [5:0], 3, svtypes_pkg::bit_packer#(bit signed [5:0]))::unpack(fixed_signed, bytes, offset);
     foreach (matrix[i]) begin
       svtypes_pkg::fixed_array_packer#(int, 2, svtypes_pkg::int_packer)::unpack(matrix[i], bytes, offset);
     end
-    svtypes_pkg::dyn_array_packer#(bit [9:0], svtypes_pkg::bits_packer#(bit [9:0]))::unpack(dyn_bits, bytes, offset);
-    svtypes_pkg::dyn_array_packer#(bit signed [8:0], svtypes_pkg::bits_packer#(bit signed [8:0]))::unpack(dyn_signed, bytes, offset);
-    svtypes_pkg::queue_packer#(Color, svtypes_pkg::bits_packer#(Color))::unpack(q_colors, bytes, offset);
+    svtypes_pkg::dyn_array_packer#(bit [9:0], svtypes_pkg::bit_packer#(bit [9:0]))::unpack(dyn_bits, bytes, offset);
+    svtypes_pkg::dyn_array_packer#(bit signed [8:0], svtypes_pkg::bit_packer#(bit signed [8:0]))::unpack(dyn_signed, bytes, offset);
+    svtypes_pkg::queue_packer#(Color, svtypes_pkg::bit_packer#(Color))::unpack(q_colors, bytes, offset);
     svtypes_pkg::assoc_array_packer#(string, int, svtypes_pkg::string_packer, svtypes_pkg::int_packer)::unpack(assoc, bytes, offset);
     svtypes_pkg::queue_packer#(Inner, svtypes_pkg::object_packer#(Inner))::unpack(q_inner, bytes, offset);
     svtypes_pkg::fixed_array_packer#(Inner, 2, svtypes_pkg::object_packer#(Inner))::unpack(inner_arr, bytes, offset);
@@ -333,7 +333,7 @@ class ParamTx #(parameter int MODE = 32'd7) extends svtypes_pkg::sv_object;
     svtypes_pkg::register_object(this);
     svtypes_pkg::pack_object_header("ParamTx", 3, __svtypes_object_number, bytes);
     svtypes_pkg::int_packer::pack(id, bytes);
-    svtypes_pkg::fixed_array_packer#(bit [11:0], 3, svtypes_pkg::bits_packer#(bit [11:0]))::pack(payload, bytes);
+    svtypes_pkg::fixed_array_packer#(bit [11:0], 3, svtypes_pkg::bit_packer#(bit [11:0]))::pack(payload, bytes);
     svtypes_pkg::object_packer#(Inner)::pack(nested, bytes);
   endfunction
 
@@ -357,7 +357,7 @@ class ParamTx #(parameter int MODE = 32'd7) extends svtypes_pkg::sv_object;
     __svtypes_object_number = incoming_svtypes_object_number;
     svtypes_pkg::register_object(this);
     svtypes_pkg::int_packer::unpack(id, bytes, offset);
-    svtypes_pkg::fixed_array_packer#(bit [11:0], 3, svtypes_pkg::bits_packer#(bit [11:0]))::unpack(payload, bytes, offset);
+    svtypes_pkg::fixed_array_packer#(bit [11:0], 3, svtypes_pkg::bit_packer#(bit [11:0]))::unpack(payload, bytes, offset);
     svtypes_pkg::object_packer#(Inner)::unpack(nested, bytes, offset);
   endfunction
 endclass
@@ -374,7 +374,7 @@ class ParamTx_MODE_5 extends ParamTx#(.MODE(32'd5));
     svtypes_pkg::register_object(this);
     svtypes_pkg::pack_object_header("ParamTx_MODE_5", 3, __svtypes_object_number, bytes);
     svtypes_pkg::int_packer::pack(id, bytes);
-    svtypes_pkg::fixed_array_packer#(bit [11:0], 3, svtypes_pkg::bits_packer#(bit [11:0]))::pack(payload, bytes);
+    svtypes_pkg::fixed_array_packer#(bit [11:0], 3, svtypes_pkg::bit_packer#(bit [11:0]))::pack(payload, bytes);
     svtypes_pkg::object_packer#(Inner)::pack(nested, bytes);
   endfunction
 
@@ -398,7 +398,7 @@ class ParamTx_MODE_5 extends ParamTx#(.MODE(32'd5));
     __svtypes_object_number = incoming_svtypes_object_number;
     svtypes_pkg::register_object(this);
     svtypes_pkg::int_packer::unpack(id, bytes, offset);
-    svtypes_pkg::fixed_array_packer#(bit [11:0], 3, svtypes_pkg::bits_packer#(bit [11:0]))::unpack(payload, bytes, offset);
+    svtypes_pkg::fixed_array_packer#(bit [11:0], 3, svtypes_pkg::bit_packer#(bit [11:0]))::unpack(payload, bytes, offset);
     svtypes_pkg::object_packer#(Inner)::unpack(nested, bytes, offset);
   endfunction
 endclass

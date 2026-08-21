@@ -2,7 +2,7 @@ import pytest
 
 from svtypes import (
     AssocArray,
-    Bits,
+    Bit,
     DynArray,
     Enum,
     Int,
@@ -33,7 +33,7 @@ class ErrorColor(Enum, width=32, signed=False):
 @pytest.mark.parametrize(
     ("type_obj", "payload"),
     [
-        (Bits(16), b"\x01"),
+        (Bit(16), b"\x01"),
         (Int(), b"\x01\x02\x03"),
         (Real(), b"\x00" * 7),
         (ShortReal(), b"\x00" * 3),
@@ -150,14 +150,22 @@ def test_type_registry_rejects_duplicate_name_for_different_type():
 
 
 def test_public_version_matches_project_metadata():
-    assert __version__ == "1.0.0"
+    assert __version__ == "1.2.0"
 
 
 def test_public_exception_hierarchy_is_importable():
-    from svtypes import CompatibilityError, DecodeError, SvTypesError
+    from svtypes import (
+        CompatibilityError,
+        ConstraintBackendError,
+        ConstraintError,
+        DecodeError,
+        SvTypesError,
+    )
 
     assert issubclass(CompatibilityError, DecodeError)
     assert issubclass(DecodeError, SvTypesError)
+    assert issubclass(ConstraintBackendError, ConstraintError)
+    assert issubclass(ConstraintError, SvTypesError)
 
 
 def test_experimental_weak_runtime_is_discoverable():
