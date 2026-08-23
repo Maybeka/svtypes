@@ -58,6 +58,7 @@ from .constraint import (
     RandomContext,
     RandomizeStatus,
     constraint,
+    dist,
     rand_layer,
     set_layered_randomization_reference_policy,
 )

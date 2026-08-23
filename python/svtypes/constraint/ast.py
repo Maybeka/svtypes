@@ -111,6 +111,24 @@ class IfExpr(AstNode):
 
 
 @dataclass
+class DistItem(AstNode):
+    """One `dist[...]` item, using := (`each`) or :/ (`total`) weight."""
+
+    low: AstNode
+    high: AstNode | None
+    weight: AstNode
+    each: bool
+
+
+@dataclass
+class DistExpr(AstNode):
+    """Distribution constraint written as ``expression @ dist[...]``."""
+
+    expr: AstNode
+    items: list[DistItem]
+
+
+@dataclass
 class ConstraintDecl:
     """Class-level inoperable constraint declaration."""
 

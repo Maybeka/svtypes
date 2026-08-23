@@ -8,7 +8,7 @@ from typing import Any, Callable
 from ..errors import ConstraintBackendError, ConstraintError, DeclarationError
 from ..logic import Logic
 from .analyze import compile_block
-from .eval import eval_bool
+from .eval import eval_bool, eval_dist_weight
 from .frontend import parse_constraint_function
 from .ir import ConstraintIR, VarDecl
 from .leaves import (
@@ -202,6 +202,10 @@ def _solve(obj: Any, cls: type, stream: BitStream, extra: ConstraintIR | None) -
 
     chosen: dict[str, Any] | None = None
     if not constrained:
+        if not all(eval_bool(pred, env, widths) for ir in enabled for pred in ir.predicates):
+            restore_leaves(obj, snapshot)
+            obj._SvObject__svtypes_randomize_status = RandomizeStatus(False, "unsat")
+            return False
         chosen = {}
     else:
         for _ in range(32):
@@ -211,7 +215,9 @@ def _solve(obj: Any, cls: type, stream: BitStream, extra: ConstraintIR | None) -
                 value = sample_unconstrained(desc, stream)
                 candidate[path] = value
                 local[path] = leaf_unsigned(desc, value)
-            if all(eval_bool(pred, local, widths) for ir in enabled for pred in ir.predicates):
+            if all(eval_bool(pred, local, widths) for ir in enabled for pred in ir.predicates) and _accept_distributions(
+                _active_dist_exprs(enabled, local, widths), local, widths, stream
+            ):
                 chosen = candidate
                 break
         if chosen is None:
@@ -242,6 +248,48 @@ def _solve(obj: Any, cls: type, stream: BitStream, extra: ConstraintIR | None) -
         raise
     obj._SvObject__svtypes_randomize_status = RandomizeStatus(True, "sat")
     return True
+
+
+def _active_dist_exprs(
+    irs: list[ConstraintIR],
+    env: dict[str, int],
+    widths: dict[str, tuple[int, bool]],
+) -> list[Any]:
+    """Find direct dist statements enabled by the current structured branch."""
+
+    out: list[Any] = []
+
+    def visit(statements: list[Any]) -> None:
+        for stmt in statements:
+            if stmt.kind == "pred" and stmt.expr is not None and stmt.expr.op == "dist":
+                out.append(stmt.expr)
+            elif stmt.kind == "if" and stmt.cond is not None:
+                visit(stmt.then_body if eval_bool(stmt.cond, env, widths) else stmt.else_body)
+
+    for ir in irs:
+        visit(ir.statements)
+    return out
+
+
+def _accept_distributions(
+    exprs: list[Any],
+    env: dict[str, int],
+    widths: dict[str, tuple[int, bool]],
+    stream: BitStream,
+) -> bool:
+    """Apply `dist` weights with exact, bounded rejection sampling."""
+
+    numerator = 1
+    denominator = 1
+    for expr in exprs:
+        selected, bound, undef = eval_dist_weight(expr, env, widths)
+        if undef or selected <= 0 or bound <= 0:
+            return False
+        numerator *= selected.numerator * bound.denominator
+        denominator *= selected.denominator * bound.numerator
+    if numerator >= denominator:
+        return True
+    return stream.draw_bits(64) * denominator < numerator * (1 << 64)
 
 
 def _value_from_bits(desc: Any, bits: int) -> Any:

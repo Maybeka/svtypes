@@ -20,6 +20,7 @@ from svtypes import (
     SvObject,
     SvStruct,
     constraint,
+    dist,
     rand_layer,
     runtime_root,
 )
@@ -56,6 +57,20 @@ class DiffMode(Enum, width=8, signed=False):
 class DiffHeader(SvStruct):
     addr = Bit(16)
     extra = Bit(8)
+
+
+class DistPacket(SvObject):
+    choice = Bit(4)
+    base = Bit(4, rand=False)
+    weight = Bit(4, rand=False)
+
+    @constraint
+    def legal(self):
+        (self.choice + self.base) @ dist[
+            5 @ 3,
+            (8, 10) / (self.weight + 1),
+            12,
+        ]
 
 
 class DiffPacket(SvObject):
@@ -261,6 +276,72 @@ def test_remote_target_constraint_simulation():
     print(log)
     assert result.returncode == 0, log
     assert "SVTYPES_CONSTRAINT_PASS" in log, log
+
+
+@pytest.mark.remote_target
+def test_remote_target_dist_expression_simulation():
+    """The same expression/range/weight dist IR accepted by Python compiles
+    and constrains target-language randomization."""
+    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+    reachable = subprocess.run(
+        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
+        capture_output=True,
+        text=True,
+    )
+    if reachable.returncode != 0:
+        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+    out = Path(__file__).resolve().parents[2] / ".tmp" / "dist_sv"
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "dist_sv_test.sv").write_text(
+        "\n".join(
+            [
+                "package dist_sv_test;",
+                "  import svtypes_pkg::*;",
+                DistPacket.to_sv_obj(level=1),
+                "endpackage",
+                "",
+            ]
+        )
+    )
+    (out / "tb.sv").write_text(
+        """`timescale 1ns/1ps
+module tb;
+  import svtypes_pkg::*;
+  import dist_sv_test::*;
+  integer i;
+  initial begin
+    DistPacket p;
+    p = new();
+    p.base = 4'd1;
+    p.weight = 4'd2;
+    for (i = 0; i < 64; i++) begin
+      if (!p.randomize()) $fatal(1, "dist unsat");
+      if (!(p.choice == 4'd4 || p.choice == 4'd7 || p.choice == 4'd8 ||
+            p.choice == 4'd9 || p.choice == 4'd11))
+        $fatal(1, "dist support violation: %0d", p.choice);
+    end
+    $display("SVTYPES_DIST_PASS");
+    $finish;
+  end
+endmodule
+"""
+    )
+    remote = (
+        "bash -ilc '"
+        "cd /path/to/svtypes/.tmp/dist_sv && "
+        "rm -rf simv csrc simv.daidir && "
+        "target -full64 -sverilog -timescale=1ns/1ps "
+        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
+        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
+        "dist_sv_test.sv tb.sv -o simv && ./simv'"
+    )
+    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    log = result.stdout + result.stderr
+    print(log)
+    assert result.returncode == 0, log
+    assert "SVTYPES_DIST_PASS" in log, log
 
 
 @pytest.mark.remote_target

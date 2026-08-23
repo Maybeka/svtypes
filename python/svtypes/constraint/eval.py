@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from fractions import Fraction
 from typing import Mapping
 
 from .ir import BOOL, Expr, IRType, bv
@@ -18,6 +19,48 @@ class Value:
 def eval_bool(expr: Expr, env: Mapping[str, int], vars_width: Mapping[str, tuple[int, bool]]) -> bool:
     value = eval_expr(expr, env, vars_width)
     return (not value.undef) and value.ty.is_bool and bool(value.bits)
+
+
+def eval_dist_weight(
+    expr: Expr,
+    env: Mapping[str, int],
+    vars_width: Mapping[str, tuple[int, bool]],
+) -> tuple[Fraction, Fraction, bool]:
+    """Return selected and upper-bound weights for one satisfiable dist Expr.
+
+    The upper bound is the sum of all positive item weights.  It permits exact
+    rejection sampling without prematurely evaluating the Python DSL.
+    """
+
+    if expr.op != "dist":
+        raise ValueError("eval_dist_weight() requires a dist expression")
+    value = eval_expr(expr.args[0], env, vars_width)
+    selected = Fraction(0)
+    bound = Fraction(0)
+    undef = value.undef
+    for item in expr.args[1]:
+        low = eval_expr(item.low, env, vars_width)
+        high = eval_expr(item.high, env, vars_width) if item.high is not None else None
+        weight = eval_expr(item.weight, env, vars_width)
+        undef = undef or low.undef or weight.undef or (high.undef if high is not None else False)
+        raw_weight = _integer_value(weight)
+        if raw_weight < 0:
+            undef = True
+            continue
+        if raw_weight == 0:
+            continue
+        count = 1
+        if high is not None:
+            count = _range_size(low, high)
+            if count <= 0:
+                continue
+        contribution = Fraction(raw_weight, 1 if item.each else count)
+        bound += contribution
+        if high is None and _equal_values(value, low):
+            selected += contribution
+        elif high is not None and _in_range(value, low, high):
+            selected += contribution
+    return selected, bound, undef
 
 
 def eval_expr(expr: Expr, env: Mapping[str, int], vars_width: Mapping[str, tuple[int, bool]]) -> Value:
@@ -63,6 +106,26 @@ def eval_expr(expr: Expr, env: Mapping[str, int], vars_width: Mapping[str, tuple
             right = _resize(other, common)
             if left.bits == right.bits:
                 hit = True
+        return Value(1 if hit else 0, BOOL, undef)
+    if expr.op == "dist":
+        value = eval_expr(expr.args[0], env, vars_width)
+        undef = value.undef
+        hit = False
+        for item in expr.args[1]:
+            low = eval_expr(item.low, env, vars_width)
+            high = eval_expr(item.high, env, vars_width) if item.high is not None else None
+            weight = eval_expr(item.weight, env, vars_width)
+            undef = undef or low.undef or weight.undef or (high.undef if high is not None else False)
+            weight_value = _integer_value(weight)
+            if weight_value < 0:
+                undef = True
+                continue
+            if weight_value == 0:
+                continue
+            if high is None:
+                hit = hit or _equal_values(value, low)
+            else:
+                hit = hit or _in_range(value, low, high)
         return Value(1 if hit else 0, BOOL, undef)
     if expr.op == "land":
         left = eval_expr(expr.args[0], env, vars_width)
@@ -160,6 +223,39 @@ def _resize(value: Value, ty: IRType) -> Value:
         ext = ((1 << ty.width) - 1) ^ ((1 << src_width) - 1)
         bits = bits | ext
     return Value(bits, ty, value.undef)
+
+
+def _integer_value(value: Value) -> int:
+    return _signed(value.bits, value.ty) if value.ty.signed else value.bits
+
+
+def _equal_values(left: Value, right: Value) -> bool:
+    width = max(left.ty.width, right.ty.width, 1)
+    common = bv(width, left.ty.signed and right.ty.signed)
+    return _resize(left, common).bits == _resize(right, common).bits
+
+
+def _in_range(value: Value, low: Value, high: Value) -> bool:
+    width = max(value.ty.width, low.ty.width, high.ty.width, 1)
+    signed = value.ty.signed and low.ty.signed and high.ty.signed
+    common = bv(width, signed)
+    current = _resize(value, common)
+    lo = _resize(low, common)
+    hi = _resize(high, common)
+    if signed:
+        return _signed(lo.bits, common) <= _signed(current.bits, common) <= _signed(hi.bits, common)
+    return lo.bits <= current.bits <= hi.bits
+
+
+def _range_size(low: Value, high: Value) -> int:
+    width = max(low.ty.width, high.ty.width, 1)
+    signed = low.ty.signed and high.ty.signed
+    common = bv(width, signed)
+    lo = _resize(low, common)
+    hi = _resize(high, common)
+    if signed:
+        return _signed(hi.bits, common) - _signed(lo.bits, common) + 1
+    return hi.bits - lo.bits + 1
 
 
 def _signed(bits: int, ty: IRType) -> int:

@@ -83,6 +83,9 @@ class Expr:
             return ["ite", *(arg.to_stable() for arg in self.args)]
         if self.op == "inside":
             return ["inside", *(arg.to_stable() for arg in self.args)]
+        if self.op == "dist":
+            value, items = self.args
+            return ["dist", value.to_stable(), *(item.to_stable() for item in items)]
         if self.op in _BINOPS:
             return [self.op, self.args[0].to_stable(), self.args[1].to_stable()]
         raise ValueError(f"unknown IR operator {self.op!r}")
@@ -98,6 +101,23 @@ def c_int(value: int, loc: SourceLoc | None = None, hint: str | None = None) -> 
 
 def c_field(path: str, ty: IRType, loc: SourceLoc | None = None) -> Expr:
     return Expr("field", (path,), ty, loc)
+
+
+@dataclass(frozen=True, slots=True)
+class DistItem:
+    """Typed distribution item; ``each`` distinguishes := from :/."""
+
+    low: Expr
+    high: Expr | None
+    weight: Expr
+    each: bool
+
+    def to_stable(self) -> list[Any]:
+        item = ["range" if self.high is not None else "value", self.low.to_stable()]
+        if self.high is not None:
+            item.append(self.high.to_stable())
+        item.extend([":=" if self.each else ":/", self.weight.to_stable()])
+        return item
 
 
 @dataclass(frozen=True, slots=True)

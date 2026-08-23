@@ -145,6 +145,16 @@ def render_expr(expr: Expr) -> str:
         value = render_expr(expr.args[0])
         items = ", ".join(render_expr(item) for item in expr.args[1:])
         return f"({value} inside {{{items}}})"
+    if expr.op == "dist":
+        value = render_expr(expr.args[0])
+        items = []
+        for item in expr.args[1]:
+            target = render_expr(item.low)
+            if item.high is not None:
+                target = f"[{target}:{render_expr(item.high)}]"
+            op = ":=" if item.each else ":/"
+            items.append(f"{target} {op} {render_expr(item.weight)}")
+        return f"({value} dist {{{', '.join(items)}}})"
     binops = {
         "add": "+", "sub": "-", "mul": "*", "mod": "%",
         "shl": "<<", "shr": ">>",

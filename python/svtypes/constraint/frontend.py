@@ -14,6 +14,8 @@ from .ast import (
     BinaryExpr,
     ConstraintBlock,
     ConstraintDecl,
+    DistExpr,
+    DistItem,
     FieldRef,
     ForConstraint,
     IfConstraint,
@@ -262,6 +264,8 @@ class _Converter:
             return MemberRef(loc=loc, base=self.expr(node.value), name=node.attr)
         if isinstance(node, ast.Subscript):
             return IndexRef(loc=loc, base=self.expr(node.value), index=self._index(node.slice))
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.MatMult):
+            return self._dist_expr(node)
         if isinstance(node, ast.BinOp):
             op = _BIN_OPS.get(type(node.op))
             if op is None:
@@ -296,6 +300,47 @@ class _Converter:
         if isinstance(node, ast.JoinedStr):
             raise _err(loc, "f-strings are not allowed")
         raise _err(loc, f"unsupported expression {type(node).__name__}")
+
+    def _dist_expr(self, node: ast.BinOp) -> DistExpr:
+        """Parse the deliberately narrow ``expression @ dist[...]`` syntax."""
+
+        loc = self.loc(node)
+        if not (
+            isinstance(node.right, ast.Subscript)
+            and isinstance(node.right.value, ast.Name)
+            and node.right.value.id == "dist"
+        ):
+            raise ConstraintUnsupportedError(
+                f"{loc.format()}: @ is only supported as expression @ dist[...]"
+            )
+        slice_node = node.right.slice
+        raw_items = list(slice_node.elts) if isinstance(slice_node, ast.Tuple) else [slice_node]
+        if not raw_items:
+            raise _err(loc, "dist[] cannot be empty")
+        return DistExpr(
+            loc=loc,
+            expr=self.expr(node.left),
+            items=[self._dist_item(item) for item in raw_items],
+        )
+
+    def _dist_item(self, node: ast.expr) -> DistItem:
+        loc = self.loc(node)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.MatMult, ast.Div)):
+            each = isinstance(node.op, ast.MatMult)
+            low_node = node.left
+            weight = self.expr(node.right)
+        else:
+            # SV permits omitted weights; use the natural `:= 1` spelling.
+            each = True
+            low_node = node
+            weight = IntLiteral(loc=loc, value=1)
+        if isinstance(low_node, ast.Tuple):
+            if len(low_node.elts) != 2:
+                raise _err(loc, "a dist range must contain exactly (low, high)")
+            low, high = (self.expr(low_node.elts[0]), self.expr(low_node.elts[1]))
+        else:
+            low, high = self.expr(low_node), None
+        return DistItem(loc=loc, low=low, high=high, weight=weight, each=each)
 
     def _index(self, node: ast.AST) -> AstNode:
         loc = self.loc(node)

@@ -118,6 +118,35 @@ def _encode(z3: Any, expr: Expr, terms: dict[str, Any], widths: dict[str, int]) 
                 == _cast_bv(z3, right, _bv_size(right), width, False)
             )
         return (z3.Or(pieces) if pieces else z3.BoolVal(False), z3.Or(undefs))
+    if expr.op == "dist":
+        value, value_undef = _encode(z3, expr.args[0], terms, widths)
+        pieces = []
+        undefs = [value_undef]
+        for item in expr.args[1]:
+            low, low_undef = _encode(z3, item.low, terms, widths)
+            weight, weight_undef = _encode(z3, item.weight, terms, widths)
+            width = max(_bv_size(value), _bv_size(low))
+            left = _cast_bv(z3, value, _bv_size(value), width, item.low.ty.signed)
+            low = _cast_bv(z3, low, _bv_size(low), width, item.low.ty.signed)
+            if item.high is None:
+                member = left == low
+                high_undef = z3.BoolVal(False)
+            else:
+                high, high_undef = _encode(z3, item.high, terms, widths)
+                width = max(width, _bv_size(high))
+                signed = item.low.ty.signed and item.high.ty.signed and expr.args[0].ty.signed
+                left = _cast_bv(z3, value, _bv_size(value), width, signed)
+                low = _cast_bv(z3, low, _bv_size(low), width, signed)
+                high = _cast_bv(z3, high, _bv_size(high), width, signed)
+                if signed:
+                    member = z3.And(left >= low, left <= high)
+                else:
+                    member = z3.And(z3.ULE(low, left), z3.ULE(left, high))
+            zero = z3.BitVecVal(0, _bv_size(weight))
+            negative = weight < zero if item.weight.ty.signed else z3.BoolVal(False)
+            pieces.append(z3.And(member, weight != zero, z3.Not(negative)))
+            undefs.extend([low_undef, high_undef, weight_undef, negative])
+        return (z3.Or(pieces), z3.Or(undefs))
     if expr.op == "land":
         left, lu = _encode(z3, expr.args[0], terms, widths)
         right, ru = _encode(z3, expr.args[1], terms, widths)

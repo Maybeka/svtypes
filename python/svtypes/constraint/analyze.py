@@ -20,6 +20,8 @@ from .ast import (
     AstNode,
     BinaryExpr,
     ConstraintBlock,
+    DistExpr,
+    DistItem,
     ConstraintDecl,
     FieldRef,
     ForConstraint,
@@ -37,6 +39,7 @@ from .ast import (
 from .ir import (
     BOOL,
     ConstraintIR,
+    DistItem as IRDistItem,
     Expr,
     IRStmt,
     IRType,
@@ -94,7 +97,13 @@ class _Analyzer:
 
     def lower_stmt(self, node: AstNode) -> list[IRStmt]:
         if isinstance(node, Predicate):
-            return [IRStmt(kind="pred", expr=self.as_bool(self.expr(node.expr)))]
+            expr = self.as_bool(self.expr(node.expr))
+            if _contains_dist(expr) and expr.op != "dist":
+                raise ConstraintTypeError(
+                    f"{node.loc.format()}: dist must be a complete constraint statement; "
+                    "place it inside an if-body instead of combining it with Python boolean operators"
+                )
+            return [IRStmt(kind="pred", expr=expr)]
         if isinstance(node, IfConstraint):
             return [IRStmt(
                 kind="if",
@@ -176,6 +185,8 @@ class _Analyzer:
             if node.invert:
                 expr = Expr("not", (expr,), BOOL, node.loc)
             return expr
+        if isinstance(node, DistExpr):
+            return self.dist(node)
         if isinstance(node, IfExpr):
             cond = self.as_bool(self.expr(node.cond))
             then_expr = self.expr(node.then_expr)
@@ -183,6 +194,36 @@ class _Analyzer:
             then_expr, else_expr = self.unify_pair(then_expr, else_expr, node.loc)
             return Expr("ite", (cond, then_expr, else_expr), then_expr.ty, node.loc)
         raise ConstraintUnsupportedError(f"{node.loc.format()}: unsupported expression")
+
+    def dist(self, node: DistExpr) -> Expr:
+        value = self.as_bv(self.expr(node.expr))
+        value_paths = _field_paths(value)
+        if not value_paths or not any(self.vars[path].declared_rand for path in value_paths):
+            raise ConstraintTypeError(
+                f"{node.loc.format()}: a dist expression must contain at least one rand variable"
+            )
+        items: list[IRDistItem] = []
+        for item in node.items:
+            low = self.as_bv(self.expr(item.low))
+            value_cmp, low_cmp = self.unify_compare(value, low, item.loc)
+            high_cmp = None
+            if item.high is not None:
+                high = self.as_bv(self.expr(item.high))
+                value_cmp, high_cmp = self.unify_compare(value_cmp, high, item.loc)
+                _low_cmp, high_cmp = self.unify_compare(low_cmp, high_cmp, item.loc)
+                low_cmp = _low_cmp
+            weight = self.as_bv(self.expr(item.weight))
+            if weight.op == "int" and int(weight.args[0]) < 0:
+                raise ConstraintTypeError(f"{item.loc.format()}: dist weight must be non-negative")
+            items.append(IRDistItem(
+                low=low_cmp,
+                high=high_cmp,
+                weight=weight,
+                each=item.each,
+            ))
+        if not items:
+            raise ConstraintTypeError(f"{node.loc.format()}: dist[] cannot be empty")
+        return Expr("dist", (value, tuple(items)), BOOL, node.loc)
 
     def name(self, node: NameRef) -> Expr:
         if node.kind == "attr":
@@ -471,6 +512,25 @@ def _flatten_stmt(stmt: IRStmt) -> Expr:
         Expr("lor", (Expr("not", (cond,), BOOL, loc), then_expr), BOOL, loc),
         Expr("lor", (cond, else_expr), BOOL, loc),
     ), BOOL, loc)
+
+
+def _contains_dist(expr: Expr) -> bool:
+    if expr.op == "dist":
+        return True
+    for arg in expr.args:
+        if isinstance(arg, Expr) and _contains_dist(arg):
+            return True
+    return False
+
+
+def _field_paths(expr: Expr) -> set[str]:
+    if expr.op == "field":
+        return {str(expr.args[0])}
+    paths: set[str] = set()
+    for arg in expr.args:
+        if isinstance(arg, Expr):
+            paths.update(_field_paths(arg))
+    return paths
 
 
 def _signed_of(expr: Expr) -> bool:
