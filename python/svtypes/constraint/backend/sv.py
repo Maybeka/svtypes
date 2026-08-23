@@ -155,6 +155,8 @@ def render_expr(expr: Expr) -> str:
             op = ":=" if item.each else ":/"
             items.append(f"{target} {op} {render_expr(item.weight)}")
         return f"({value} dist {{{', '.join(items)}}})"
+    if expr.op == "unique":
+        return f"unique {{{', '.join(render_expr(item) for item in expr.args)}}}"
     binops = {
         "add": "+", "sub": "-", "mul": "*", "mod": "%",
         "shl": "<<", "shr": ">>",

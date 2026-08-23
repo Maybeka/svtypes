@@ -129,6 +129,13 @@ class DistExpr(AstNode):
 
 
 @dataclass
+class UniqueExpr(AstNode):
+    """Scalar `unique(...)` constraint declaration."""
+
+    items: list[AstNode]
+
+
+@dataclass
 class ConstraintDecl:
     """Class-level inoperable constraint declaration."""
 

@@ -127,6 +127,15 @@ def eval_expr(expr: Expr, env: Mapping[str, int], vars_width: Mapping[str, tuple
             else:
                 hit = hit or _in_range(value, low, high)
         return Value(1 if hit else 0, BOOL, undef)
+    if expr.op == "unique":
+        values = [eval_expr(item, env, vars_width) for item in expr.args]
+        undef = any(value.undef for value in values)
+        distinct = all(
+            not _equal_values(values[left], values[right])
+            for left in range(len(values))
+            for right in range(left + 1, len(values))
+        )
+        return Value(1 if distinct else 0, BOOL, undef)
     if expr.op == "land":
         left = eval_expr(expr.args[0], env, vars_width)
         right = eval_expr(expr.args[1], env, vars_width)

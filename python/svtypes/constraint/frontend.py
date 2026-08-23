@@ -28,6 +28,7 @@ from .ast import (
     Predicate,
     SourceLoc,
     UnaryExpr,
+    UniqueExpr,
 )
 
 _BIN_OPS = {
@@ -292,6 +293,8 @@ class _Converter:
                 else_expr=self.expr(node.orelse),
             )
         if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id == "unique":
+                return self._unique_expr(node)
             raise _err(loc, "function calls are not allowed except range() in for-loops")
         if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
             raise _err(loc, "container literals are only allowed on the right-hand side of in/not in")
@@ -341,6 +344,14 @@ class _Converter:
         else:
             low, high = self.expr(low_node), None
         return DistItem(loc=loc, low=low, high=high, weight=weight, each=each)
+
+    def _unique_expr(self, node: ast.Call) -> UniqueExpr:
+        loc = self.loc(node)
+        if node.keywords or any(isinstance(arg, ast.Starred) for arg in node.args):
+            raise _err(loc, "unique() does not accept keyword or starred arguments")
+        if len(node.args) < 2:
+            raise _err(loc, "unique() requires at least two scalar expressions")
+        return UniqueExpr(loc=loc, items=[self.expr(arg) for arg in node.args])
 
     def _index(self, node: ast.AST) -> AstNode:
         loc = self.loc(node)

@@ -35,6 +35,7 @@ from .ast import (
     Predicate,
     SourceLoc,
     UnaryExpr,
+    UniqueExpr,
 )
 from .ir import (
     BOOL,
@@ -187,6 +188,8 @@ class _Analyzer:
             return expr
         if isinstance(node, DistExpr):
             return self.dist(node)
+        if isinstance(node, UniqueExpr):
+            return self.unique(node)
         if isinstance(node, IfExpr):
             cond = self.as_bool(self.expr(node.cond))
             then_expr = self.expr(node.then_expr)
@@ -228,6 +231,10 @@ class _Analyzer:
         if not items:
             raise ConstraintTypeError(f"{node.loc.format()}: dist[] cannot be empty")
         return Expr("dist", (value, tuple(items)), BOOL, node.loc)
+
+    def unique(self, node: UniqueExpr) -> Expr:
+        items = tuple(self.as_bv(self.expr(item)) for item in node.items)
+        return Expr("unique", items, BOOL, node.loc)
 
     def name(self, node: NameRef) -> Expr:
         if node.kind == "attr":

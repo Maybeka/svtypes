@@ -86,6 +86,8 @@ class Expr:
         if self.op == "dist":
             value, items = self.args
             return ["dist", value.to_stable(), *(item.to_stable() for item in items)]
+        if self.op == "unique":
+            return ["unique", *(arg.to_stable() for arg in self.args)]
         if self.op in _BINOPS:
             return [self.op, self.args[0].to_stable(), self.args[1].to_stable()]
         raise ValueError(f"unknown IR operator {self.op!r}")

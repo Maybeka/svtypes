@@ -61,6 +61,7 @@ from .constraint import (
     dist,
     rand_layer,
     set_layered_randomization_reference_policy,
+    unique,
 )
 from .randomizable import is_randomizable
 

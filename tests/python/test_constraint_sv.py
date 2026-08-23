@@ -23,6 +23,7 @@ from svtypes import (
     dist,
     rand_layer,
     runtime_root,
+    unique,
 )
 from svtypes.constraint.eval import eval_bool
 from svtypes.constraint.leaves import iter_class_leaves, leaf_unsigned, resolve_attr
@@ -80,6 +81,16 @@ class RandcPacket(SvObject):
     @constraint
     def legal(self):
         self.choice < self.limit
+
+
+class UniquePacket(SvObject):
+    first = Bit(2)
+    second = Bit(2)
+    third = Bit(2)
+
+    @constraint
+    def legal(self):
+        unique(self.first, self.second, self.third)
 
 
 class DiffPacket(SvObject):
@@ -437,6 +448,67 @@ endmodule
     print(log)
     assert result.returncode == 0, log
     assert "SVTYPES_RANDC_PASS" in log, log
+
+
+@pytest.mark.remote_target
+def test_remote_target_unique_scalar_simulation():
+    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+    reachable = subprocess.run(
+        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
+        capture_output=True,
+        text=True,
+    )
+    if reachable.returncode != 0:
+        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+    out = Path(__file__).resolve().parents[2] / ".tmp" / "unique_sv"
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "unique_sv_test.sv").write_text(
+        "\n".join(
+            [
+                "package unique_sv_test;",
+                "  import svtypes_pkg::*;",
+                UniquePacket.to_sv_obj(level=1),
+                "endpackage",
+                "",
+            ]
+        )
+    )
+    (out / "tb.sv").write_text(
+        """`timescale 1ns/1ps
+module tb;
+  import svtypes_pkg::*;
+  import unique_sv_test::*;
+  integer i;
+  initial begin
+    UniquePacket p;
+    p = new();
+    for (i = 0; i < 64; i++) begin
+      if (!p.randomize()) $fatal(1, "unique unsat");
+      if (p.first == p.second || p.first == p.third || p.second == p.third)
+        $fatal(1, "unique violation");
+    end
+    $display("SVTYPES_UNIQUE_PASS");
+    $finish;
+  end
+endmodule
+"""
+    )
+    remote = (
+        "bash -ilc '"
+        "cd /path/to/svtypes/.tmp/unique_sv && "
+        "rm -rf simv csrc simv.daidir && "
+        "target -full64 -sverilog -timescale=1ns/1ps "
+        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
+        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
+        "unique_sv_test.sv tb.sv -o simv && ./simv'"
+    )
+    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    log = result.stdout + result.stderr
+    print(log)
+    assert result.returncode == 0, log
+    assert "SVTYPES_UNIQUE_PASS" in log, log
 
 
 @pytest.mark.remote_target

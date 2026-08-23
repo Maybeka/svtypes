@@ -8,8 +8,9 @@ solver-policy support in addition to ordinary Boolean predicates: `dist`,
 independent of container randomization (1.5) and non-null object-handle
 participation (1.6).
 
-This document records the accepted `dist` interface and its semantic contract.
-The remaining 1.4 constructs are not yet part of the public API.
+This document records the accepted scalar interfaces and their semantic
+contracts.  `soft` and `solve before` remain pending the shared solver-policy
+layer.
 
 ## `dist` source interface
 
@@ -101,7 +102,7 @@ extend exact weighted model selection to those shapes.
 - `soft`, `solve before`, `unique`, and `randc` must share the solver-policy
   layer so their priority/order behavior cannot silently alter this interface.
 
-## Pending `randc` semantic design
+## `randc` semantic design
 
 The field-policy spelling is `randc=True`, mutually exclusive with an explicit
 `rand=` policy, and it renders the target declaration with SV `randc` rather
@@ -133,6 +134,25 @@ SystemVerilog target verification will generate the same `randc` declarations an
 same observable cycle invariants; it will not assert identical random-number
 streams across the two implementations.
 
+## `unique` scalar interface
+
+Use `unique(...)` as a complete constraint statement:
+
+```python
+from svtypes import constraint, unique
+
+@constraint
+def legal(self):
+    unique(self.source, self.destination, self.reply)
+```
+
+It emits `unique {source, destination, reply};`.  It is a hard constraint:
+fewer than two arguments are rejected, and no satisfying solve can contain a
+duplicate scalar value.  The initial 1.4 implementation accepts scalar integral
+expressions; array flattening and collection forms belong with 1.5.  Python
+uses the same pairwise SV equality sizing rules as the SMT encoding, including
+mixed-width operands.
+
 ## Verification
 
 `tests/python/test_constraint_dist.py` covers source parsing, expression
@@ -145,3 +165,7 @@ support set over repeated target-language randomizations.
 pause/resume, constrained-cycle reset, failed-call non-consumption, generated
 declarations, and invalid combinations.  The matching SystemVerilog target regression is
 `tests/python/test_constraint_sv.py::test_remote_target_randc_cycle_simulation`.
+
+`tests/python/test_constraint_unique.py` covers scalar and mixed-width Python
+semantics; `test_remote_target_unique_scalar_simulation` verifies the generated
+constraint with SystemVerilog target.

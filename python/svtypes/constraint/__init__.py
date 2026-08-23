@@ -13,6 +13,16 @@ class _DistSyntax:
 
 dist = _DistSyntax
 
+
+class _UniqueSyntax:
+    """Source-only marker for scalar ``unique(...)`` constraints."""
+
+    def __call__(self, *_args, **_kwargs):  # pragma: no cover - parsed, not run
+        raise TypeError("unique(...) is only valid inside an @constraint method")
+
+
+unique = _UniqueSyntax()
+
 __all__ = [
     "CONSTRAINT_IR_VERSION",
     "LayeredRandomizeStatus",
@@ -20,6 +30,7 @@ __all__ = [
     "RandomizeStatus",
     "constraint",
     "dist",
+    "unique",
     "rand_layer",
     "set_layered_randomization_reference_policy",
 ]

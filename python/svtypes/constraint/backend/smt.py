@@ -151,6 +151,17 @@ def _encode(z3: Any, expr: Expr, terms: dict[str, Any], widths: dict[str, int]) 
             pieces.append(z3.And(member, weight != zero, z3.Not(negative)))
             undefs.extend([low_undef, high_undef, weight_undef, negative])
         return (z3.Or(pieces), z3.Or(undefs))
+    if expr.op == "unique":
+        values = []
+        undefs = []
+        for item in expr.args:
+            value, undef = _encode(z3, item, terms, widths)
+            values.append(value)
+            undefs.append(undef)
+        width = max(_bv_size(value) for value in values)
+        signed = all(item.ty.signed for item in expr.args)
+        values = [_cast_bv(z3, value, _bv_size(value), width, signed) for value in values]
+        return (z3.Distinct(values), z3.Or(undefs))
     if expr.op == "land":
         left, lu = _encode(z3, expr.args[0], terms, widths)
         right, ru = _encode(z3, expr.args[1], terms, widths)
