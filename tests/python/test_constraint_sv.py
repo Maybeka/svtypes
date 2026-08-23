@@ -23,6 +23,7 @@ from svtypes import (
     dist,
     rand_layer,
     runtime_root,
+    soft,
     unique,
 )
 from svtypes.constraint.eval import eval_bool
@@ -91,6 +92,55 @@ class UniquePacket(SvObject):
     @constraint
     def legal(self):
         unique(self.first, self.second, self.third)
+
+
+class SoftPacket(SvObject):
+    choice = Bit(32)
+
+    @constraint
+    def bounds(self):
+        self.choice < 3
+
+    @constraint
+    def preferred(self):
+        soft(self.choice == 2)
+
+
+class SoftHardConflictPacket(SvObject):
+    choice = Bit(32)
+
+    @constraint
+    def legal(self):
+        self.choice == 0
+        soft(self.choice == 1)
+
+
+class SoftOrderPacket(SvObject):
+    choice = Bit(32)
+
+    @constraint
+    def legal(self):
+        self.choice < 3
+        soft(self.choice == 0)
+        soft(self.choice == 1)
+
+
+class SoftBasePacket(SvObject):
+    choice = Bit(32)
+
+    @constraint
+    def base_preference(self):
+        soft(self.choice == 1)
+
+
+class SoftDerivedPacket(SoftBasePacket):
+    @constraint
+    def derived_preference(self):
+        soft(self.choice == 2)
+
+    @constraint
+    def bounds(self):
+        self.choice < 3
 
 
 class DiffPacket(SvObject):
@@ -509,6 +559,79 @@ endmodule
     print(log)
     assert result.returncode == 0, log
     assert "SVTYPES_UNIQUE_PASS" in log, log
+
+
+@pytest.mark.remote_target
+def test_remote_target_soft_constraint_simulation():
+    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+    reachable = subprocess.run(
+        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
+        capture_output=True,
+        text=True,
+    )
+    if reachable.returncode != 0:
+        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+    out = Path(__file__).resolve().parents[2] / ".tmp" / "soft_sv"
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "soft_sv_test.sv").write_text(
+        "\n".join(
+            [
+                "package soft_sv_test;",
+                "  import svtypes_pkg::*;",
+                SoftPacket.to_sv_obj(level=1),
+                SoftHardConflictPacket.to_sv_obj(level=1),
+                SoftOrderPacket.to_sv_obj(level=1),
+                SoftBasePacket.to_sv_obj(level=1),
+                SoftDerivedPacket.to_sv_obj(level=1),
+                "endpackage",
+                "",
+            ]
+        )
+    )
+    (out / "tb.sv").write_text(
+        """`timescale 1ns/1ps
+module tb;
+  import svtypes_pkg::*;
+  import soft_sv_test::*;
+  integer i;
+  initial begin
+    SoftPacket p;
+    SoftHardConflictPacket h;
+    SoftOrderPacket o;
+    SoftDerivedPacket d;
+    p = new(); h = new(); o = new(); d = new();
+    for (i = 0; i < 32; i++) begin
+      if (!p.randomize()) $fatal(1, "soft preferred unsat");
+      if (p.choice != 2) $fatal(1, "soft preference not selected");
+      if (!h.randomize()) $fatal(1, "soft hard conflict unsat");
+      if (h.choice != 0) $fatal(1, "hard constraint did not override soft");
+      if (!o.randomize()) $fatal(1, "same-block soft order unsat");
+      if (o.choice != 1) $fatal(1, "later same-block soft did not win");
+      if (!d.randomize()) $fatal(1, "derived soft order unsat");
+      if (d.choice != 2) $fatal(1, "derived soft did not override base soft");
+    end
+    $display("SVTYPES_SOFT_PASS");
+    $finish;
+  end
+endmodule
+"""
+    )
+    remote = (
+        "bash -ilc '"
+        "cd /path/to/svtypes/.tmp/soft_sv && "
+        "rm -rf simv csrc simv.daidir && "
+        "target -full64 -sverilog -timescale=1ns/1ps "
+        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
+        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
+        "soft_sv_test.sv tb.sv -o simv && ./simv'"
+    )
+    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    log = result.stdout + result.stderr
+    print(log)
+    assert result.returncode == 0, log
+    assert "SVTYPES_SOFT_PASS" in log, log
 
 
 @pytest.mark.remote_target

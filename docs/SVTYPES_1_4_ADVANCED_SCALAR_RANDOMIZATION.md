@@ -9,7 +9,7 @@ independent of container randomization (1.5) and non-null object-handle
 participation (1.6).
 
 This document records the accepted scalar interfaces and their semantic
-contracts.  `soft` and `solve before` remain pending the shared solver-policy
+contracts.  `solve before` remains pending the shared distribution-policy
 layer.
 
 ## `dist` source interface
@@ -153,6 +153,34 @@ expressions; array flattening and collection forms belong with 1.5.  Python
 uses the same pairwise SV equality sizing rules as the SMT encoding, including
 mixed-width operands.
 
+## `soft` interface and priority
+
+Use `soft(expression)` as a complete constraint statement:
+
+```python
+from svtypes import constraint, soft
+
+@constraint
+def legal(self):
+    self.opcode < 3
+    soft(self.opcode == 2)
+```
+
+It renders as `soft (opcode == 32'd2);`.  A soft expression never makes a
+solve fail: it is retained only when it remains consistent with all hard
+constraints and every earlier, higher-priority soft expression.  Python and
+the SMT backend apply soft expressions greedily in this order:
+
+1. inline `randomize_with` soft constraints;
+2. derived-class constraint blocks before base-class blocks;
+3. later soft statements before earlier statements in one block.
+
+This order is validated against SystemVerilog target.  A `soft` statement inside a constraint
+`if` is active only in the selected branch.  Python candidate sampling never
+commits a merely best-effort candidate when a soft clause was missed; it uses
+the incremental SMT policy to distinguish a real conflict from an unlucky
+sample.
+
 ## Verification
 
 `tests/python/test_constraint_dist.py` covers source parsing, expression
@@ -169,3 +197,7 @@ declarations, and invalid combinations.  The matching SystemVerilog target regre
 `tests/python/test_constraint_unique.py` covers scalar and mixed-width Python
 semantics; `test_remote_target_unique_scalar_simulation` verifies the generated
 constraint with SystemVerilog target.
+
+`tests/python/test_constraint_soft.py` covers hard-over-soft behavior,
+same-block and inheritance priority, and conditional activation.  The SystemVerilog target soft
+regression verifies all of those ordering cases in generated SystemVerilog.

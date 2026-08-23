@@ -49,6 +49,17 @@ def solve(request: SolveRequest) -> SolveResult:
         value, undef = _encode(z3, assumption, terms, widths)
         solver.add(value)
         solver.add(z3.Not(undef))
+    for soft in request.soft_constraints:
+        value, undef = _encode(z3, soft, terms, widths)
+        solver.push()
+        solver.add(value)
+        solver.add(z3.Not(undef))
+        if solver.check() == z3.sat:
+            solver.pop()
+            solver.add(value)
+            solver.add(z3.Not(undef))
+        else:
+            solver.pop()
     constrained = [path for path in request.random_paths if path in terms]
     if solver.check() != z3.sat:
         return SolveResult.unsat()

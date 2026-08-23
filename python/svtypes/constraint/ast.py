@@ -136,6 +136,13 @@ class UniqueExpr(AstNode):
 
 
 @dataclass
+class SoftExpr(AstNode):
+    """One source-level soft constraint expression."""
+
+    expr: AstNode
+
+
+@dataclass
 class ConstraintDecl:
     """Class-level inoperable constraint declaration."""
 

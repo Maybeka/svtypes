@@ -34,6 +34,7 @@ from .ast import (
     NameRef,
     Predicate,
     SourceLoc,
+    SoftExpr,
     UnaryExpr,
     UniqueExpr,
 )
@@ -90,7 +91,12 @@ class _Analyzer:
         ]
         return ConstraintIR(
             name=block.name,
-            predicates=[_flatten_stmt(stmt) for stmt in statements],
+            predicates=[_flatten_hard_stmt(stmt) for stmt in statements],
+            soft_predicates=[
+                predicate
+                for stmt in statements
+                for predicate in _flatten_soft_stmt(stmt)
+            ],
             vars=list(self.vars.values()),
             parameters=parameters,
             statements=statements,
@@ -98,6 +104,8 @@ class _Analyzer:
 
     def lower_stmt(self, node: AstNode) -> list[IRStmt]:
         if isinstance(node, Predicate):
+            if isinstance(node.expr, SoftExpr):
+                return [IRStmt(kind="soft", expr=self.as_bool(self.expr(node.expr.expr)))]
             expr = self.as_bool(self.expr(node.expr))
             if _contains_dist(expr) and expr.op != "dist":
                 raise ConstraintTypeError(
@@ -501,19 +509,21 @@ class _Analyzer:
         return 0
 
 
-def _flatten_stmt(stmt: IRStmt) -> Expr:
+def _flatten_hard_stmt(stmt: IRStmt) -> Expr:
     if stmt.kind == "pred":
         assert stmt.expr is not None
         return stmt.expr
+    if stmt.kind == "soft":
+        return c_bool(True, stmt.expr.loc if stmt.expr is not None else None)
     if stmt.kind == "for":
         # Symbolic loops are only rendered for the target language; the Python
         # template IR never solves them, so they flatten to a true placeholder.
         loc = stmt.start.loc if stmt.start is not None else None
         return c_bool(True, loc)
     loc = stmt.cond.loc if stmt.cond is not None else None
-    then_expr = _and_all([_flatten_stmt(item) for item in stmt.then_body], loc)
+    then_expr = _and_all([_flatten_hard_stmt(item) for item in stmt.then_body], loc)
     else_expr = (
-        _and_all([_flatten_stmt(item) for item in stmt.else_body], loc)
+        _and_all([_flatten_hard_stmt(item) for item in stmt.else_body], loc)
         if stmt.else_body
         else c_bool(True, loc)
     )
@@ -523,6 +533,25 @@ def _flatten_stmt(stmt: IRStmt) -> Expr:
         Expr("lor", (Expr("not", (cond,), BOOL, loc), then_expr), BOOL, loc),
         Expr("lor", (cond, else_expr), BOOL, loc),
     ), BOOL, loc)
+
+
+def _flatten_soft_stmt(stmt: IRStmt, guard: Expr | None = None) -> list[Expr]:
+    loc = stmt.expr.loc if stmt.expr is not None else (stmt.cond.loc if stmt.cond is not None else None)
+    guard = guard or c_bool(True, loc)
+    if stmt.kind == "soft":
+        assert stmt.expr is not None
+        return [Expr("lor", (Expr("not", (guard,), BOOL, loc), stmt.expr), BOOL, loc)]
+    if stmt.kind == "pred" or stmt.kind == "for":
+        return []
+    assert stmt.cond is not None
+    then_guard = Expr("land", (guard, stmt.cond), BOOL, loc)
+    else_guard = Expr("land", (guard, Expr("not", (stmt.cond,), BOOL, loc)), BOOL, loc)
+    out: list[Expr] = []
+    for child in stmt.then_body:
+        out.extend(_flatten_soft_stmt(child, then_guard))
+    for child in stmt.else_body:
+        out.extend(_flatten_soft_stmt(child, else_guard))
+    return out
 
 
 def _contains_dist(expr: Expr) -> bool:

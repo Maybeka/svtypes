@@ -27,6 +27,7 @@ from .ast import (
     NameRef,
     Predicate,
     SourceLoc,
+    SoftExpr,
     UnaryExpr,
     UniqueExpr,
 )
@@ -295,6 +296,8 @@ class _Converter:
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name) and node.func.id == "unique":
                 return self._unique_expr(node)
+            if isinstance(node.func, ast.Name) and node.func.id == "soft":
+                return self._soft_expr(node)
             raise _err(loc, "function calls are not allowed except range() in for-loops")
         if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
             raise _err(loc, "container literals are only allowed on the right-hand side of in/not in")
@@ -352,6 +355,12 @@ class _Converter:
         if len(node.args) < 2:
             raise _err(loc, "unique() requires at least two scalar expressions")
         return UniqueExpr(loc=loc, items=[self.expr(arg) for arg in node.args])
+
+    def _soft_expr(self, node: ast.Call) -> SoftExpr:
+        loc = self.loc(node)
+        if node.keywords or len(node.args) != 1 or isinstance(node.args[0], ast.Starred):
+            raise _err(loc, "soft() requires exactly one non-starred expression")
+        return SoftExpr(loc=loc, expr=self.expr(node.args[0]))
 
     def _index(self, node: ast.AST) -> AstNode:
         loc = self.loc(node)

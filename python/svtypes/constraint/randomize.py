@@ -215,6 +215,8 @@ def _solve(obj: Any, cls: type, stream: BitStream, extra: ConstraintIR | None) -
             return False
         chosen = {}
     else:
+        soft_constraints = _ordered_soft_constraints(enabled)
+        best_soft_score: tuple[bool, ...] | None = None
         for _ in range(32):
             candidate: dict[str, Any] = {}
             local = dict(env)
@@ -230,11 +232,22 @@ def _solve(obj: Any, cls: type, stream: BitStream, extra: ConstraintIR | None) -
                 value = sample_unconstrained(desc, stream)
                 candidate[path] = value
                 local[path] = leaf_unsigned(desc, value)
-            if all(eval_bool(pred, local, widths) for ir in enabled for pred in ir.predicates) and _accept_distributions(
-                _active_dist_exprs(enabled, local, widths), local, widths, stream
-            ):
+            if not all(eval_bool(pred, local, widths) for ir in enabled for pred in ir.predicates):
+                continue
+            if not _accept_distributions(_active_dist_exprs(enabled, local, widths), local, widths, stream):
+                continue
+            if not soft_constraints:
                 chosen = candidate
                 break
+            score = tuple(eval_bool(pred, local, widths) for pred in soft_constraints)
+            if best_soft_score is None or score > best_soft_score:
+                chosen = candidate
+                best_soft_score = score
+        # A merely best-effort random candidate must not silently override a
+        # satisfiable soft clause.  Let the incremental SMT policy decide
+        # whether the missing clauses are genuinely conflicting.
+        if soft_constraints and best_soft_score is not None and not all(best_soft_score):
+            chosen = None
         if chosen is None:
             from .backend.model import SolveRequest
             from .backend.smt import solve
@@ -245,6 +258,7 @@ def _solve(obj: Any, cls: type, stream: BitStream, extra: ConstraintIR | None) -
                 state=state_values,
                 var_index=var_index,
                 assumptions=_randc_remaining_assumptions(var_index, randc_seen),
+                soft_constraints=soft_constraints,
             )
             result = _solve_sparse_singleton_dist(
                 request, enabled, env, widths, stream, solve
@@ -257,6 +271,7 @@ def _solve(obj: Any, cls: type, stream: BitStream, extra: ConstraintIR | None) -
                     random_paths=tuple(path for path, _ in constrained),
                     state=state_values,
                     var_index=var_index,
+                    soft_constraints=soft_constraints,
                 )
                 reset_result = _solve_sparse_singleton_dist(
                     reset_request, enabled, env, widths, stream, solve
@@ -384,6 +399,7 @@ def _solve_sparse_singleton_dist(
             state=request.state,
             var_index=request.var_index,
             assumptions=(*request.assumptions, assumption),
+            soft_constraints=request.soft_constraints,
         ))
         if result.is_sat:
             models.append((weight, result))
@@ -490,6 +506,21 @@ def _commit_randc_state(
         updated = set(seen)
         updated.add(leaf_unsigned(target, target.value))
         state[path] = (signature, updated)
+
+
+def _ordered_soft_constraints(irs: list[ConstraintIR]) -> tuple[Expr, ...]:
+    """Return highest-priority soft clauses first.
+
+    Inline constraints are appended after class blocks; derived blocks are
+    collected after base blocks.  Reversing both levels therefore matches the
+    SV override direction while retaining deterministic same-block ordering.
+    """
+
+    return tuple(
+        predicate
+        for ir in reversed(irs)
+        for predicate in reversed(ir.soft_predicates)
+    )
 
 
 def _value_from_bits(desc: Any, bits: int) -> Any:

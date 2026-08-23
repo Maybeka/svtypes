@@ -22,6 +22,7 @@ class SolveRequest:
     state: Mapping[str, int]
     var_index: Mapping[str, VarDecl]
     assumptions: tuple[Expr, ...] = ()
+    soft_constraints: tuple[Expr, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "irs", tuple(self.irs))
@@ -29,6 +30,7 @@ class SolveRequest:
         object.__setattr__(self, "state", MappingProxyType(dict(self.state)))
         object.__setattr__(self, "var_index", MappingProxyType(dict(self.var_index)))
         object.__setattr__(self, "assumptions", tuple(self.assumptions))
+        object.__setattr__(self, "soft_constraints", tuple(self.soft_constraints))
 
 
 @dataclass(frozen=True, slots=True)

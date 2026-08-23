@@ -87,6 +87,9 @@ def _render_stmt(stmt: IRStmt, indent: str, step: str) -> list[str]:
     if stmt.kind == "pred":
         assert stmt.expr is not None
         return [f"{indent}{render_expr(stmt.expr)};"]
+    if stmt.kind == "soft":
+        assert stmt.expr is not None
+        return [f"{indent}soft {render_expr(stmt.expr)};"]
     if stmt.kind == "for":
         assert stmt.var is not None and stmt.start is not None and stmt.stop is not None
         if not stmt.array:
