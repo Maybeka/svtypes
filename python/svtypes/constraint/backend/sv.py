@@ -24,7 +24,7 @@ def render_constraint_blocks(cls: type, indent: str, step: str) -> list[str]:
 
 def _sv_rand_mode_paths(cls: type, names: tuple[str, ...] | list[str]) -> list[str]:
     from ..layer import expand_declared_paths
-    from ...collection import DynArray, Queue
+    from ...collection import AssocArray, DynArray, Queue
 
     members = dict(getattr(cls, "_SvObject__svtypes_members", ()))
     # SV permits rand_mode() only on a singular variable.  A dynamic array or
@@ -33,7 +33,7 @@ def _sv_rand_mode_paths(cls: type, names: tuple[str, ...] | list[str]) -> list[s
     return [
         path
         for path in expand_declared_paths(cls, names)
-        if not isinstance(members.get(path.split(".", 1)[0].split("[", 1)[0]), (DynArray, Queue))
+        if not isinstance(members.get(path.split(".", 1)[0].split("[", 1)[0]), (AssocArray, DynArray, Queue))
     ]
 
 
@@ -104,6 +104,13 @@ def _render_stmt(stmt: IRStmt, indent: str, step: str) -> list[str]:
         before = ", ".join(_field_sv(path) for path in stmt.before)
         after = ", ".join(_field_sv(path) for path in stmt.after)
         return [f"{indent}solve {before} before {after};"]
+    if stmt.kind == "assoc_foreach":
+        assert stmt.var is not None and stmt.array is not None
+        lines = [f"{indent}foreach ({_field_sv(str(stmt.array))}[{stmt.var}]) {{"]
+        for child in stmt.then_body:
+            lines.extend(_render_stmt(child, indent + step, step))
+        lines.append(f"{indent}}}")
+        return lines
     if stmt.kind == "for":
         assert stmt.var is not None and stmt.start is not None and stmt.stop is not None
         if not stmt.array:

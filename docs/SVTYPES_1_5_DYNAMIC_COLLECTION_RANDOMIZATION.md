@@ -44,8 +44,22 @@ class Packet(SvObject):
 ## 关联数组
 
 `AssocArray` 也提供运行时 `.size()` 查询，与 SV 的容器 API 一致。但其键集合不是
-随机变量：当前阶段禁止在随机约束中使用关联数组 `size()`，也不会创建或随机化键。
-后续若支持关联数组随机化，必须单独定义键域、已有键以及 `foreach` 键变量的语义。
+随机变量：不能在随机约束中使用关联数组 `size()`，也不会创建、删除或随机化键。
+
+对已有条目的 value 可声明 `rand=True` 并使用 Python 字典风格的键迭代：
+
+```python
+class Lookup(SvObject):
+    table = AssocArray(Bit(8), Bit(16), rand=True)
+
+    @constraint
+    def legal(self):
+        for key in self.table:
+            self.table[key] <= 1024
+```
+
+它生成 `foreach (table[key])`。整数和枚举键可同时出现在数值表达式中；字符串键只能作为
+`self.table[key]` 的索引。三类键的既有条目都可随机化 value。
 
 ## rand_mode 与分层随机
 

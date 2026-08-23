@@ -9,6 +9,7 @@ import pytest
 
 from svtypes import (
     Array,
+    AssocArray,
     Bit,
     DynArray,
     Enum,
@@ -186,6 +187,15 @@ class EmptyOnlyCollectionPacket(SvObject):
         self.data.size() <= 4
         for i in range(self.data.size()):
             self.data[i] != self.data[i]
+
+
+class AssocCollectionPacket(SvObject):
+    table = AssocArray(Bit(8), Bit(8), rand=True)
+
+    @constraint
+    def legal(self):
+        for key in self.table:
+            self.table[key] == key + 1
 
 
 class DiffPacket(SvObject):
@@ -418,6 +428,7 @@ def test_remote_target_dynamic_collection_simulation():
                 DynamicCollectionPacket.to_sv_obj(level=1),
                 QueueCollectionPacket.to_sv_obj(level=1),
                 EmptyOnlyCollectionPacket.to_sv_obj(level=1),
+                AssocCollectionPacket.to_sv_obj(level=1),
                 "endpackage",
                 "",
             ]
@@ -433,7 +444,10 @@ module tb;
     DynamicCollectionPacket d;
     QueueCollectionPacket q;
     EmptyOnlyCollectionPacket e;
-    d = new(); q = new(); e = new();
+    AssocCollectionPacket a;
+    d = new(); q = new(); e = new(); a = new();
+    a.table[8'd1] = 8'd99;
+    a.table[8'd7] = 8'd99;
     for (i = 0; i < 32; i++) begin
       if (!d.randomize()) $fatal(1, "dynamic array unsat");
       if (d.data.size() != d.length || d.data.size() > 4)
@@ -446,6 +460,9 @@ module tb;
         $fatal(1, "queue element constraint");
       if (!e.randomize()) $fatal(1, "empty-only dynamic array unsat");
       if (e.data.size() != 0) $fatal(1, "empty-only dynamic array size");
+      if (!a.randomize()) $fatal(1, "associative array unsat");
+      if (a.table[8'd1] != 8'd2 || a.table[8'd7] != 8'd8)
+        $fatal(1, "associative array value constraint");
     end
     $display("SVTYPES_DYNAMIC_COLLECTION_PASS");
     $finish;

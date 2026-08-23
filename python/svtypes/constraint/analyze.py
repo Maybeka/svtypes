@@ -132,6 +132,31 @@ class _Analyzer:
         if isinstance(node, ForConstraint):
             if node.var in self.loop_vars or node.var in self.loop_symbols:
                 raise ConstraintNameError(f"{node.loc.format()}: loop variable {node.var!r} is already bound")
+            if node.collection is not None:
+                parts, desc = self._ref_descriptor(node.collection)
+                if not isinstance(desc, AssocArray):
+                    raise ConstraintTypeError(
+                        f"{node.loc.format()}: direct for-loop iteration requires an associative array"
+                    )
+                self.loop_symbols[node.var] = node.var
+                body: list[IRStmt] = []
+                for stmt in node.body:
+                    body.extend(self.lower_stmt(stmt))
+                self.loop_symbols.pop(node.var, None)
+                array = self.loop_index_arrays.get(node.var)
+                expected = format_path(parts)
+                if array != expected:
+                    raise ConstraintUnsupportedError(
+                        f"{node.loc.format()}: associative-array loop variable must index {expected} in its body"
+                    )
+                return [IRStmt(
+                    kind="assoc_foreach",
+                    var=node.var,
+                    then_body=body,
+                    array=expected,
+                    collection_kind="assoc",
+                )]
+            assert node.start is not None and node.stop is not None
             start = self.try_const_int(node.start)
             stop = self.try_const_int(node.stop)
             if start is not None and stop is not None:
@@ -422,9 +447,10 @@ class _Analyzer:
                 if index < 0 or index >= desc._size:
                     raise ConstraintTypeError(f"{node.loc.format()}: index {index} is out of range")
                 index_part = index
-            if not isinstance(desc, (Array, DynArray, Queue)):
-                raise ConstraintUnsupportedError(f"{node.loc.format()}: indexing is only allowed on arrays and queues")
-            return [*parts, index_part], desc._elem_template
+            if not isinstance(desc, (Array, DynArray, Queue, AssocArray)):
+                raise ConstraintUnsupportedError(f"{node.loc.format()}: indexing is only allowed on collections")
+            element = desc._val_template if isinstance(desc, AssocArray) else desc._elem_template
+            return [*parts, index_part], element
         if isinstance(node, MemberRef):
             parts, desc = self._ref_descriptor(node.base)
             if isinstance(desc, SvStruct):
@@ -578,7 +604,7 @@ def _flatten_hard_stmt(stmt: IRStmt) -> Expr:
         return stmt.expr
     if stmt.kind in {"soft", "solve_before"}:
         return c_bool(True, stmt.expr.loc if stmt.expr is not None else None)
-    if stmt.kind == "for":
+    if stmt.kind in {"for", "assoc_foreach"}:
         # Symbolic loops are only rendered for the target language; the Python
         # template IR never solves them, so they flatten to a true placeholder.
         loc = stmt.start.loc if stmt.start is not None else None
@@ -604,7 +630,7 @@ def _flatten_soft_stmt(stmt: IRStmt, guard: Expr | None = None) -> list[Expr]:
     if stmt.kind == "soft":
         assert stmt.expr is not None
         return [Expr("lor", (Expr("not", (guard,), BOOL, loc), stmt.expr), BOOL, loc)]
-    if stmt.kind in {"pred", "for", "solve_before"}:
+    if stmt.kind in {"pred", "for", "assoc_foreach", "solve_before"}:
         return []
     assert stmt.cond is not None
     then_guard = Expr("land", (guard, stmt.cond), BOOL, loc)

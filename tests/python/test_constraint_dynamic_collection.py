@@ -2,7 +2,7 @@
 
 import pytest
 
-from svtypes import AssocArray, Bit, ConstraintUnsupportedError, DeclarationError, DynArray, Queue, SvObject, constraint, rand_layer
+from svtypes import AssocArray, Bit, ConstraintUnsupportedError, DeclarationError, DynArray, Queue, String, SvObject, constraint, rand_layer
 
 
 class DynamicPacket(SvObject):
@@ -57,6 +57,24 @@ class EmptyOnlyDynamicPacket(SvObject):
             self.data[i] != self.data[i]
 
 
+class AssocPacket(SvObject):
+    table = AssocArray(Bit(8), Bit(8), rand=True)
+
+    @constraint
+    def legal(self):
+        for key in self.table:
+            self.table[key] == key + 1
+
+
+class StringAssocPacket(SvObject):
+    table = AssocArray(String(), Bit(8), rand=True)
+
+    @constraint
+    def legal(self):
+        for key in self.table:
+            self.table[key] == 5
+
+
 def test_dynamic_array_size_and_foreach_render_as_sv():
     source = DynamicPacket.to_sv_obj()
     assert "data.size()" in source
@@ -97,6 +115,22 @@ def test_dynamic_size_search_retries_when_nonempty_elements_are_unsat():
     packet = EmptyOnlyDynamicPacket()
     assert packet.randomize()
     assert packet.data.size() == 0
+
+
+def test_associative_array_randomizes_existing_values_by_python_key_iteration():
+    packet = AssocPacket()
+    packet.table.value = {1: 99, 7: 99}
+    assert packet.randomize()
+    assert packet.table.value == {1: 2, 7: 8}
+    source = AssocPacket.to_sv_obj()
+    assert "foreach (table[key])" in source
+
+
+def test_associative_array_string_keys_randomize_existing_values():
+    packet = StringAssocPacket()
+    packet.table.value = {"a": 99, "brace}key": 99}
+    assert packet.randomize()
+    assert packet.table.value == {"a": 5, "brace}key": 5}
 
 
 def test_associative_array_size_is_not_a_random_constraint_variable():

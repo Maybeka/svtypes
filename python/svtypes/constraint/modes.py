@@ -117,6 +117,12 @@ def path_prefixes(path: str) -> list[str]:
             acc += path[index:end + 1]
             index = end + 1
             continue
+        if path[index] == "{":
+            prefixes.append(acc)
+            end = path.index("}", index)
+            acc += path[index:end + 1]
+            index = end + 1
+            continue
         acc += path[index]
         index += 1
     if acc:

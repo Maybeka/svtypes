@@ -160,6 +160,7 @@ class IRStmt:
     start: Expr | None = None
     stop: Expr | None = None
     array: str | None = None
+    collection_kind: str | None = None
     before: tuple[str, ...] | None = None
     after: tuple[str, ...] | None = None
 

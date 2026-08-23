@@ -49,9 +49,10 @@ class IfConstraint(AstNode):
 @dataclass
 class ForConstraint(AstNode):
     var: str
-    start: AstNode
-    stop: AstNode
+    start: AstNode | None
+    stop: AstNode | None
     body: list[AstNode]
+    collection: AstNode | None = None
 
 
 @dataclass

@@ -7,7 +7,7 @@ from dataclasses import replace
 from types import FunctionType
 from typing import Any, Callable
 
-from ..collection import DynArray, Queue
+from ..collection import AssocArray, DynArray, Queue
 from ..errors import ConstraintBackendError, ConstraintError, DeclarationError
 from ..logic import Logic
 from .analyze import compile_block
@@ -17,6 +17,7 @@ from .ir import BOOL, ConstraintIR, Expr, IRStmt, VarDecl, bv, c_int
 from .leaves import (
     iter_class_leaves,
     iter_object_leaves,
+    assoc_path,
     leaf_has_xz,
     leaf_unsigned,
     resolve_attr,
@@ -168,6 +169,10 @@ def _solve(
         var.kind == "size" for ir in enabled for var in ir.vars
     ):
         return _solve_dynamic_collections(obj, cls, stream, enabled)
+    if enabled_override is None and any(
+        stmt.kind == "assoc_foreach" for ir in enabled for stmt in ir.statements
+    ):
+        return _solve(obj, cls, stream, None, [_expand_dynamic_ir(obj, ir) for ir in enabled])
     mentioned: set[str] = set()
     var_index: dict[str, VarDecl] = {}
     for ir in enabled:
@@ -424,7 +429,12 @@ def _expand_dynamic_ir(obj: Any, ir: ConstraintIR) -> ConstraintIR:
 
     from .analyze import _collect_solve_before, _flatten_hard_stmt, _flatten_soft_stmt
 
-    def expr(value: Expr, loop: str | None = None, index: int | None = None) -> Expr:
+    def expr(
+        value: Expr,
+        loop: str | None = None,
+        index: Any | None = None,
+        assoc_array: str | None = None,
+    ) -> Expr:
         if value.op == "size":
             return c_int(resolve_attr(obj, str(value.args[0])).size(), value.loc)
         if value.op == "loopvar" and loop == str(value.args[0]):
@@ -434,10 +444,10 @@ def _expand_dynamic_ir(obj: Any, ir: ConstraintIR) -> ConstraintIR:
         changed = False
         for arg in value.args:
             if isinstance(arg, Expr):
-                new = expr(arg, loop, index)
+                new = expr(arg, loop, index, assoc_array)
             elif isinstance(arg, tuple):
                 new = tuple(
-                    replace(item, low=expr(item.low, loop, index), high=expr(item.high, loop, index) if item.high is not None else None, weight=expr(item.weight, loop, index))
+                    replace(item, low=expr(item.low, loop, index, assoc_array), high=expr(item.high, loop, index, assoc_array) if item.high is not None else None, weight=expr(item.weight, loop, index, assoc_array))
                     if hasattr(item, "low") and hasattr(item, "weight") else item
                     for item in arg
                 )
@@ -446,12 +456,21 @@ def _expand_dynamic_ir(obj: Any, ir: ConstraintIR) -> ConstraintIR:
             args.append(new)
             changed = changed or new is not arg
         if value.op == "field" and loop is not None:
-            path = str(args[0]).replace(f"[{loop}]", f"[{index}]")
+            path = str(args[0])
+            if assoc_array is not None:
+                path = path.replace(f"{assoc_array}[{loop}]", assoc_path(assoc_array, index))
+            else:
+                path = path.replace(f"[{loop}]", f"[{index}]")
             changed = changed or path != args[0]
             args[0] = path
         return Expr(value.op, tuple(args), value.ty, value.loc, value.undef, value.hint) if changed else value
 
-    def statement(stmt: IRStmt, loop: str | None = None, index: int | None = None) -> list[IRStmt]:
+    def statement(
+        stmt: IRStmt,
+        loop: str | None = None,
+        index: Any | None = None,
+        assoc_array: str | None = None,
+    ) -> list[IRStmt]:
         if stmt.kind == "for" and stmt.array is not None:
             collection = resolve_attr(obj, stmt.array)
             if isinstance(collection, (DynArray, Queue)):
@@ -460,16 +479,25 @@ def _expand_dynamic_ir(obj: Any, ir: ConstraintIR) -> ConstraintIR:
                     for child in stmt.then_body:
                         out.extend(statement(child, stmt.var, item_index))
                 return out
+        if stmt.kind == "assoc_foreach" and stmt.array is not None:
+            collection = resolve_attr(obj, stmt.array)
+            if isinstance(collection, AssocArray):
+                out: list[IRStmt] = []
+                for key in collection._elements:
+                    for child in stmt.then_body:
+                        out.extend(statement(child, stmt.var, key, stmt.array))
+                return out
         return [IRStmt(
             kind=stmt.kind,
-            expr=expr(stmt.expr, loop, index) if stmt.expr is not None else None,
-            cond=expr(stmt.cond, loop, index) if stmt.cond is not None else None,
-            then_body=[item for child in stmt.then_body for item in statement(child, loop, index)],
-            else_body=[item for child in stmt.else_body for item in statement(child, loop, index)],
+            expr=expr(stmt.expr, loop, index, assoc_array) if stmt.expr is not None else None,
+            cond=expr(stmt.cond, loop, index, assoc_array) if stmt.cond is not None else None,
+            then_body=[item for child in stmt.then_body for item in statement(child, loop, index, assoc_array)],
+            else_body=[item for child in stmt.else_body for item in statement(child, loop, index, assoc_array)],
             var=stmt.var,
-            start=expr(stmt.start, loop, index) if stmt.start is not None else None,
-            stop=expr(stmt.stop, loop, index) if stmt.stop is not None else None,
+            start=expr(stmt.start, loop, index, assoc_array) if stmt.start is not None else None,
+            stop=expr(stmt.stop, loop, index, assoc_array) if stmt.stop is not None else None,
             array=stmt.array,
+            collection_kind=stmt.collection_kind,
             before=stmt.before,
             after=stmt.after,
         )]

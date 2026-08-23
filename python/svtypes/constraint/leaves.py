@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Iterator
 
 from ..bit import Bit
-from ..collection import Array, DynArray, Queue
+from ..collection import Array, AssocArray, DynArray, Queue
 from ..enum import Enum
 from ..errors import ConstraintError
 from ..logic import Logic, LogicValue
@@ -13,8 +14,8 @@ from ..object import ObjectDescriptor, SvObject, SvStruct
 from ..randomizable import is_randomizable
 
 
-def split_path(path: str) -> list[str | int]:
-    tokens: list[str | int] = []
+def split_path(path: str) -> list[str | int | tuple[str, Any]]:
+    tokens: list[str | int | tuple[str, Any]] = []
     buf = ""
     index = 0
     while index < len(path):
@@ -31,6 +32,18 @@ def split_path(path: str) -> list[str | int]:
                 buf = ""
             end = path.index("]", index)
             tokens.append(int(path[index + 1:end]))
+            index = end + 1
+            continue
+        if char == "{":
+            if buf:
+                tokens.append(buf)
+                buf = ""
+            if not path.startswith("{@", index):
+                raise ConstraintError(f"invalid associative-array path {path!r}")
+            value, end = json.JSONDecoder().raw_decode(path, index + 2)
+            if end >= len(path) or path[end] != "}":
+                raise ConstraintError(f"invalid associative-array path {path!r}")
+            tokens.append(("assoc", value))
             index = end + 1
             continue
         buf += char
@@ -53,6 +66,17 @@ def format_path(parts: list[str | int]) -> str:
     for part in parts:
         text = join_path(text, part)
     return text
+
+
+def assoc_path(base: str, key: Any) -> str:
+    """Return a stable Python-only leaf path for an associative entry."""
+    try:
+        encoded = json.dumps(key, separators=(",", ":"), ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        raise ConstraintError(
+            f"associative-array key {key!r} is not supported by Python randomize"
+        ) from exc
+    return f"{base}{{@{encoded}}}"
 
 
 def _is_handle(desc: Any) -> bool:
@@ -85,7 +109,7 @@ def iter_class_leaves(cls: type) -> Iterator[tuple[str, Any, bool]]:
 
 
 def iter_object_leaves(obj: Any, cls: type | None = None) -> Iterator[tuple[str, Any, bool]]:
-    """Flatten scalar leaves, expanding dynamic arrays and queues at their current size."""
+    """Flatten scalar leaves, expanding runtime-sized collection entries."""
 
     if cls is None:
         cls = obj.__class__
@@ -110,6 +134,12 @@ def _flatten_object_descriptor(
         for index, element in enumerate(value._elements):
             yield from _flatten_object_descriptor(element, desc._elem_template, f"{path}[{index}]", declared_rand)
         return
+    if isinstance(desc, AssocArray):
+        for key, element in value._elements.items():
+            yield from _flatten_object_descriptor(
+                element, desc._val_template, assoc_path(path, key), declared_rand
+            )
+        return
     if isinstance(desc, SvStruct):
         for name, member in desc.__class__._SvObject__svtypes_members:
             yield from _flatten_object_descriptor(
@@ -123,7 +153,12 @@ def _flatten_object_descriptor(
 def resolve_attr(obj: Any, path: str) -> Any:
     current = obj
     for token in split_path(path):
-        current = current[token] if isinstance(token, int) else getattr(current, token)
+        if isinstance(token, int):
+            current = current[token]
+        elif isinstance(token, tuple) and token[0] == "assoc":
+            current = current._elements[token[1]]
+        else:
+            current = getattr(current, token)
     return current
 
 

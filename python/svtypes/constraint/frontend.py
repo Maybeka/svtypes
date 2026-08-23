@@ -223,8 +223,19 @@ class _Converter:
             raise _err(loc, "for-else is not allowed")
         if not isinstance(node.target, ast.Name):
             raise _err(loc, "for-loop target must be a simple name")
+        if isinstance(node.iter, (ast.Name, ast.Attribute)):
+            return ForConstraint(
+                loc=loc,
+                var=node.target.id,
+                start=None,
+                stop=None,
+                body=self.statements(node.body),
+                collection=self.expr(node.iter),
+            )
         if not isinstance(node.iter, ast.Call):
-            raise ConstraintUnsupportedError(f"{loc.format()}: for-loop iterator must be range(...)")
+            raise ConstraintUnsupportedError(
+                f"{loc.format()}: for-loop iterator must be range(...) or an associative-array field"
+            )
         call = node.iter
         if not isinstance(call.func, ast.Name) or call.func.id != "range":
             raise ConstraintUnsupportedError(f"{loc.format()}: for-loop iterator must be range(...)")
