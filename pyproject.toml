@@ -38,3 +38,6 @@ svtypes = ["py.typed", "*.pyi"]
 [tool.pytest.ini_options]
 pythonpath = ["python", "."]
 testpaths = ["tests"]
+markers = [
+    "remote_target: SSH to the configured SystemVerilog target host and run generated SystemVerilog",
+]

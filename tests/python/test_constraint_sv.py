@@ -233,6 +233,7 @@ endmodule
     )
 
 
+@pytest.mark.remote_target
 def test_remote_target_constraint_simulation():
     host = os.environ.get("SVTYPES_target_HOST", "remote-target")
     reachable = subprocess.run(
@@ -262,6 +263,7 @@ def test_remote_target_constraint_simulation():
     assert "SVTYPES_CONSTRAINT_PASS" in log, log
 
 
+@pytest.mark.remote_target
 def test_remote_target_template_specialization_simulation():
     """The generated template definition is compiled, and both the emitted
     specialization and a direct Templated#(.WIDTH(...)) instance (resolved
@@ -351,6 +353,7 @@ endmodule
     assert "SVTYPES_TEMPLATE_PASS" in log, log
 
 
+@pytest.mark.remote_target
 def test_remote_target_type_parameter_simulation():
     """A type-parameter template compiles; direct Kind#(.T(Payload))
     instances are resolved by the target language and simulate."""
@@ -429,6 +432,7 @@ endmodule
     assert "SVTYPES_TYPE_PARAM_PASS" in log, log
 
 
+@pytest.mark.remote_target
 def test_remote_target_template_constraint_on_parameterized_instance():
     """Constraints are rendered on the template with parameter names, so a
     direct Bound#(.WIDTH(8)) instance is constrained by the target-language
@@ -508,6 +512,7 @@ endmodule
     assert "SVTYPES_REVIEW hi=0" in log, log
 
 
+@pytest.mark.remote_target
 def test_remote_target_paramref_forwarding_and_symbolic_for():
     """A ParamRef-forwarding subclass flattens to the original template, and a
     symbolic `for i in range(WIDTH)` constraint is solved by the target
@@ -593,6 +598,7 @@ endmodule
     assert "SVTYPES_PARAMREF_FOR_PASS" in log, log
 
 
+@pytest.mark.remote_target
 def test_remote_target_layered_randomize_simulation():
     host = os.environ.get("SVTYPES_target_HOST", "remote-target")
     reachable = subprocess.run(
