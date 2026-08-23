@@ -15,6 +15,7 @@ from svtypes import (
     Enum,
     Int,
     Logic,
+    Object,
     ParamRef,
     Parameter,
     RandomContext,
@@ -29,9 +30,33 @@ from svtypes import (
     soft,
     solve_before,
     unique,
+    get_package,
+    svobj,
 )
 from svtypes.constraint.eval import eval_bool
 from svtypes.constraint.leaves import iter_class_leaves, leaf_unsigned, resolve_attr
+
+
+target_handle_pkg = get_package("target_handle_randomization")
+
+
+@svobj(registry=target_handle_pkg)
+class targetHandleChild(SvObject):
+    data = Bit(8)
+
+    @constraint
+    def own_legal(self):
+        self.data <= 10
+
+
+@svobj(registry=target_handle_pkg)
+class targetHandleParent(SvObject):
+    child = Object("targetHandleChild", registry=target_handle_pkg, rand=True)
+    other = Bit(8)
+
+    @constraint
+    def cross_legal(self):
+        self.other == self.child.data + 1
 class CPacket(SvObject):
     addr = Bit(32)
     length = Bit(16)
@@ -484,6 +509,91 @@ endmodule
     print(log)
     assert result.returncode == 0, log
     assert "SVTYPES_DYNAMIC_COLLECTION_PASS" in log, log
+
+
+@pytest.mark.remote_target
+def test_remote_target_rand_handle_randomization():
+    """A pre-allocated rand class handle is solved with its parent in SystemVerilog target."""
+    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+    reachable = subprocess.run(
+        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
+        capture_output=True,
+        text=True,
+    )
+    if reachable.returncode != 0:
+        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+
+    out = Path(__file__).resolve().parents[2] / ".tmp" / "rand_handle_sv"
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "rand_handle_sv_test.sv").write_text(
+        "\n".join(
+            [
+                "package rand_handle_sv_test;",
+                "  import svtypes_pkg::*;",
+                targetHandleChild.to_sv_obj(level=1),
+                targetHandleParent.to_sv_obj(level=1),
+                "endpackage",
+                "",
+            ]
+        )
+    )
+    (out / "tb.sv").write_text(
+        """`timescale 1ns/1ps
+module tb;
+  import svtypes_pkg::*;
+  import rand_handle_sv_test::*;
+
+  class HookChild extends targetHandleChild;
+    int pre_count;
+    int post_count;
+    function void pre_randomize(); pre_count++; endfunction
+    function void post_randomize(); post_count++; endfunction
+  endclass
+
+  class HookParent extends targetHandleParent;
+    int pre_count;
+    int post_count;
+    function void pre_randomize(); pre_count++; endfunction
+    function void post_randomize(); post_count++; endfunction
+  endclass
+
+  initial begin
+    HookParent p;
+    HookChild c;
+    p = new();
+    c = new();
+    p.child = c;
+    repeat (32) begin
+      if (!p.randomize()) $fatal(1, "rand handle randomize unsat");
+      if (c.data > 10 || p.other != c.data + 1)
+        $fatal(1, "rand handle constraints violated");
+    end
+    if (p.pre_count != 32 || p.post_count != 32)
+      $fatal(1, "parent hook count");
+    if (c.pre_count != 32 || c.post_count != 32)
+      $fatal(1, "child hook count");
+    $display("SVTYPES_RAND_HANDLE_PASS");
+    $finish;
+  end
+endmodule
+"""
+    )
+    remote = (
+        "bash -ilc '"
+        "cd /path/to/svtypes/.tmp/rand_handle_sv && "
+        "rm -rf simv csrc simv.daidir && "
+        "target -full64 -sverilog -timescale=1ns/1ps "
+        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
+        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
+        "rand_handle_sv_test.sv tb.sv -o simv && ./simv'"
+    )
+    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    log = result.stdout + result.stderr
+    print(log)
+    assert result.returncode == 0, log
+    assert "SVTYPES_RAND_HANDLE_PASS" in log, log
 
 
 @pytest.mark.remote_target

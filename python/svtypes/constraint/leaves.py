@@ -114,6 +114,11 @@ def iter_object_leaves(obj: Any, cls: type | None = None) -> Iterator[tuple[str,
     if cls is None:
         cls = obj.__class__
     for name, desc in getattr(cls, "_SvObject__svtypes_members", ()):
+        # A descriptor access allocates an ObjectDescriptor on demand.  Leaf
+        # collection must never turn a null handle into an object merely by
+        # inspecting it for randomization.
+        if _is_handle(desc):
+            continue
         declared_rand = bool(getattr(desc, "rand", False)) and is_randomizable(desc)
         yield from _flatten_object_descriptor(getattr(obj, name), desc, name, declared_rand)
 

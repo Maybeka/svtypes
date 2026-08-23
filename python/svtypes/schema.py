@@ -352,7 +352,7 @@ def _descriptors(
 
     if isinstance(codec, ObjectDescriptor):
         ref = {"kind": "object_ref", "type_name": unified_type_name(codec)}
-        return {**ref, "strict_set": codec.strict_set}, ref
+        return {**ref, "strict_set": codec.strict_set, "rand": codec.rand}, ref
     if isinstance(codec, SvObject):
         return _descriptors(codec.__class__, active)
     if isinstance(codec, Logic):

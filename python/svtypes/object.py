@@ -222,10 +222,20 @@ def clear_object_registry() -> None:
 
 
 class ObjectDescriptor:
-    def __init__(self, cls_name: str, registry: ObjectRegistry | None = None, strict_set: bool = False):
+    def __init__(
+        self,
+        cls_name: str,
+        registry: ObjectRegistry | None = None,
+        strict_set: bool = False,
+        rand: bool = False,
+    ):
         self.cls_name = cls_name
         self.registry = registry or _default_registry
         self.strict_set = strict_set
+        # A class handle is only recursively randomized when it is declared
+        # ``rand``.  This is deliberately separate from handle construction:
+        # randomization never allocates a missing object.
+        self.rand = bool(rand)
         self.attr_name: str | None = None
         self._cache_key = f'_object_cache_{id(self)}'
 
@@ -262,7 +272,8 @@ class ObjectDescriptor:
         return True
 
     def sv_decl(self, name: str) -> str:
-        return f"{self.cls_name} {name}"
+        prefix = "rand " if self.rand else ""
+        return f"{prefix}{self.cls_name} {name}"
 
     def to_sv_code(self, level=0, name: str | None = None) -> str:
         name = name or self.attr_name
@@ -2232,8 +2243,19 @@ def svobj(cls: type[T] | None = None, *, name: str | None = None, registry: Obje
     return decorator
 
 
-def Object(cls_name: str, registry: ObjectRegistry | None = None, strict_set: bool = False) -> Any:
-    return ObjectDescriptor(cls_name, registry=registry, strict_set=strict_set)
+def Object(
+    cls_name: str,
+    registry: ObjectRegistry | None = None,
+    strict_set: bool = False,
+    rand: bool = False,
+) -> Any:
+    """Declare a class handle.
+
+    ``rand=True`` makes a non-null, already allocated handle an enabled random
+    object member of its containing object.  It does not randomize the handle
+    value itself and does not allocate a null handle.
+    """
+    return ObjectDescriptor(cls_name, registry=registry, strict_set=strict_set, rand=rand)
 
 
 def new(cls_name: str, *args, registry: ObjectRegistry | None = None, **kwargs) -> Any:

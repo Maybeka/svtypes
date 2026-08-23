@@ -369,12 +369,22 @@ class _Analyzer:
             if nested is None:
                 raise ConstraintNameError(f"{loc.format()}: {prefix} has no member {head!r}")
             return self.field(rest, loc, nested, f"{prefix}.{head}")
+        if isinstance(base, ObjectDescriptor):
+            target = base.registry.get(base.cls_name)
+            if target is None:
+                raise ConstraintNameError(
+                    f"{loc.format()}: object type {base.cls_name!r} is not registered"
+                )
+            nested = dict(target._SvObject__svtypes_members).get(head)
+            if nested is None:
+                raise ConstraintNameError(f"{loc.format()}: {prefix} has no member {head!r}")
+            return self.field(rest, loc, nested, f"{prefix}.{head}")
         raise ConstraintNameError(f"{loc.format()}: cannot access {head!r} on {prefix}")
 
     def member(self, node: MemberRef) -> Expr:
         path_parts, desc = self._ref_descriptor(node.base)
-        if isinstance(desc, SvStruct):
-            nested = dict(desc.__class__._SvObject__svtypes_members).get(node.name)
+        if isinstance(desc, (SvStruct, ObjectDescriptor)):
+            nested = self._member_descriptor(desc, node.name, node.loc)
             if nested is None:
                 raise ConstraintNameError(f"{node.loc.format()}: unknown member {node.name!r}")
             path = format_path([*path_parts, node.name])
@@ -424,6 +434,13 @@ class _Analyzer:
                     desc = nxt
                     parts.append(name)
                     continue
+                if isinstance(desc, ObjectDescriptor):
+                    nested = self._member_descriptor(desc, name, node.loc)
+                    if nested is None:
+                        raise ConstraintNameError(f"{node.loc.format()}: unknown member {name!r}")
+                    desc = nested
+                    parts.append(name)
+                    continue
                 raise ConstraintNameError(f"{node.loc.format()}: cannot access {name!r}")
             return parts, desc
         if isinstance(node, IndexRef):
@@ -453,13 +470,26 @@ class _Analyzer:
             return [*parts, index_part], element
         if isinstance(node, MemberRef):
             parts, desc = self._ref_descriptor(node.base)
-            if isinstance(desc, SvStruct):
-                nested = dict(desc.__class__._SvObject__svtypes_members).get(node.name)
+            if isinstance(desc, (SvStruct, ObjectDescriptor)):
+                nested = self._member_descriptor(desc, node.name, node.loc)
                 if nested is None:
                     raise ConstraintNameError(f"{node.loc.format()}: unknown member {node.name!r}")
                 return [*parts, node.name], nested
             raise ConstraintNameError(f"{node.loc.format()}: cannot access {node.name!r}")
         raise ConstraintNameError(f"{node.loc.format()}: index base must be a field path")
+
+    @staticmethod
+    def _member_descriptor(desc: Any, name: str, loc: SourceLoc) -> Any | None:
+        if isinstance(desc, SvStruct):
+            return dict(desc.__class__._SvObject__svtypes_members).get(name)
+        if isinstance(desc, ObjectDescriptor):
+            target = desc.registry.get(desc.cls_name)
+            if target is None:
+                raise ConstraintNameError(
+                    f"{loc.format()}: object type {desc.cls_name!r} is not registered"
+                )
+            return dict(target._SvObject__svtypes_members).get(name)
+        return None
 
     def leaf_ref(self, path: str, desc: Any, loc: SourceLoc, rest_desc: Any | None = None) -> Expr:
         target = rest_desc if rest_desc is not None else desc

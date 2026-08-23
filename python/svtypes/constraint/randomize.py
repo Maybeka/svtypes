@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from types import FunctionType
 from typing import Any, Callable
 
@@ -23,6 +23,7 @@ from .leaves import (
     resolve_attr,
     restore_leaves,
     snapshot_leaves,
+    split_path,
 )
 from .modes import path_prefixes
 from .sample import (
@@ -34,6 +35,239 @@ from .sample import (
 )
 
 _inline_cache: dict[tuple[int, type], ConstraintIR] = {}
+
+
+@dataclass(frozen=True)
+class _GraphNode:
+    path: str
+    obj: Any
+    cls: type
+
+
+@dataclass
+class _RandomGraph:
+    root: Any
+    nodes: list[_GraphNode]
+    leaves: list[tuple[str, Any, bool]]
+    irs: list[ConstraintIR]
+    owners: dict[str, tuple[Any, str]]
+    null_path: str | None = None
+
+    def rand_mode(self, path: str) -> int:
+        owner, local_path = self.owners[path]
+        return _effective_rand_mode(owner, local_path)
+
+
+def _with_prefix(prefix: str, path: str) -> str:
+    if not prefix:
+        return path
+    if path.startswith("@size:"):
+        return f"@size:{prefix}.{path.removeprefix('@size:')}"
+    return f"{prefix}.{path}"
+
+
+def _prefix_ir(ir: ConstraintIR, prefix: str) -> ConstraintIR:
+    """Rebase a class-local constraint IR onto its canonical graph path."""
+
+    def expr(value: Expr | None) -> Expr | None:
+        if value is None:
+            return None
+        args: list[Any] = []
+        changed = False
+        for arg in value.args:
+            if isinstance(arg, Expr):
+                new = expr(arg)
+            elif isinstance(arg, tuple):
+                new = tuple(
+                    replace(
+                        item,
+                        low=expr(item.low),
+                        high=expr(item.high),
+                        weight=expr(item.weight),
+                    )
+                    if hasattr(item, "low") and hasattr(item, "weight") else item
+                    for item in arg
+                )
+            else:
+                new = arg
+            args.append(new)
+            changed = changed or new is not arg
+        if value.op == "field":
+            args[0] = _with_prefix(prefix, str(args[0]))
+            changed = True
+        elif value.op == "size":
+            args[0] = _with_prefix(prefix, str(args[0]))
+            args[1] = _with_prefix(prefix, str(args[1]))
+            changed = True
+        return Expr(value.op, tuple(args), value.ty, value.loc, value.undef, value.hint) if changed else value
+
+    def statement(stmt: IRStmt) -> IRStmt:
+        return IRStmt(
+            kind=stmt.kind,
+            expr=expr(stmt.expr),
+            cond=expr(stmt.cond),
+            then_body=[statement(child) for child in stmt.then_body],
+            else_body=[statement(child) for child in stmt.else_body],
+            var=stmt.var,
+            start=expr(stmt.start),
+            stop=expr(stmt.stop),
+            array=_with_prefix(prefix, stmt.array) if stmt.array is not None else None,
+            collection_kind=stmt.collection_kind,
+            before=tuple(_with_prefix(prefix, path) for path in stmt.before) if stmt.before else None,
+            after=tuple(_with_prefix(prefix, path) for path in stmt.after) if stmt.after else None,
+        )
+
+    return ConstraintIR(
+        name=f"{prefix}.{ir.name}" if prefix else ir.name,
+        predicates=[expr(predicate) for predicate in ir.predicates],  # type: ignore[list-item]
+        soft_predicates=[expr(predicate) for predicate in ir.soft_predicates],  # type: ignore[list-item]
+        solve_before=[
+            (tuple(_with_prefix(prefix, item) for item in before), tuple(_with_prefix(prefix, item) for item in after))
+            for before, after in ir.solve_before
+        ],
+        vars=[replace(var, path=_with_prefix(prefix, var.path)) for var in ir.vars],
+        parameters=ir.parameters,
+        statements=[statement(stmt) for stmt in ir.statements],
+    )
+
+
+def _remap_graph_ir(ir: ConstraintIR, aliases: dict[str, str]) -> ConstraintIR:
+    """Rewrite a path through a shared-object alias to its canonical path."""
+
+    def canonical(path: str) -> str:
+        size_prefix = "@size:" if path.startswith("@size:") else ""
+        bare = path.removeprefix(size_prefix)
+        for alias in sorted(aliases, key=len, reverse=True):
+            if bare == alias or bare.startswith(f"{alias}.") or bare.startswith(f"{alias}["):
+                return size_prefix + aliases[alias] + bare[len(alias):]
+        return path
+
+    def rewrite(value: Expr | None) -> Expr | None:
+        if value is None:
+            return None
+        args: list[Any] = []
+        changed = False
+        for arg in value.args:
+            if isinstance(arg, Expr):
+                new = rewrite(arg)
+            elif isinstance(arg, tuple):
+                new = tuple(
+                    replace(item, low=rewrite(item.low), high=rewrite(item.high), weight=rewrite(item.weight))
+                    if hasattr(item, "low") and hasattr(item, "weight") else item
+                    for item in arg
+                )
+            else:
+                new = arg
+            args.append(new)
+            changed = changed or new is not arg
+        if value.op == "field":
+            args[0] = canonical(str(args[0]))
+            changed = changed or args[0] != value.args[0]
+        elif value.op == "size":
+            args[0], args[1] = canonical(str(args[0])), canonical(str(args[1]))
+            changed = changed or tuple(args) != value.args
+        return Expr(value.op, tuple(args), value.ty, value.loc, value.undef, value.hint) if changed else value
+
+    def stmt(value: IRStmt) -> IRStmt:
+        return IRStmt(value.kind, rewrite(value.expr), rewrite(value.cond), [stmt(x) for x in value.then_body], [stmt(x) for x in value.else_body], value.var, rewrite(value.start), rewrite(value.stop), canonical(value.array) if value.array else None, value.collection_kind, tuple(canonical(x) for x in value.before) if value.before else None, tuple(canonical(x) for x in value.after) if value.after else None)
+
+    return ConstraintIR(
+        ir.name,
+        [rewrite(item) for item in ir.predicates],  # type: ignore[list-item]
+        [replace(var, path=canonical(var.path)) for var in ir.vars],
+        [rewrite(item) for item in ir.soft_predicates],  # type: ignore[list-item]
+        [(tuple(canonical(x) for x in before), tuple(canonical(x) for x in after)) for before, after in ir.solve_before],
+        ir.parameters,
+        [stmt(item) for item in ir.statements],
+    )
+
+
+def _collect_random_graph(root: Any, root_cls: type, extra: ConstraintIR | None) -> _RandomGraph:
+    """Collect allocated rand-object members without materializing null handles."""
+
+    nodes: list[_GraphNode] = []
+    identities: dict[int, str] = {}
+    aliases: dict[str, str] = {}
+
+    def visit(obj: Any, cls: type, path: str) -> None:
+        existing = identities.get(id(obj))
+        if existing is not None:
+            aliases[path] = existing
+            return
+        identities[id(obj)] = path
+        nodes.append(_GraphNode(path, obj, cls))
+        for name, desc in getattr(cls, "_SvObject__svtypes_members", ()):
+            from ..object import ObjectDescriptor
+
+            if not isinstance(desc, ObjectDescriptor) or not desc.rand:
+                continue
+            child = obj.__dict__.get(desc._cache_key)
+            if child is not None:
+                visit(child, child.__class__, _with_prefix(path, name))
+
+    visit(root, root_cls, "")
+    leaves: list[tuple[str, Any, bool]] = []
+    owners: dict[str, tuple[Any, str]] = {}
+    irs: list[ConstraintIR] = []
+    for node in nodes:
+        for local_path, desc, declared_rand in iter_object_leaves(node.obj, node.cls):
+            path = _with_prefix(node.path, local_path)
+            leaves.append((path, desc, declared_rand))
+            owners[path] = (node.obj, local_path)
+        for ir in _enabled_irs(node.obj, node.cls, extra if node.path == "" else None):
+            irs.append(_prefix_ir(ir, node.path))
+    remapped = [_remap_graph_ir(ir, aliases) for ir in irs]
+    null_path = None
+    for ir in remapped:
+        for var in ir.vars:
+            if var.kind != "field":
+                continue
+            null_path = _null_handle_path(root, var.path)
+            if null_path is not None:
+                break
+        if null_path is not None:
+            break
+    return _RandomGraph(
+        root=root,
+        nodes=nodes,
+        leaves=leaves,
+        irs=remapped,
+        owners=owners,
+        null_path=null_path,
+    )
+
+
+def _null_handle_path(root: Any, path: str) -> str | None:
+    """Return the first null handle crossed by *path*, without descriptor get."""
+
+    from ..object import ObjectDescriptor
+
+    # Template foreach paths still contain a symbolic ``[i]``/``[key]`` and
+    # are expanded later.  They cannot be resolved against one runtime entry
+    # here; the current 1.6 handle traversal covers direct handle members.
+    if "[" in path or "{" in path:
+        return None
+    current = root
+    traversed: list[str] = []
+    for token in split_path(path):
+        if isinstance(token, tuple):
+            current = current._elements[token[1]]
+            continue
+        if isinstance(token, int):
+            current = current[token]
+            continue
+        desc = dict(current.__class__._SvObject__svtypes_members).get(token)
+        if desc is None:
+            return None
+        traversed.append(token)
+        if isinstance(desc, ObjectDescriptor):
+            child = current.__dict__.get(desc._cache_key)
+            if child is None:
+                return ".".join(traversed)
+            current = child
+        else:
+            current = getattr(current, token)
+    return None
 
 
 def _require_actual(obj: Any) -> type:
@@ -50,15 +284,18 @@ def randomize_object(obj: Any, extra: ConstraintIR | None = None) -> bool:
     ctx = current_context()
     _, seed = ctx.consume_call()
     stream = BitStream(seed)
-    obj.pre_randomize()
+    graph = _collect_random_graph(obj, cls, extra)
+    for node in graph.nodes:
+        node.obj.pre_randomize()
     try:
-        ok = _solve(obj, cls, stream, extra)
+        ok = _solve(obj, cls, stream, extra, graph=graph)
     except ConstraintBackendError:
         raise
     except ConstraintError:
         raise
     if ok:
-        obj.post_randomize()
+        for node in reversed(graph.nodes):
+            node.obj.post_randomize()
     return ok
 
 
@@ -163,8 +400,18 @@ def _solve(
     stream: BitStream,
     extra: ConstraintIR | None,
     enabled_override: list[ConstraintIR] | None = None,
+    graph: _RandomGraph | None = None,
 ) -> bool:
-    enabled = enabled_override if enabled_override is not None else _enabled_irs(obj, cls, extra)
+    if graph is not None and graph.null_path is not None:
+        obj._SvObject__svtypes_randomize_status = RandomizeStatus(
+            False, "null_handle", graph.null_path
+        )
+        return False
+    enabled = (
+        enabled_override
+        if enabled_override is not None
+        else (graph.irs if graph is not None else _enabled_irs(obj, cls, extra))
+    )
     if enabled_override is None and any(
         var.kind == "size" for ir in enabled for var in ir.vars
     ):
@@ -180,13 +427,13 @@ def _solve(
             mentioned.add(var.path)
             var_index[var.path] = var
 
-    leaves = list(iter_object_leaves(obj, cls))
+    leaves = list(graph.leaves) if graph is not None else list(iter_object_leaves(obj, cls))
     unconstrained: list[tuple[str, Any]] = []
     constrained: list[tuple[str, Any]] = []
     state_paths: list[str] = []
     write_paths: list[str] = []
     for path, desc, declared_rand in leaves:
-        mode = _effective_rand_mode(obj, path)
+        mode = graph.rand_mode(path) if graph is not None else _effective_rand_mode(obj, path)
         if declared_rand and mode == 1:
             write_paths.append(path)
             if path in mentioned:
@@ -218,9 +465,11 @@ def _solve(
     signature = tuple(sorted(ir.digest() for ir in enabled))
     randc_paths = [
         path for path, desc, declared_rand in leaves
-        if declared_rand and bool(getattr(desc, "randc", False)) and _effective_rand_mode(obj, path) == 1
+        if declared_rand and bool(getattr(desc, "randc", False)) and (
+            graph.rand_mode(path) if graph is not None else _effective_rand_mode(obj, path)
+        ) == 1
     ]
-    randc_seen = _prepare_randc_seen(obj, randc_paths, leaves, signature)
+    randc_seen = _prepare_randc_seen(obj, randc_paths, leaves, signature, graph)
 
     assignments: dict[str, Any] = {}
     for path, desc in unconstrained:
@@ -323,7 +572,7 @@ def _solve(
     except Exception:
         restore_leaves(obj, snapshot)
         raise
-    _commit_randc_state(obj, randc_seen, signature)
+    _commit_randc_state(obj, randc_seen, signature, graph)
     obj._SvObject__svtypes_randomize_status = RandomizeStatus(True, "sat")
     return True
 
@@ -768,12 +1017,13 @@ def _prepare_randc_seen(
     paths: list[str],
     leaves: list[tuple[str, Any, bool]],
     signature: tuple[str, ...],
+    graph: _RandomGraph | None = None,
 ) -> dict[str, set[int]]:
     descriptors = {path: desc for path, desc, _ in leaves}
-    state = obj._SvObject__svtypes_randc_state
     working: dict[str, set[int]] = {}
     for path in paths:
-        old = state.get(path)
+        owner, key = graph.owners[path] if graph is not None else (obj, path)
+        old = owner._SvObject__svtypes_randc_state.get(key)
         seen = set(old[1]) if old is not None and old[0] == signature else set()
         desc = descriptors[path]
         if _randc_domain_exhausted(desc, seen):
@@ -826,13 +1076,14 @@ def _commit_randc_state(
     obj: Any,
     seen_by_path: dict[str, set[int]],
     signature: tuple[str, ...],
+    graph: _RandomGraph | None = None,
 ) -> None:
-    state = obj._SvObject__svtypes_randc_state
     for path, seen in seen_by_path.items():
         target = resolve_attr(obj, path)
         updated = set(seen)
         updated.add(leaf_unsigned(target, target.value))
-        state[path] = (signature, updated)
+        owner, key = graph.owners[path] if graph is not None else (obj, path)
+        owner._SvObject__svtypes_randc_state[key] = (signature, updated)
 
 
 def _ordered_soft_constraints(irs: list[ConstraintIR]) -> tuple[Expr, ...]:

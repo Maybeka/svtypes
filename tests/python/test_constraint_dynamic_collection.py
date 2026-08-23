@@ -3,6 +3,7 @@
 import pytest
 
 from svtypes import AssocArray, Bit, ConstraintUnsupportedError, DeclarationError, DynArray, Queue, String, SvObject, constraint, rand_layer
+from svtypes.constraint.modes import path_prefixes
 
 
 class DynamicPacket(SvObject):
@@ -131,6 +132,10 @@ def test_associative_array_string_keys_randomize_existing_values():
     packet.table.value = {"a": 99, "brace}key": 99}
     assert packet.randomize()
     assert packet.table.value == {"a": 5, "brace}key": 5}
+
+
+def test_associative_array_mode_path_accepts_brace_in_string_key():
+    assert path_prefixes('table{@"brace}key"}') == ["table", 'table{@"brace}key"}']
 
 
 def test_associative_array_size_is_not_a_random_constraint_variable():

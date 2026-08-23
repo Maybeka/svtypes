@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from ..errors import ConstraintError
@@ -119,7 +120,17 @@ def path_prefixes(path: str) -> list[str]:
             continue
         if path[index] == "{":
             prefixes.append(acc)
-            end = path.index("}", index)
+            # Associative entries use ``{@<json>}``.  A string key may itself
+            # contain a closing brace, so the matching delimiter is the one
+            # following a complete JSON value rather than the first ``}``.
+            if not path.startswith("{@", index):
+                raise ConstraintError(f"invalid associative-array path {path!r}")
+            try:
+                _, end = json.JSONDecoder().raw_decode(path, index + 2)
+            except json.JSONDecodeError as exc:
+                raise ConstraintError(f"invalid associative-array path {path!r}") from exc
+            if end >= len(path) or path[end] != "}":
+                raise ConstraintError(f"invalid associative-array path {path!r}")
             acc += path[index:end + 1]
             index = end + 1
             continue
