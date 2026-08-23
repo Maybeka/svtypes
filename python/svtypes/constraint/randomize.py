@@ -269,7 +269,7 @@ def _solve(obj: Any, cls: type, stream: BitStream, extra: ConstraintIR | None) -
                 if exact_ordered else None
             )
             result = ordered_result if ordered_result is not None else (
-                _solve_sparse_singleton_dist(request, enabled, env, widths, stream, solve) or solve(request)
+                _solve_finite_dist(request, enabled, env, widths, stream, solve) or solve(request)
             )
             if not result.is_sat and randc_seen:
                 # The cycle has no remaining legal value.  Start a fresh
@@ -281,7 +281,7 @@ def _solve(obj: Any, cls: type, stream: BitStream, extra: ConstraintIR | None) -
                     var_index=var_index,
                     soft_constraints=soft_constraints,
                 )
-                reset_result = _solve_sparse_singleton_dist(
+                reset_result = _solve_finite_dist(
                     reset_request, enabled, env, widths, stream, solve
                 ) or solve(reset_request)
                 if reset_result.is_sat:
@@ -351,7 +351,7 @@ def _accept_distributions(
     return stream.draw_bits(64) * denominator < numerator * (1 << 64)
 
 
-def _solve_sparse_singleton_dist(
+def _solve_finite_dist(
     request: Any,
     irs: list[ConstraintIR],
     env: dict[str, int],
@@ -359,13 +359,7 @@ def _solve_sparse_singleton_dist(
     stream: BitStream,
     solve: Any,
 ) -> Any | None:
-    """Choose a SAT singleton `dist` support value by its exact weight.
-
-    Uniform candidate sampling almost never reaches a tiny support subset of a
-    wide field.  For a direct, state-resolvable single-value distribution we
-    can instead prove each support value SAT, then make one weighted choice.
-    Other dist shapes continue to use the general backend fallback.
-    """
+    """Choose a finite, state-resolvable `dist` support value by its weight."""
 
     # A branch that depends on an unsolved leaf cannot be selected before the
     # backend solves it.  The exact sparse path therefore handles only direct
@@ -380,27 +374,39 @@ def _solve_sparse_singleton_dist(
     if len(dist_exprs) != 1:
         return None
     dist_expr = dist_exprs[0]
-    options: dict[int, tuple[Expr, int]] = {}
+    from fractions import Fraction
+    from math import lcm
+    from .ir import c_int
+
+    options: dict[int, Fraction] = {}
     for item in dist_expr.args[1]:
-        if item.high is not None or _expr_fields(item.low) & set(request.random_paths):
+        if _expr_fields(item.low) & set(request.random_paths):
             return None
         if _expr_fields(item.weight) & set(request.random_paths):
             return None
         low = eval_expr(item.low, env, widths)
+        high = eval_expr(item.high, env, widths) if item.high is not None else None
         weight = eval_expr(item.weight, env, widths)
-        if low.undef or weight.undef:
+        if low.undef or weight.undef or (high is not None and high.undef):
             return None
         raw_weight = _value_as_int(weight.bits, weight.ty.width, weight.ty.signed)
         if raw_weight < 0:
             return None
-        key = low.bits
-        prior = options.get(key)
-        options[key] = (item.low, raw_weight + (prior[1] if prior else 0))
-    models: list[tuple[int, Any]] = []
-    for low, weight in options.values():
+        low_value = _value_as_int(low.bits, low.ty.width, low.ty.signed)
+        high_value = low_value if high is None else _value_as_int(high.bits, high.ty.width, high.ty.signed)
+        count = high_value - low_value + 1
+        if count <= 0:
+            continue
+        if len(options) + count > 4096:
+            return None
+        contribution = Fraction(raw_weight, 1 if item.each else count)
+        for value in range(low_value, high_value + 1):
+            options[value] = options.get(value, Fraction(0)) + contribution
+    models: list[tuple[Fraction, Any]] = []
+    for value, weight in options.items():
         if weight == 0:
             continue
-        assumption = Expr("eq", (dist_expr.args[0], low), BOOL, dist_expr.loc)
+        assumption = Expr("eq", (dist_expr.args[0], c_int(value, dist_expr.loc)), BOOL, dist_expr.loc)
         result = solve(type(request)(
             irs=request.irs,
             random_paths=request.random_paths,
@@ -413,14 +419,18 @@ def _solve_sparse_singleton_dist(
             models.append((weight, result))
     if not models:
         return None
-    total = sum(weight for weight, _ in models)
+    denominator = 1
+    for weight, _ in models:
+        denominator = lcm(denominator, weight.denominator)
+    integer_weights = [(int(weight * denominator), result) for weight, result in models]
+    total = sum(weight for weight, _ in integer_weights)
     draw_limit = ((1 << 64) // total) * total
     while True:
         draw = stream.draw_bits(64)
         if draw < draw_limit:
             break
     pick = draw % total
-    for weight, result in models:
+    for weight, result in integer_weights:
         if pick < weight:
             return result
         pick -= weight

@@ -97,6 +97,31 @@ def test_sparse_wide_singleton_dist_uses_weighted_sat_fallback():
     assert counts[0x9ABCDEF0] > counts[0x12345678] * 2
 
 
+def test_sparse_wide_range_dist_uses_total_range_weight_fallback():
+    class SparseRange(SvObject):
+        choice = Bit(32)
+
+        @constraint
+        def legal(self):
+            self.choice @ dist[
+                (0x10203040, 0x10203043) / 1,
+                0x50607080 @ 3,
+            ]
+
+    counts = {value: 0 for value in range(0x10203040, 0x10203044)}
+    counts[0x50607080] = 0
+    obj = SparseRange()
+    with RandomContext(seed=304):
+        for _ in range(240):
+            assert obj.randomize() is True
+            assert obj.choice.value in counts
+            counts[obj.choice.value] += 1
+    # The four-value range shares a total weight of one, while the singleton
+    # has weight three.
+    assert counts[0x50607080] > 150
+    assert sum(counts[value] for value in range(0x10203040, 0x10203044)) < 90
+
+
 def test_dist_rejects_negative_weights_and_boolean_composition():
     with pytest.raises(ConstraintTypeError, match="non-negative"):
         class Negative(SvObject):

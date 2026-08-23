@@ -78,16 +78,16 @@ uses rational arithmetic and a 64-bit rejection draw, not floating point.  This
 makes `:=` and `:/` observably distinct while preserving deterministic seeded
 execution.
 
-When direct sampling is impractical for a sparse, wide distribution made only
-of single values whose bounds and weights are already state-resolvable, the
-Python path proves every support value SAT and selects among the satisfiable
-values by the exact declared weights.  This avoids the former minimum-model
-bias for the common case `wide_field @ dist[VALUE_A @ 1, VALUE_B @ 3]`.
+When direct sampling is impractical for a sparse, wide distribution whose
+bounds and weights are already state-resolvable, the Python path expands up to
+4096 support values, proves every value SAT, and selects among satisfiable
+values by the exact declared weights.  This covers both singleton choices and
+finite ranges, including `:/` total-range weights, without minimum-model bias.
 
-The general SMT fallback remains a hard-satisfiability fallback for sparse
-ranges, multiple interacting distributions, and distribution bounds/weights
-that depend on unsolved leaves.  The later unified 1.4 solver-policy pass will
-extend exact weighted model selection to those shapes.
+The general SMT fallback remains a hard-satisfiability fallback for support
+sets above that bound, multiple interacting distributions, and distribution
+bounds/weights that depend on unsolved leaves.  The later unified 1.4
+solver-policy pass will extend exact weighted model selection to those shapes.
 
 ## Restrictions and future integration
 
@@ -96,8 +96,8 @@ extend exact weighted model selection to those shapes.
   leaves; collection, dynamic-size, and handle targets belong to later
   milestones.
 - Dynamic expressions are represented in IR and rendered to SV without Python
-  pre-evaluation.  Exact sparse fallback already covers state-resolvable
-  singleton distributions; dynamic ranges and interacting distributions remain
+  pre-evaluation.  Exact finite fallback covers state-resolvable support sets
+  through 4096 values; dynamic ranges and interacting distributions remain
   part of the pending solver-policy work.
 - `soft`, `solve before`, `unique`, and `randc` must share the solver-policy
   layer so their priority/order behavior cannot silently alter this interface.
