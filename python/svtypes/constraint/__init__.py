@@ -33,6 +33,16 @@ class _SoftSyntax:
 
 soft = _SoftSyntax()
 
+
+class _SolveBeforeSyntax:
+    """Source-only marker for ``solve_before(before, after)`` constraints."""
+
+    def __call__(self, *_args, **_kwargs):  # pragma: no cover - parsed, not run
+        raise TypeError("solve_before(...) is only valid inside an @constraint method")
+
+
+solve_before = _SolveBeforeSyntax()
+
 __all__ = [
     "CONSTRAINT_IR_VERSION",
     "LayeredRandomizeStatus",
@@ -42,6 +52,7 @@ __all__ = [
     "dist",
     "unique",
     "soft",
+    "solve_before",
     "rand_layer",
     "set_layered_randomization_reference_policy",
 ]

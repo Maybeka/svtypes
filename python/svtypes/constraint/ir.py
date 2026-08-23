@@ -156,6 +156,8 @@ class IRStmt:
     start: Expr | None = None
     stop: Expr | None = None
     array: str | None = None
+    before: tuple[str, ...] | None = None
+    after: tuple[str, ...] | None = None
 
 
 @dataclass
@@ -164,6 +166,7 @@ class ConstraintIR:
     predicates: list[Expr]
     vars: list[VarDecl]
     soft_predicates: list[Expr] = field(default_factory=list)
+    solve_before: list[tuple[tuple[str, ...], tuple[str, ...]]] = field(default_factory=list)
     parameters: list[tuple[str, int]] = field(default_factory=list)
     statements: list[IRStmt] = field(default_factory=list)
 
@@ -172,6 +175,7 @@ class ConstraintIR:
             "name": self.name,
             "predicates": [pred.to_stable() for pred in self.predicates],
             "soft_predicates": [pred.to_stable() for pred in self.soft_predicates],
+            "solve_before": [[*before, "before", *after] for before, after in self.solve_before],
             "vars": [var.to_stable() for var in sorted(self.vars, key=lambda item: item.path)],
             "version": CONSTRAINT_IR_VERSION,
         }

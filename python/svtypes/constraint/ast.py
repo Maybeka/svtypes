@@ -143,6 +143,14 @@ class SoftExpr(AstNode):
 
 
 @dataclass
+class SolveBeforeExpr(AstNode):
+    """Source-level ``solve_before(left, right)`` declaration."""
+
+    before: list[AstNode]
+    after: list[AstNode]
+
+
+@dataclass
 class ConstraintDecl:
     """Class-level inoperable constraint declaration."""
 

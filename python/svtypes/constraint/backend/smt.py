@@ -19,14 +19,7 @@ def _z3():
     return z3
 
 
-def solve(request: SolveRequest) -> SolveResult:
-    """Return the deterministic minimum model for a normalized request.
-
-    Candidate sampling remains in the randomization orchestrator. This
-    fallback gives the existing v1 semantics a backend-neutral boundary that
-    later policies (distribution, soft constraints, ordering) can extend.
-    """
-
+def _build_solver(request: SolveRequest) -> tuple[Any, Any, dict[str, Any], dict[str, int]]:
     z3 = _z3()
     solver = z3.Solver()
     terms: dict[str, Any] = {}
@@ -60,6 +53,13 @@ def solve(request: SolveRequest) -> SolveResult:
             solver.add(z3.Not(undef))
         else:
             solver.pop()
+    return z3, solver, terms, widths
+
+
+def solve(request: SolveRequest) -> SolveResult:
+    """Return the deterministic minimum model for a normalized request."""
+
+    z3, solver, terms, _widths = _build_solver(request)
     constrained = [path for path in request.random_paths if path in terms]
     if solver.check() != z3.sat:
         return SolveResult.unsat()
@@ -87,6 +87,75 @@ def solve(request: SolveRequest) -> SolveResult:
     model = solver.model()
     return SolveResult.sat(
         {path: _as_long(model, terms[path]) for path in request.random_paths if path in terms}
+    )
+
+
+def solve_ordered(
+    request: SolveRequest,
+    order: tuple[str, ...],
+    choose: Any,
+    *,
+    max_values: int = 4096,
+) -> SolveResult | None:
+    """Choose finite ordered domains before obtaining the remaining model.
+
+    Returning ``None`` means at least one ordered domain is too large for the
+    exact finite-domain policy; the caller can then use its general strategy.
+    """
+
+    z3, solver, terms, _widths = _build_solver(request)
+    if solver.check() != z3.sat:
+        return SolveResult.unsat()
+    for path in order:
+        term = terms.get(path)
+        if term is None:
+            return None
+        solver.push()
+        options: list[int] = []
+        while solver.check() == z3.sat:
+            model = solver.model()
+            value = _as_long(model, term)
+            options.append(value)
+            if len(options) > max_values:
+                solver.pop()
+                return None
+            solver.add(term != z3.BitVecVal(value, term.size()))
+        solver.pop()
+        selected = options[choose(len(options))]
+        solver.add(term == z3.BitVecVal(selected, term.size()))
+        if solver.check() != z3.sat:
+            raise ConstraintBackendError("ordered solve selected an infeasible value")
+    return _minimum_result(z3, solver, terms, request.random_paths)
+
+
+def _minimum_result(z3: Any, solver: Any, terms: dict[str, Any], random_paths: tuple[str, ...]) -> SolveResult:
+    constrained = [path for path in random_paths if path in terms]
+    if solver.check() != z3.sat:
+        return SolveResult.unsat()
+    if not constrained:
+        model = solver.model()
+        return SolveResult.sat(
+            {path: _as_long(model, terms[path]) for path in random_paths if path in terms}
+        )
+    concat = terms[constrained[0]]
+    for path in constrained[1:]:
+        concat = z3.Concat(concat, terms[path])
+    width = concat.size()
+    for bit_index in range(width - 1, -1, -1):
+        bit = z3.Extract(bit_index, bit_index, concat)
+        solver.push()
+        solver.add(bit == 0)
+        if solver.check() == z3.sat:
+            solver.pop()
+            solver.add(bit == 0)
+        else:
+            solver.pop()
+            solver.add(bit == 1)
+    if solver.check() != z3.sat:
+        raise ConstraintBackendError("minimum model search lost a previously SAT assignment")
+    model = solver.model()
+    return SolveResult.sat(
+        {path: _as_long(model, terms[path]) for path in random_paths if path in terms}
     )
 
 

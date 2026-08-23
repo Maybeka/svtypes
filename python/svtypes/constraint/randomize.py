@@ -177,6 +177,8 @@ def _solve(obj: Any, cls: type, stream: BitStream, extra: ConstraintIR | None) -
         elif path in mentioned:
             state_paths.append(path)
 
+    constrained = _order_constrained_paths(constrained, enabled)
+
     for path in state_paths:
         target = resolve_attr(obj, path)
         if isinstance(target, Logic) and leaf_has_xz(target, target.value):
@@ -217,7 +219,9 @@ def _solve(obj: Any, cls: type, stream: BitStream, extra: ConstraintIR | None) -
     else:
         soft_constraints = _ordered_soft_constraints(enabled)
         best_soft_score: tuple[bool, ...] | None = None
-        for _ in range(32):
+        solve_order = _solve_before_order(enabled, constrained)
+        exact_ordered = bool(solve_order) and not randc_seen and not _irs_contain_dist(enabled)
+        for _ in range(0 if exact_ordered else 32):
             candidate: dict[str, Any] = {}
             local = dict(env)
             for path, desc in constrained:
@@ -250,7 +254,7 @@ def _solve(obj: Any, cls: type, stream: BitStream, extra: ConstraintIR | None) -
             chosen = None
         if chosen is None:
             from .backend.model import SolveRequest
-            from .backend.smt import solve
+            from .backend.smt import solve, solve_ordered
 
             request = SolveRequest(
                 irs=tuple(enabled),
@@ -260,9 +264,13 @@ def _solve(obj: Any, cls: type, stream: BitStream, extra: ConstraintIR | None) -
                 assumptions=_randc_remaining_assumptions(var_index, randc_seen),
                 soft_constraints=soft_constraints,
             )
-            result = _solve_sparse_singleton_dist(
-                request, enabled, env, widths, stream, solve
-            ) or solve(request)
+            ordered_result = (
+                solve_ordered(request, solve_order, lambda count: _draw_index(stream, count))
+                if exact_ordered else None
+            )
+            result = ordered_result if ordered_result is not None else (
+                _solve_sparse_singleton_dist(request, enabled, env, widths, stream, solve) or solve(request)
+            )
             if not result.is_sat and randc_seen:
                 # The cycle has no remaining legal value.  Start a fresh
                 # cycle only after proving the full constraint set is SAT.
@@ -521,6 +529,69 @@ def _ordered_soft_constraints(irs: list[ConstraintIR]) -> tuple[Expr, ...]:
         for ir in reversed(irs)
         for predicate in reversed(ir.soft_predicates)
     )
+
+
+def _order_constrained_paths(
+    constrained: list[tuple[str, Any]],
+    irs: list[ConstraintIR],
+) -> list[tuple[str, Any]]:
+    """Apply solve-before edges to deterministic candidate draw order."""
+
+    original = [path for path, _ in constrained]
+    present = set(original)
+    successors: dict[str, set[str]] = {path: set() for path in original}
+    indegree: dict[str, int] = {path: 0 for path in original}
+    for ir in irs:
+        for before, after in ir.solve_before:
+            for left in before:
+                for right in after:
+                    if left not in present or right not in present or right in successors[left]:
+                        continue
+                    successors[left].add(right)
+                    indegree[right] += 1
+    result: list[str] = []
+    ready = [path for path in original if indegree[path] == 0]
+    while ready:
+        path = ready.pop(0)
+        result.append(path)
+        for target in original:
+            if target not in successors[path]:
+                continue
+            indegree[target] -= 1
+            if indegree[target] == 0:
+                ready.append(target)
+    if len(result) != len(original):
+        raise ConstraintError("solve_before constraints contain a cycle")
+    descs = dict(constrained)
+    return [(path, descs[path]) for path in result]
+
+
+def _solve_before_order(irs: list[ConstraintIR], constrained: list[tuple[str, Any]]) -> tuple[str, ...]:
+    involved = {
+        path
+        for ir in irs
+        for before, after in ir.solve_before
+        for path in (*before, *after)
+    }
+    if not involved:
+        return ()
+    selected = [(path, desc) for path, desc in constrained if path in involved]
+    return tuple(path for path, _ in _order_constrained_paths(selected, irs))
+
+
+def _irs_contain_dist(irs: list[ConstraintIR]) -> bool:
+    def contains(expr: Expr) -> bool:
+        if expr.op == "dist":
+            return True
+        return any(contains(arg) for arg in expr.args if isinstance(arg, Expr))
+
+    return any(contains(pred) for ir in irs for pred in ir.predicates)
+
+
+def _draw_index(stream: BitStream, count: int) -> int:
+    if count < 1:
+        raise ConstraintBackendError("ordered solve has no feasible values")
+    return stream.draw_enum(list(range(count)))
 
 
 def _value_from_bits(desc: Any, bits: int) -> Any:

@@ -90,6 +90,11 @@ def _render_stmt(stmt: IRStmt, indent: str, step: str) -> list[str]:
     if stmt.kind == "soft":
         assert stmt.expr is not None
         return [f"{indent}soft {render_expr(stmt.expr)};"]
+    if stmt.kind == "solve_before":
+        assert stmt.before is not None and stmt.after is not None
+        before = ", ".join(_field_sv(path) for path in stmt.before)
+        after = ", ".join(_field_sv(path) for path in stmt.after)
+        return [f"{indent}solve {before} before {after};"]
     if stmt.kind == "for":
         assert stmt.var is not None and stmt.start is not None and stmt.stop is not None
         if not stmt.array:

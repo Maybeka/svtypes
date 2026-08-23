@@ -24,6 +24,7 @@ from svtypes import (
     rand_layer,
     runtime_root,
     soft,
+    solve_before,
     unique,
 )
 from svtypes.constraint.eval import eval_bool
@@ -141,6 +142,16 @@ class SoftDerivedPacket(SoftBasePacket):
     @constraint
     def bounds(self):
         self.choice < 3
+
+
+class SolveBeforePacket(SvObject):
+    first = Bit(2)
+    second = Bit(2)
+
+    @constraint
+    def legal(self):
+        solve_before(self.first, self.second)
+        self.first < self.second
 
 
 class DiffPacket(SvObject):
@@ -632,6 +643,66 @@ endmodule
     print(log)
     assert result.returncode == 0, log
     assert "SVTYPES_SOFT_PASS" in log, log
+
+
+@pytest.mark.remote_target
+def test_remote_target_solve_before_simulation():
+    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+    reachable = subprocess.run(
+        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
+        capture_output=True,
+        text=True,
+    )
+    if reachable.returncode != 0:
+        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+    out = Path(__file__).resolve().parents[2] / ".tmp" / "solve_before_sv"
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "solve_before_sv_test.sv").write_text(
+        "\n".join(
+            [
+                "package solve_before_sv_test;",
+                "  import svtypes_pkg::*;",
+                SolveBeforePacket.to_sv_obj(level=1),
+                "endpackage",
+                "",
+            ]
+        )
+    )
+    (out / "tb.sv").write_text(
+        """`timescale 1ns/1ps
+module tb;
+  import svtypes_pkg::*;
+  import solve_before_sv_test::*;
+  integer i;
+  initial begin
+    SolveBeforePacket p;
+    p = new();
+    for (i = 0; i < 64; i++) begin
+      if (!p.randomize()) $fatal(1, "solve-before unsat");
+      if (!(p.first < p.second)) $fatal(1, "solve-before hard constraint escaped");
+    end
+    $display("SVTYPES_SOLVE_BEFORE_PASS");
+    $finish;
+  end
+endmodule
+"""
+    )
+    remote = (
+        "bash -ilc '"
+        "cd /path/to/svtypes/.tmp/solve_before_sv && "
+        "rm -rf simv csrc simv.daidir && "
+        "target -full64 -sverilog -timescale=1ns/1ps "
+        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
+        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
+        "solve_before_sv_test.sv tb.sv -o simv && ./simv'"
+    )
+    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    log = result.stdout + result.stderr
+    print(log)
+    assert result.returncode == 0, log
+    assert "SVTYPES_SOLVE_BEFORE_PASS" in log, log
 
 
 @pytest.mark.remote_target

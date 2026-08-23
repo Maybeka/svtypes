@@ -28,6 +28,7 @@ from .ast import (
     Predicate,
     SourceLoc,
     SoftExpr,
+    SolveBeforeExpr,
     UnaryExpr,
     UniqueExpr,
 )
@@ -298,6 +299,8 @@ class _Converter:
                 return self._unique_expr(node)
             if isinstance(node.func, ast.Name) and node.func.id == "soft":
                 return self._soft_expr(node)
+            if isinstance(node.func, ast.Name) and node.func.id == "solve_before":
+                return self._solve_before_expr(node)
             raise _err(loc, "function calls are not allowed except range() in for-loops")
         if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
             raise _err(loc, "container literals are only allowed on the right-hand side of in/not in")
@@ -361,6 +364,20 @@ class _Converter:
         if node.keywords or len(node.args) != 1 or isinstance(node.args[0], ast.Starred):
             raise _err(loc, "soft() requires exactly one non-starred expression")
         return SoftExpr(loc=loc, expr=self.expr(node.args[0]))
+
+    def _solve_before_expr(self, node: ast.Call) -> SolveBeforeExpr:
+        loc = self.loc(node)
+        if node.keywords or len(node.args) != 2 or any(isinstance(arg, ast.Starred) for arg in node.args):
+            raise _err(loc, "solve_before() requires exactly two non-starred argument groups")
+
+        def group(arg: ast.expr) -> list[AstNode]:
+            if isinstance(arg, (ast.Tuple, ast.List)):
+                if not arg.elts:
+                    raise _err(loc, "solve_before() groups cannot be empty")
+                return [self.expr(item) for item in arg.elts]
+            return [self.expr(arg)]
+
+        return SolveBeforeExpr(loc=loc, before=group(node.args[0]), after=group(node.args[1]))
 
     def _index(self, node: ast.AST) -> AstNode:
         loc = self.loc(node)

@@ -35,6 +35,7 @@ from .ast import (
     Predicate,
     SourceLoc,
     SoftExpr,
+    SolveBeforeExpr,
     UnaryExpr,
     UniqueExpr,
 )
@@ -97,6 +98,11 @@ class _Analyzer:
                 for stmt in statements
                 for predicate in _flatten_soft_stmt(stmt)
             ],
+            solve_before=[
+                edge
+                for stmt in statements
+                for edge in _collect_solve_before(stmt)
+            ],
             vars=list(self.vars.values()),
             parameters=parameters,
             statements=statements,
@@ -106,6 +112,8 @@ class _Analyzer:
         if isinstance(node, Predicate):
             if isinstance(node.expr, SoftExpr):
                 return [IRStmt(kind="soft", expr=self.as_bool(self.expr(node.expr.expr)))]
+            if isinstance(node.expr, SolveBeforeExpr):
+                return [self.solve_before(node.expr)]
             expr = self.as_bool(self.expr(node.expr))
             if _contains_dist(expr) and expr.op != "dist":
                 raise ConstraintTypeError(
@@ -243,6 +251,31 @@ class _Analyzer:
     def unique(self, node: UniqueExpr) -> Expr:
         items = tuple(self.as_bv(self.expr(item)) for item in node.items)
         return Expr("unique", items, BOOL, node.loc)
+
+    def solve_before(self, node: SolveBeforeExpr) -> IRStmt:
+        before = tuple(self._solve_before_path(item, node.loc) for item in node.before)
+        after = tuple(self._solve_before_path(item, node.loc) for item in node.after)
+        if set(before) & set(after):
+            raise ConstraintTypeError(f"{node.loc.format()}: solve_before() groups cannot overlap")
+        return IRStmt(kind="solve_before", before=before, after=after)
+
+    def _solve_before_path(self, node: AstNode, loc: SourceLoc) -> str:
+        expr = self.expr(node)
+        if expr.op != "field":
+            raise ConstraintTypeError(
+                f"{loc.format()}: solve_before() accepts only scalar random variables"
+            )
+        path = str(expr.args[0])
+        var = self.vars[path]
+        if not var.declared_rand:
+            raise ConstraintTypeError(
+                f"{loc.format()}: solve_before() variable {path!r} must be declared rand"
+            )
+        if bool(getattr(var.descriptor, "randc", False)):
+            raise ConstraintTypeError(
+                f"{loc.format()}: solve_before() cannot include randc variable {path!r}"
+            )
+        return path
 
     def name(self, node: NameRef) -> Expr:
         if node.kind == "attr":
@@ -513,7 +546,7 @@ def _flatten_hard_stmt(stmt: IRStmt) -> Expr:
     if stmt.kind == "pred":
         assert stmt.expr is not None
         return stmt.expr
-    if stmt.kind == "soft":
+    if stmt.kind in {"soft", "solve_before"}:
         return c_bool(True, stmt.expr.loc if stmt.expr is not None else None)
     if stmt.kind == "for":
         # Symbolic loops are only rendered for the target language; the Python
@@ -541,7 +574,7 @@ def _flatten_soft_stmt(stmt: IRStmt, guard: Expr | None = None) -> list[Expr]:
     if stmt.kind == "soft":
         assert stmt.expr is not None
         return [Expr("lor", (Expr("not", (guard,), BOOL, loc), stmt.expr), BOOL, loc)]
-    if stmt.kind == "pred" or stmt.kind == "for":
+    if stmt.kind in {"pred", "for", "solve_before"}:
         return []
     assert stmt.cond is not None
     then_guard = Expr("land", (guard, stmt.cond), BOOL, loc)
@@ -551,6 +584,20 @@ def _flatten_soft_stmt(stmt: IRStmt, guard: Expr | None = None) -> list[Expr]:
         out.extend(_flatten_soft_stmt(child, then_guard))
     for child in stmt.else_body:
         out.extend(_flatten_soft_stmt(child, else_guard))
+    return out
+
+
+def _collect_solve_before(stmt: IRStmt, nested: bool = False) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
+    if stmt.kind == "solve_before":
+        if nested:
+            raise ConstraintTypeError("solve_before() cannot appear inside a conditional constraint")
+        assert stmt.before is not None and stmt.after is not None
+        return [(stmt.before, stmt.after)]
+    if stmt.kind != "if":
+        return []
+    out: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+    for child in [*stmt.then_body, *stmt.else_body]:
+        out.extend(_collect_solve_before(child, nested=True))
     return out
 
 

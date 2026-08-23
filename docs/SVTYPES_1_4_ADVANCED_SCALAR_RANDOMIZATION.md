@@ -181,6 +181,36 @@ commits a merely best-effort candidate when a soft clause was missed; it uses
 the incremental SMT policy to distinguish a real conflict from an unlucky
 sample.
 
+## `solve_before` interface
+
+Use `solve_before(before, after)` as a complete constraint statement.  Each
+argument is either one scalar random field or a tuple/list of scalar random
+fields:
+
+```python
+from svtypes import constraint, solve_before
+
+@constraint
+def legal(self):
+    solve_before((self.kind, self.length), self.payload_kind)
+    self.kind < self.payload_kind
+```
+
+It emits `solve kind, length before payload_kind;`.  The groups cannot be
+empty or overlap; members must be scalar `rand` leaves, and `randc` members or
+conditional placement are rejected.  Cyclic ordering edges are reported at
+randomization time.
+
+The Python backend treats this as a selection-order policy, never as a hard
+constraint.  For each ordered variable with at most 4096 currently feasible
+values, it enumerates feasible values, selects one from the deterministic
+random stream, fixes it, and proceeds to the next ordered variable.  This
+matches the observable “solve this variable before that variable” behavior on
+the scalar finite domains used for validation.  If a domain exceeds that
+bounded exact policy, Python retains the topological candidate-draw ordering
+and falls back to the general solver; expanding that path into a scalable
+weighted model sampler remains part of the pending distribution-policy work.
+
 ## Verification
 
 `tests/python/test_constraint_dist.py` covers source parsing, expression
@@ -201,3 +231,7 @@ constraint with SystemVerilog target.
 `tests/python/test_constraint_soft.py` covers hard-over-soft behavior,
 same-block and inheritance priority, and conditional activation.  The SystemVerilog target soft
 regression verifies all of those ordering cases in generated SystemVerilog.
+
+`tests/python/test_constraint_solve_before.py` covers groups, rendering, and
+invalid operands/cycles.  The matching SystemVerilog target regression compiles and executes
+the generated `solve ... before ...` declaration.
