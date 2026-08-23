@@ -5,6 +5,7 @@ from typing import Any
 @dataclass(frozen=True, slots=True)
 class FieldOptions:
     rand: bool | None = None
+    randc: bool = False
     plusarg: bool | None = None
     dump: bool | None = None
     cov: bool | None = None
@@ -33,6 +34,7 @@ class TypeBase:
         cov: bool | None = None,
         intelli: bool | None = None,
         pack_bytes: bool | None = True,
+        randc: bool = False,
     ) -> None:
         '''
         :param rand: 该变量在SystemVerilog侧是否有rand修饰符
@@ -52,7 +54,19 @@ class TypeBase:
         }.items():
             if value is not None and not isinstance(value, bool):
                 raise TypeError(f"Field policy {name} must be True, False, or None")
-        self._field_options = FieldOptions(rand, plusarg, dump, cov, intelli, pack_bytes)
+        if not isinstance(randc, bool):
+            raise TypeError("Field policy randc must be True or False")
+        if randc and rand is not None:
+            raise ValueError("randc=True cannot be combined with an explicit rand policy")
+        self._field_options = FieldOptions(
+            rand=rand,
+            randc=randc,
+            plusarg=plusarg,
+            dump=dump,
+            cov=cov,
+            intelli=intelli,
+            pack_bytes=pack_bytes,
+        )
 
         self._attr_name = ''
 
@@ -66,7 +80,13 @@ class TypeBase:
 
     @property
     def rand(self):
+        if self.randc:
+            return True
         return self._default_rand if self._field_options.rand is None else self._field_options.rand
+
+    @property
+    def randc(self) -> bool:
+        return self._field_options.randc
 
     @property
     def plusarg(self):

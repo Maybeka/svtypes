@@ -202,6 +202,10 @@ class _Analyzer:
             raise ConstraintTypeError(
                 f"{node.loc.format()}: a dist expression must contain at least one rand variable"
             )
+        if any(bool(getattr(self.vars[path].descriptor, "randc", False)) for path in value_paths):
+            raise ConstraintTypeError(
+                f"{node.loc.format()}: dist cannot be applied to a randc variable"
+            )
         items: list[IRDistItem] = []
         for item in node.items:
             low = self.as_bv(self.expr(item.low))

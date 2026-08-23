@@ -27,8 +27,17 @@ class Bit(BuiltInType):
         cov: bool | None = None,
         intelli: bool | None = None,
         pack_bytes: bool | None = True,
+        randc: bool = False,
     ) -> None:
-        super().__init__(rand, plusarg, dump, cov, intelli, pack_bytes)
+        super().__init__(
+            rand=rand,
+            plusarg=plusarg,
+            dump=dump,
+            cov=cov,
+            intelli=intelli,
+            pack_bytes=pack_bytes,
+            randc=randc,
+        )
 
         if isinstance(width, tuple):
             if not width:

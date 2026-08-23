@@ -73,6 +73,15 @@ class DistPacket(SvObject):
         ]
 
 
+class RandcPacket(SvObject):
+    choice = Bit(2, randc=True)
+    limit = Bit(2, rand=False)
+
+    @constraint
+    def legal(self):
+        self.choice < self.limit
+
+
 class DiffPacket(SvObject):
     addr = Bit(32)
     data = Logic(32)
@@ -348,6 +357,86 @@ endmodule
     print(log)
     assert result.returncode == 0, log
     assert "SVTYPES_DIST_PASS" in log, log
+
+
+@pytest.mark.remote_target
+def test_remote_target_randc_cycle_simulation():
+    """Generated `randc` follows the observable SV cycle and mode rules."""
+    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+    reachable = subprocess.run(
+        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
+        capture_output=True,
+        text=True,
+    )
+    if reachable.returncode != 0:
+        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+    out = Path(__file__).resolve().parents[2] / ".tmp" / "randc_sv"
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "randc_sv_test.sv").write_text(
+        "\n".join(
+            [
+                "package randc_sv_test;",
+                "  import svtypes_pkg::*;",
+                RandcPacket.to_sv_obj(level=1),
+                "endpackage",
+                "",
+            ]
+        )
+    )
+    (out / "tb.sv").write_text(
+        """`timescale 1ns/1ps
+module tb;
+  import svtypes_pkg::*;
+  import randc_sv_test::*;
+  integer i;
+  bit [3:0] seen;
+  bit [1:0] held;
+  initial begin
+    RandcPacket p;
+    p = new();
+    p.limit = 2'd3;
+    seen = '0;
+    for (i = 0; i < 3; i++) begin
+      if (!p.randomize()) $fatal(1, "randc constrained unsat");
+      if (seen[p.choice]) $fatal(1, "randc repeated before constrained cycle exhausted");
+      seen[p.choice] = 1'b1;
+    end
+    if (!p.randomize()) $fatal(1, "randc reset unsat");
+    if (p.choice >= 2'd3) $fatal(1, "randc constraint escaped");
+
+    p.limit = 2'd0;
+    if (p.randomize()) $fatal(1, "randc expected unsat");
+    p.limit = 2'd3;
+    if (!p.randomize()) $fatal(1, "randc did not recover from unsat");
+    held = p.choice;
+    p.choice.rand_mode(0);
+    if (!p.randomize()) $fatal(1, "randc mode-off randomize failed");
+    if (p.choice != held) $fatal(1, "randc mode-off changed value");
+    p.choice.rand_mode(1);
+    if (!p.randomize()) $fatal(1, "randc re-enable randomize failed");
+    if (p.choice >= 2'd3) $fatal(1, "randc re-enable constraint escaped");
+    $display("SVTYPES_RANDC_PASS");
+    $finish;
+  end
+endmodule
+"""
+    )
+    remote = (
+        "bash -ilc '"
+        "cd /path/to/svtypes/.tmp/randc_sv && "
+        "rm -rf simv csrc simv.daidir && "
+        "target -full64 -sverilog -timescale=1ns/1ps "
+        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
+        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
+        "randc_sv_test.sv tb.sv -o simv && ./simv'"
+    )
+    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    log = result.stdout + result.stderr
+    print(log)
+    assert result.returncode == 0, log
+    assert "SVTYPES_RANDC_PASS" in log, log
 
 
 @pytest.mark.remote_target

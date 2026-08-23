@@ -194,9 +194,16 @@ def _solve(obj: Any, cls: type, stream: BitStream, extra: ConstraintIR | None) -
     for var in var_index.values():
         widths[var.path] = (var.width, var.signed)
 
+    signature = tuple(sorted(ir.digest() for ir in enabled))
+    randc_paths = [
+        path for path, desc, declared_rand in leaves
+        if declared_rand and bool(getattr(desc, "randc", False)) and _effective_rand_mode(obj, path) == 1
+    ]
+    randc_seen = _prepare_randc_seen(obj, randc_paths, leaves, signature)
+
     assignments: dict[str, Any] = {}
     for path, desc in unconstrained:
-        value = sample_unconstrained(desc, stream)
+        value = _sample_randc(desc, stream, randc_seen[path]) if path in randc_seen else sample_unconstrained(desc, stream)
         assignments[path] = value
         env[path] = leaf_unsigned(desc, value)
 
@@ -212,6 +219,14 @@ def _solve(obj: Any, cls: type, stream: BitStream, extra: ConstraintIR | None) -
             candidate: dict[str, Any] = {}
             local = dict(env)
             for path, desc in constrained:
+                if path not in randc_seen:
+                    continue
+                value = _sample_randc(desc, stream, randc_seen[path])
+                candidate[path] = value
+                local[path] = leaf_unsigned(desc, value)
+            for path, desc in constrained:
+                if path in randc_seen:
+                    continue
                 value = sample_unconstrained(desc, stream)
                 candidate[path] = value
                 local[path] = leaf_unsigned(desc, value)
@@ -229,10 +244,27 @@ def _solve(obj: Any, cls: type, stream: BitStream, extra: ConstraintIR | None) -
                 random_paths=tuple(path for path, _ in constrained),
                 state=state_values,
                 var_index=var_index,
+                assumptions=_randc_remaining_assumptions(var_index, randc_seen),
             )
             result = _solve_sparse_singleton_dist(
                 request, enabled, env, widths, stream, solve
             ) or solve(request)
+            if not result.is_sat and randc_seen:
+                # The cycle has no remaining legal value.  Start a fresh
+                # cycle only after proving the full constraint set is SAT.
+                reset_request = SolveRequest(
+                    irs=tuple(enabled),
+                    random_paths=tuple(path for path, _ in constrained),
+                    state=state_values,
+                    var_index=var_index,
+                )
+                reset_result = _solve_sparse_singleton_dist(
+                    reset_request, enabled, env, widths, stream, solve
+                ) or solve(reset_request)
+                if reset_result.is_sat:
+                    for seen in randc_seen.values():
+                        seen.clear()
+                    result = reset_result
             if not result.is_sat:
                 restore_leaves(obj, snapshot)
                 obj._SvObject__svtypes_randomize_status = RandomizeStatus(False, "unsat")
@@ -249,6 +281,7 @@ def _solve(obj: Any, cls: type, stream: BitStream, extra: ConstraintIR | None) -
     except Exception:
         restore_leaves(obj, snapshot)
         raise
+    _commit_randc_state(obj, randc_seen, signature)
     obj._SvObject__svtypes_randomize_status = RandomizeStatus(True, "sat")
     return True
 
@@ -350,7 +383,7 @@ def _solve_sparse_singleton_dist(
             random_paths=request.random_paths,
             state=request.state,
             var_index=request.var_index,
-            assumptions=(assumption,),
+            assumptions=(*request.assumptions, assumption),
         ))
         if result.is_sat:
             models.append((weight, result))
@@ -385,6 +418,78 @@ def _value_as_int(bits: int, width: int, signed: bool) -> int:
         return bits
     sign = 1 << (width - 1)
     return bits - (1 << width) if bits & sign else bits
+
+
+def _prepare_randc_seen(
+    obj: Any,
+    paths: list[str],
+    leaves: list[tuple[str, Any, bool]],
+    signature: tuple[str, ...],
+) -> dict[str, set[int]]:
+    descriptors = {path: desc for path, desc, _ in leaves}
+    state = obj._SvObject__svtypes_randc_state
+    working: dict[str, set[int]] = {}
+    for path in paths:
+        old = state.get(path)
+        seen = set(old[1]) if old is not None and old[0] == signature else set()
+        desc = descriptors[path]
+        if _randc_domain_exhausted(desc, seen):
+            seen.clear()
+        working[path] = seen
+    return working
+
+
+def _randc_domain_exhausted(desc: Any, seen: set[int]) -> bool:
+    from ..enum import Enum
+
+    if isinstance(desc, Enum):
+        return len(seen) >= len(desc.__class__._enum_items)
+    return len(seen) >= (1 << desc.width)
+
+
+def _sample_randc(desc: Any, stream: BitStream, seen: set[int]) -> Any:
+    from ..enum import Enum
+
+    if isinstance(desc, Enum):
+        members = [int(item) for item in desc.__class__._enum_items if int(item) not in seen]
+        if not members:
+            raise ConstraintBackendError("randc cycle has no remaining enum values")
+        return desc._normalize(stream.draw_enum(members))
+    # A draw/retry avoids materializing the potentially enormous packed domain.
+    while True:
+        value = sample_unconstrained(desc, stream)
+        if leaf_unsigned(desc, value) not in seen:
+            return value
+
+
+def _randc_remaining_assumptions(
+    var_index: dict[str, VarDecl],
+    seen_by_path: dict[str, set[int]],
+) -> tuple[Expr, ...]:
+    from .ir import bv, c_field, c_int
+
+    assumptions: list[Expr] = []
+    for path, seen in seen_by_path.items():
+        decl = var_index.get(path)
+        if decl is None:
+            continue
+        field = c_field(path, bv(decl.width, decl.signed))
+        for value in seen:
+            assumptions.append(Expr("ne", (field, c_int(value, hint=None)), BOOL))
+    return tuple(assumptions)
+
+
+def _commit_randc_state(
+    obj: Any,
+    seen_by_path: dict[str, set[int]],
+    signature: tuple[str, ...],
+) -> None:
+    state = obj._SvObject__svtypes_randc_state
+    for path, seen in seen_by_path.items():
+        target = resolve_attr(obj, path)
+        updated = set(seen)
+        updated.add(leaf_unsigned(target, target.value))
+        state[path] = (signature, updated)
 
 
 def _value_from_bits(desc: Any, bits: int) -> Any:

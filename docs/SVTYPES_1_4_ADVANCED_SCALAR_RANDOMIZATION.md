@@ -101,6 +101,38 @@ extend exact weighted model selection to those shapes.
 - `soft`, `solve before`, `unique`, and `randc` must share the solver-policy
   layer so their priority/order behavior cannot silently alter this interface.
 
+## Pending `randc` semantic design
+
+The field-policy spelling is `randc=True`, mutually exclusive with an explicit
+`rand=` policy, and it renders the target declaration with SV `randc` rather
+than `rand`.
+
+Regardless of that spelling, the semantic contract is fixed as follows:
+
+- It applies only to 2-state scalar integral leaves (`Bit`, `Int`, `LongInt`,
+  and Enum).  Four-state `Logic`, containers, and object handles are rejected.
+- Cycle state belongs to an object instance and the resolved scalar leaf path;
+  it is not schema identity and is not serialized.
+- At a successful `randomize()`, `randc` values are selected before ordinary
+  `rand` values.  A value is not repeated until every currently legal value in
+  its cycle has appeared.
+- A failed randomization does not consume a cyclic value.  `rand_mode(0)`
+  pauses the cycle; re-enabling resumes it.
+- Changing the enabled constraint set that applies to a cyclic variable starts
+  a new cycle.  If the current cycle has no remaining value satisfying the
+  current constraints but the full domain is satisfiable, it also starts a new
+  cycle.  This is the practical equivalent of SV's constraint-change and
+  exhausted-remaining-value reset behavior.
+- A `dist` expression whose left side includes a `randc` leaf is a declaration
+  error.  `solve before` must likewise reject cyclic variables as ordering
+  operands.
+
+Python verification will use finite small domains to prove no repetition,
+reset, constraint exhaustion, failure non-consumption, and mode pause/resume.
+SystemVerilog target verification will generate the same `randc` declarations and assert the
+same observable cycle invariants; it will not assert identical random-number
+streams across the two implementations.
+
 ## Verification
 
 `tests/python/test_constraint_dist.py` covers source parsing, expression
@@ -108,3 +140,8 @@ positions, stable hard membership, `:=` versus `:/` sampling, and invalid
 source.  `tests/python/test_constraint_sv.py::test_remote_target_dist_expression_simulation`
 generates the same IR to SV, compiles it with SystemVerilog target, and checks the resulting
 support set over repeated target-language randomizations.
+
+`tests/python/test_constraint_randc.py` covers Python cycle uniqueness, mode
+pause/resume, constrained-cycle reset, failed-call non-consumption, generated
+declarations, and invalid combinations.  The matching SystemVerilog target regression is
+`tests/python/test_constraint_sv.py::test_remote_target_randc_cycle_simulation`.

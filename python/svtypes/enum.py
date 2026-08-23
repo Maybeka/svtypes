@@ -72,8 +72,16 @@ class Enum(UserDefinedType):
         for name, member in cls._enum_map.items():
             setattr(cls, name, member)
 
-    def __init__(self, initial_value: Optional[Any] = None, rand=None, plusarg=None, dump=None, cov=None, intelli=None, pack_bytes=True):
-        super().__init__(rand, plusarg, dump, cov, intelli, pack_bytes)
+    def __init__(self, initial_value: Optional[Any] = None, rand=None, plusarg=None, dump=None, cov=None, intelli=None, pack_bytes=True, randc=False):
+        super().__init__(
+            rand=rand,
+            plusarg=plusarg,
+            dump=dump,
+            cov=cov,
+            intelli=intelli,
+            pack_bytes=pack_bytes,
+            randc=randc,
+        )
 
         if initial_value is None:
             # 默认取第一个成员

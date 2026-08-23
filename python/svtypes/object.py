@@ -319,6 +319,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             0 if _defer_identity else (svtypes_object_number or self._codec_session.allocate_object_number())
         )
         self.__svtypes_rand_modes: dict[str, int] = {}
+        self.__svtypes_randc_state: dict[str, tuple[tuple[str, ...], set[int]]] = {}
         self.__svtypes_constraint_modes: dict[str, int] = {}
         self.__svtypes_randomize_status = None
         self.__svtypes_layered_randomize_status = None
@@ -348,6 +349,10 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         rand_modes = getattr(self, "_SvObject__svtypes_rand_modes", None)
         if rand_modes is not None:
             copied.__svtypes_rand_modes = dict(rand_modes)
+            copied.__svtypes_randc_state = {
+                path: (signature, set(seen))
+                for path, (signature, seen) in self.__svtypes_randc_state.items()
+            }
             copied.__svtypes_constraint_modes = dict(self.__svtypes_constraint_modes)
             copied.__svtypes_randomize_status = self.__svtypes_randomize_status
             copied.__svtypes_layered_randomize_status = self.__svtypes_layered_randomize_status
@@ -666,6 +671,11 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
             return is_randomizable(desc)
 
+        def randc_supported(desc: Any) -> bool:
+            from .bit import Bit
+
+            return isinstance(desc, (Bit, Enum))
+
         def plusarg_supported(desc: Any) -> bool:
             from .real import Real
             from .string import String
@@ -696,6 +706,10 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                     raise ValueError(
                         f"rand belongs to the containing field, not SvStruct member {cls.__name__}.{name}"
                     )
+                if is_struct_class and desc.field_options.randc:
+                    raise ValueError(
+                        f"randc belongs to the containing field, not SvStruct member {cls.__name__}.{name}"
+                    )
                 if is_struct_class and desc.field_options.plusarg is True:
                     raise ValueError(
                         f"plusarg belongs to the containing field, not SvStruct member {cls.__name__}.{name}"
@@ -707,6 +721,10 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 if desc.field_options.rand is True and not rand_supported(desc):
                     raise ValueError(
                         f"rand=True is unsupported for {cls.__name__}.{name} ({desc.__class__.__name__})"
+                    )
+                if desc.randc and not randc_supported(desc):
+                    raise ValueError(
+                        f"randc=True is unsupported for {cls.__name__}.{name} ({desc.__class__.__name__})"
                     )
                 if desc.field_options.plusarg is True and not plusarg_supported(desc):
                     raise ValueError(
@@ -1212,7 +1230,13 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
         for name, desc in local_members:
              declaration = desc.to_sv_code(level + 1, name=name)
-             if isinstance(desc, TypeBase) and desc.rand:
+             if isinstance(desc, TypeBase) and desc.randc:
+                 declaration = declaration.replace(
+                     ind_str + cls.IND,
+                     ind_str + cls.IND + "randc ",
+                     1,
+                 )
+             elif isinstance(desc, TypeBase) and desc.rand:
                  declaration = declaration.replace(
                      ind_str + cls.IND,
                      ind_str + cls.IND + "rand ",

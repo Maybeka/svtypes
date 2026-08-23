@@ -1,7 +1,7 @@
 from .bit import Bit
 
 class Int(Bit):
-    def __init__(self, value=0, radix=Bit.Dec, rand=None, plusarg=None, dump=None, cov=None, intelli=None, pack_bytes=True) -> None:
+    def __init__(self, value=0, radix=Bit.Dec, rand=None, plusarg=None, dump=None, cov=None, intelli=None, pack_bytes=True, randc=False) -> None:
         super().__init__(
             width=32,
             value=value,
@@ -12,7 +12,8 @@ class Int(Bit):
             dump=dump,
             cov=cov,
             intelli=intelli,
-            pack_bytes=pack_bytes
+            pack_bytes=pack_bytes,
+            randc=randc,
         )
 
     def sv_decl(self, name: str):
@@ -33,7 +34,7 @@ class Int(Bit):
 
 
 class LongInt(Bit):
-    def __init__(self, value=0, radix=Bit.Dec, rand=None, plusarg=None, dump=None, cov=None, intelli=None, pack_bytes=True) -> None:
+    def __init__(self, value=0, radix=Bit.Dec, rand=None, plusarg=None, dump=None, cov=None, intelli=None, pack_bytes=True, randc=False) -> None:
         super().__init__(
             width=64,
             value=value,
@@ -44,7 +45,8 @@ class LongInt(Bit):
             dump=dump,
             cov=cov,
             intelli=intelli,
-            pack_bytes=pack_bytes
+            pack_bytes=pack_bytes,
+            randc=randc,
         )
 
     def sv_decl(self, name: str):

@@ -223,6 +223,7 @@ def _policies(codec: TypeBase) -> dict[str, bool]:
         "pack_bytes": bool(codec.pack_bytes),
         "plusarg": bool(codec.plusarg),
         "rand": bool(codec.rand),
+        "randc": bool(codec.randc),
     }
 
 
