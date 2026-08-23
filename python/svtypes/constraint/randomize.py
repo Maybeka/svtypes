@@ -215,21 +215,22 @@ def _solve(obj: Any, cls: type, stream: BitStream, extra: ConstraintIR | None) -
                 chosen = candidate
                 break
         if chosen is None:
-            from .backend.smt import minimum_model
+            from .backend.model import SolveRequest
+            from .backend.smt import solve
 
-            model = minimum_model(
-                enabled,
-                random_paths=[path for path, _ in constrained],
+            result = solve(SolveRequest(
+                irs=tuple(enabled),
+                random_paths=tuple(path for path, _ in constrained),
                 state=state_values,
                 var_index=var_index,
-            )
-            if model is None:
+            ))
+            if not result.is_sat:
                 restore_leaves(obj, snapshot)
                 obj._SvObject__svtypes_randomize_status = RandomizeStatus(False, "unsat")
                 return False
             chosen = {}
             for path, desc in constrained:
-                chosen[path] = _value_from_bits(desc, model[path])
+                chosen[path] = _value_from_bits(desc, result.assignments[path])
 
     try:
         for path, value in assignments.items():

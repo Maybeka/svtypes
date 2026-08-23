@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from ...errors import ConstraintBackendError
-from ..ir import ConstraintIR, Expr, VarDecl
+from ..ir import Expr
+from .model import SolveRequest, SolveResult
 
 
 def _z3():
@@ -18,37 +19,40 @@ def _z3():
     return z3
 
 
-def minimum_model(
-    irs: Sequence[ConstraintIR],
-    *,
-    random_paths: Sequence[str],
-    state: Mapping[str, int],
-    var_index: Mapping[str, VarDecl],
-) -> dict[str, int] | None:
+def solve(request: SolveRequest) -> SolveResult:
+    """Return the deterministic minimum model for a normalized request.
+
+    Candidate sampling remains in the randomization orchestrator. This
+    fallback gives the existing v1 semantics a backend-neutral boundary that
+    later policies (distribution, soft constraints, ordering) can extend.
+    """
+
     z3 = _z3()
     solver = z3.Solver()
     terms: dict[str, Any] = {}
     widths: dict[str, int] = {}
-    for path, decl in var_index.items():
+    for path, decl in request.var_index.items():
         terms[path] = z3.BitVec(path, decl.width)
         widths[path] = decl.width
         if decl.enum_name and decl.descriptor is not None:
             members = [int(item) for item in decl.descriptor.__class__._enum_items]
             solver.add(z3.Or([terms[path] == member for member in members]))
-    for path, bits in state.items():
+    for path, bits in request.state.items():
         if path in terms:
             solver.add(terms[path] == bits)
-    for ir in irs:
+    for ir in request.irs:
         for pred in ir.predicates:
             value, undef = _encode(z3, pred, terms, widths)
             solver.add(value)
             solver.add(z3.Not(undef))
-    constrained = [path for path in random_paths if path in terms]
+    constrained = [path for path in request.random_paths if path in terms]
     if solver.check() != z3.sat:
-        return None
+        return SolveResult.unsat()
     if not constrained:
         model = solver.model()
-        return {path: _as_long(model, terms[path]) for path in random_paths if path in terms}
+        return SolveResult.sat(
+            {path: _as_long(model, terms[path]) for path in request.random_paths if path in terms}
+        )
     concat = terms[constrained[0]]
     for path in constrained[1:]:
         concat = z3.Concat(concat, terms[path])
@@ -66,7 +70,9 @@ def minimum_model(
     if solver.check() != z3.sat:
         raise ConstraintBackendError("minimum model search lost a previously SAT assignment")
     model = solver.model()
-    return {path: _as_long(model, terms[path]) for path in random_paths if path in terms}
+    return SolveResult.sat(
+        {path: _as_long(model, terms[path]) for path in request.random_paths if path in terms}
+    )
 
 
 def _as_long(model: Any, term: Any) -> int:
