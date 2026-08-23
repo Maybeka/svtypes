@@ -47,10 +47,21 @@ class UnsatDynamicPacket(SvObject):
             self.data[i] == 2
 
 
+class EmptyOnlyDynamicPacket(SvObject):
+    data = DynArray(Bit(8), rand=True, max_length=4)
+
+    @constraint
+    def legal(self):
+        self.data.size() <= 4
+        for i in range(self.data.size()):
+            self.data[i] != self.data[i]
+
+
 def test_dynamic_array_size_and_foreach_render_as_sv():
     source = DynamicPacket.to_sv_obj()
     assert "data.size()" in source
     assert "foreach (data[i])" in source
+    assert "i < data.size()" not in source
 
 
 def test_dynamic_array_randomization_solves_size_before_elements():
@@ -80,6 +91,12 @@ def test_dynamic_randomize_failure_restores_original_container():
     packet.data.value = [9]
     assert not packet.randomize()
     assert packet.data.value == [9]
+
+
+def test_dynamic_size_search_retries_when_nonempty_elements_are_unsat():
+    packet = EmptyOnlyDynamicPacket()
+    assert packet.randomize()
+    assert packet.data.size() == 0
 
 
 def test_associative_array_size_is_not_a_random_constraint_variable():

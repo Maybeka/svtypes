@@ -13,7 +13,7 @@ from ..logic import Logic
 from .analyze import compile_block
 from .eval import eval_bool, eval_dist_weight, eval_expr
 from .frontend import parse_constraint_function
-from .ir import BOOL, ConstraintIR, Expr, IRStmt, VarDecl, bv, c_bool, c_int
+from .ir import BOOL, ConstraintIR, Expr, IRStmt, VarDecl, bv, c_int
 from .leaves import (
     iter_class_leaves,
     iter_object_leaves,
@@ -340,7 +340,6 @@ def _solve_dynamic_collections(
     from .backend.smt import solve
 
     all_leaves = list(iter_class_leaves(cls))
-    mentioned = {var.path for ir in enabled for var in ir.vars if var.kind == "field"}
     var_index = {
         var.path: var
         for ir in enabled
@@ -357,21 +356,11 @@ def _solve_dynamic_collections(
         for var in size_vars.values()
     }
     try:
-        widths = {path: (desc.width, bool(desc.signed)) for path, desc, _ in all_leaves}
-        widths.update({path: (var.width, var.signed) for path, var in var_index.items()})
-        env: dict[str, int] = {}
         state: dict[str, int] = {}
-        constrained: list[tuple[str, Any]] = []
-        unconstrained: list[tuple[str, Any]] = []
         for path, desc, declared_rand in all_leaves:
             active = declared_rand and _effective_rand_mode(obj, path) == 1
-            if active and path in mentioned:
-                constrained.append((path, desc))
-            elif active:
-                unconstrained.append((path, desc))
-            else:
+            if not active:
                 value = leaf_unsigned(resolve_attr(obj, path), resolve_attr(obj, path).value)
-                env[path] = value
                 state[path] = value
 
         constrained_size_keys = _explicit_size_constraint_keys(enabled)
@@ -386,33 +375,10 @@ def _solve_dynamic_collections(
                 active_sizes.append((key, collection))
             else:
                 value = collection.size()
-                env[key] = value
                 state[key] = value
 
-        assignments: dict[str, Any] = {}
-        for path, desc in unconstrained:
-            value = sample_unconstrained(desc, stream)
-            assignments[path] = value
-            env[path] = leaf_unsigned(desc, value)
-
-        random_paths = tuple([path for path, _ in constrained] + [path for path, _ in active_sizes])
-        chosen: dict[str, int] | None = None
-        for _ in range(32):
-            local = dict(env)
-            candidate: dict[str, int] = {}
-            for path, desc in constrained:
-                value = sample_unconstrained(desc, stream)
-                candidate[path] = leaf_unsigned(desc, value)
-                local[path] = candidate[path]
-            for path, collection in active_sizes:
-                value = stream.draw_bits(32) % (collection._max_length + 1)
-                candidate[path] = value
-                local[path] = value
-            if all(eval_bool(pred, local, widths) for ir in enabled for pred in ir.predicates):
-                chosen = candidate
-                break
-
-        if chosen is None:
+        candidates: list[dict[str, int]] = [{}]
+        if active_sizes:
             assumptions: list[Expr] = []
             for path, collection in active_sizes:
                 size_expr = Expr("size", (path.removeprefix("@size:"), path), bv(32, False))
@@ -421,38 +387,31 @@ def _solve_dynamic_collections(
                 assumptions.append(Expr("le", (size_expr, c_int(collection._max_length)), BOOL))
             request = SolveRequest(
                 irs=tuple(enabled),
-                random_paths=random_paths,
+                random_paths=tuple(path for path, _ in active_sizes),
                 state=state,
                 var_index=var_index,
                 assumptions=tuple(assumptions),
+                soft_constraints=_ordered_soft_constraints(enabled),
             )
-            result = solve(request)
-            if not result.is_sat:
+            candidates = _enumerate_dynamic_size_models(solve, request, active_sizes, stream)
+            if not candidates:
                 obj._SvObject__svtypes_randomize_status = RandomizeStatus(False, "unsat")
                 return False
-            chosen = result.assignments
 
-        for path, value in assignments.items():
-            resolve_attr(obj, path).value = value
-        for path, desc in constrained:
-            resolve_attr(obj, path).value = _value_from_bits(desc, chosen[path])
-        for path, collection in active_sizes:
-            collection._resize_for_randomize(chosen[path])
+        while candidates:
+            index = _draw_index(stream, len(candidates))
+            chosen = candidates.pop(index)
+            for path, collection in active_sizes:
+                collection._resize_for_randomize(chosen[path])
+            expanded = [_expand_dynamic_ir(obj, ir) for ir in enabled]
+            if _solve(obj, cls, stream, None, expanded):
+                return True
+            restore_leaves(obj, static_snapshot)
+            for key, elements in collection_snapshot.items():
+                resolve_attr(obj, key.removeprefix("@size:"))._elements = copy.deepcopy(elements)
 
-        expanded = [_expand_dynamic_ir(obj, ir) for ir in enabled]
-        prior_modes = dict(obj._SvObject__svtypes_rand_modes)
-        try:
-            for path, _desc, declared_rand in all_leaves:
-                if declared_rand:
-                    obj._SvObject__svtypes_rand_modes[path] = 0
-            ok = _solve(obj, cls, stream, None, expanded)
-            if not ok:
-                restore_leaves(obj, static_snapshot)
-                for key, elements in collection_snapshot.items():
-                    resolve_attr(obj, key.removeprefix("@size:"))._elements = elements
-            return ok
-        finally:
-            obj._SvObject__svtypes_rand_modes = prior_modes
+        obj._SvObject__svtypes_randomize_status = RandomizeStatus(False, "unsat")
+        return False
     except Exception:
         restore_leaves(obj, static_snapshot)
         for key, elements in collection_snapshot.items():
@@ -565,6 +524,70 @@ def _explicit_size_constraint_keys(irs: list[ConstraintIR]) -> set[str]:
         for stmt in ir.statements:
             visit_stmt(stmt)
     return keys
+
+
+def _enumerate_dynamic_size_models(
+    solve: Any,
+    request: Any,
+    active_sizes: list[tuple[str, Any]],
+    stream: BitStream,
+) -> list[dict[str, int]]:
+    """Return size witnesses, exhaustively for a bounded product domain."""
+
+    domain_size = 1
+    for _path, collection in active_sizes:
+        domain_size *= collection._max_length + 1
+    if domain_size <= 4096:
+        models: list[dict[str, int]] = []
+        assumptions = list(request.assumptions)
+        while True:
+            result = solve(replace(request, assumptions=tuple(assumptions)))
+            if not result.is_sat:
+                return models
+            model = dict(result.assignments)
+            models.append(model)
+            alternatives = [
+                Expr(
+                    "ne",
+                    (Expr("size", (path.removeprefix("@size:"), path), bv(32, False)), c_int(model[path])),
+                    BOOL,
+                )
+                for path, _collection in active_sizes
+            ]
+            blocker = alternatives[0]
+            for alternative in alternatives[1:]:
+                blocker = Expr("lor", (blocker, alternative), BOOL)
+            assumptions.append(blocker)
+
+    # An unbounded expansion is not a safe solver strategy.  Try the
+    # deterministic model plus randomized bounded probes; callers still use
+    # the fully expanded solver to validate each selected size.
+    probes: list[dict[str, int]] = []
+    attempted: set[tuple[int, ...]] = set()
+    for attempt in range(33):
+        assumptions = list(request.assumptions)
+        if attempt:
+            values = tuple(
+                stream.draw_bits(32) % (collection._max_length + 1)
+                for _path, collection in active_sizes
+            )
+            if values in attempted:
+                continue
+            attempted.add(values)
+            for (path, _collection), value in zip(active_sizes, values):
+                assumptions.append(Expr(
+                    "eq",
+                    (Expr("size", (path.removeprefix("@size:"), path), bv(32, False)), c_int(value)),
+                    BOOL,
+                ))
+        result = solve(replace(request, assumptions=tuple(assumptions)))
+        if result.is_sat:
+            model = dict(result.assignments)
+            if tuple(model[path] for path, _ in active_sizes) not in {
+                tuple(item[path] for path, _ in active_sizes) for item in probes
+            }:
+                probes.append(model)
+    return probes
 
 
 def _active_dist_exprs(

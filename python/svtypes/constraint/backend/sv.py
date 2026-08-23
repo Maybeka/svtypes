@@ -111,9 +111,23 @@ def _render_stmt(stmt: IRStmt, indent: str, step: str) -> list[str]:
                 "a symbolic range() loop requires an indexed array to be rendered "
                 "in a SystemVerilog constraint (SV constraints have no `for` statement)"
             )
-        # SystemVerilog constraints support only `foreach`; a symbolic
-        # range(i) loop becomes a foreach over the indexed array filtered by
-        # the loop bounds.
+        # `range(array.size())` is exactly a foreach.  Do not add a redundant
+        # index guard: some solvers introduce a non-vacuous helper variable
+        # for that guard and reject an otherwise legal empty collection.
+        exact_foreach = (
+            stmt.start.op == "int"
+            and int(stmt.start.args[0]) == 0
+            and stmt.stop.op == "size"
+            and str(stmt.stop.args[0]) == str(stmt.array)
+        )
+        if exact_foreach:
+            lines = [f"{indent}foreach ({_field_sv(str(stmt.array))}[{stmt.var}]) {{"]
+            for child in stmt.then_body:
+                lines.extend(_render_stmt(child, indent + step, step))
+            lines.append(f"{indent}}}")
+            return lines
+        # SystemVerilog constraints support only `foreach`; another symbolic
+        # range() loop becomes a foreach filtered by its explicit bounds.
         lines = [
             f"{indent}foreach ({_field_sv(str(stmt.array))}[{stmt.var}]) {{",
             f"{indent}{step}if ({stmt.var} >= {render_expr(stmt.start)} && "

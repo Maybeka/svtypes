@@ -178,6 +178,16 @@ class QueueCollectionPacket(SvObject):
             self.data[i] == i
 
 
+class EmptyOnlyCollectionPacket(SvObject):
+    data = DynArray(Bit(8), rand=True, max_length=4)
+
+    @constraint
+    def legal(self):
+        self.data.size() <= 4
+        for i in range(self.data.size()):
+            self.data[i] != self.data[i]
+
+
 class DiffPacket(SvObject):
     addr = Bit(32)
     data = Logic(32)
@@ -407,6 +417,7 @@ def test_remote_target_dynamic_collection_simulation():
                 "  import svtypes_pkg::*;",
                 DynamicCollectionPacket.to_sv_obj(level=1),
                 QueueCollectionPacket.to_sv_obj(level=1),
+                EmptyOnlyCollectionPacket.to_sv_obj(level=1),
                 "endpackage",
                 "",
             ]
@@ -421,7 +432,8 @@ module tb;
   initial begin
     DynamicCollectionPacket d;
     QueueCollectionPacket q;
-    d = new(); q = new();
+    EmptyOnlyCollectionPacket e;
+    d = new(); q = new(); e = new();
     for (i = 0; i < 32; i++) begin
       if (!d.randomize()) $fatal(1, "dynamic array unsat");
       if (d.data.size() != d.length || d.data.size() > 4)
@@ -432,6 +444,8 @@ module tb;
       if (q.data.size() != 3) $fatal(1, "queue size constraint");
       foreach (q.data[j]) if (q.data[j] != j)
         $fatal(1, "queue element constraint");
+      if (!e.randomize()) $fatal(1, "empty-only dynamic array unsat");
+      if (e.data.size() != 0) $fatal(1, "empty-only dynamic array size");
     end
     $display("SVTYPES_DYNAMIC_COLLECTION_PASS");
     $finish;
