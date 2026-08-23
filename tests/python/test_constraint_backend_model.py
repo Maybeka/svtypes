@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from svtypes.constraint.backend.model import SolveRequest, SolveResult
+from svtypes.constraint.ir import BOOL, Expr
 
 
 def test_solve_request_and_result_are_backend_neutral_runtime_values():
@@ -23,3 +24,9 @@ def test_solve_request_and_result_are_backend_neutral_runtime_values():
     unsat = SolveResult.unsat()
     assert unsat.is_sat is False
     assert unsat.assignments is None
+
+
+def test_solve_request_snapshots_backend_assumptions():
+    assumption = Expr("bool", (True,), BOOL)
+    request = SolveRequest((), (), {}, {}, assumptions=[assumption])
+    assert request.assumptions == (assumption,)

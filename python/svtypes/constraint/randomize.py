@@ -8,9 +8,9 @@ from typing import Any, Callable
 from ..errors import ConstraintBackendError, ConstraintError, DeclarationError
 from ..logic import Logic
 from .analyze import compile_block
-from .eval import eval_bool, eval_dist_weight
+from .eval import eval_bool, eval_dist_weight, eval_expr
 from .frontend import parse_constraint_function
-from .ir import ConstraintIR, VarDecl
+from .ir import BOOL, ConstraintIR, Expr, VarDecl
 from .leaves import (
     iter_class_leaves,
     leaf_has_xz,
@@ -224,12 +224,15 @@ def _solve(obj: Any, cls: type, stream: BitStream, extra: ConstraintIR | None) -
             from .backend.model import SolveRequest
             from .backend.smt import solve
 
-            result = solve(SolveRequest(
+            request = SolveRequest(
                 irs=tuple(enabled),
                 random_paths=tuple(path for path, _ in constrained),
                 state=state_values,
                 var_index=var_index,
-            ))
+            )
+            result = _solve_sparse_singleton_dist(
+                request, enabled, env, widths, stream, solve
+            ) or solve(request)
             if not result.is_sat:
                 restore_leaves(obj, snapshot)
                 obj._SvObject__svtypes_randomize_status = RandomizeStatus(False, "unsat")
@@ -290,6 +293,98 @@ def _accept_distributions(
     if numerator >= denominator:
         return True
     return stream.draw_bits(64) * denominator < numerator * (1 << 64)
+
+
+def _solve_sparse_singleton_dist(
+    request: Any,
+    irs: list[ConstraintIR],
+    env: dict[str, int],
+    widths: dict[str, tuple[int, bool]],
+    stream: BitStream,
+    solve: Any,
+) -> Any | None:
+    """Choose a SAT singleton `dist` support value by its exact weight.
+
+    Uniform candidate sampling almost never reaches a tiny support subset of a
+    wide field.  For a direct, state-resolvable single-value distribution we
+    can instead prove each support value SAT, then make one weighted choice.
+    Other dist shapes continue to use the general backend fallback.
+    """
+
+    # A branch that depends on an unsolved leaf cannot be selected before the
+    # backend solves it.  The exact sparse path therefore handles only direct
+    # top-level dist statements; conditional dist continues through the
+    # general fallback.
+    dist_exprs = [
+        stmt.expr
+        for ir in irs
+        for stmt in ir.statements
+        if stmt.kind == "pred" and stmt.expr is not None and stmt.expr.op == "dist"
+    ]
+    if len(dist_exprs) != 1:
+        return None
+    dist_expr = dist_exprs[0]
+    options: dict[int, tuple[Expr, int]] = {}
+    for item in dist_expr.args[1]:
+        if item.high is not None or _expr_fields(item.low) & set(request.random_paths):
+            return None
+        if _expr_fields(item.weight) & set(request.random_paths):
+            return None
+        low = eval_expr(item.low, env, widths)
+        weight = eval_expr(item.weight, env, widths)
+        if low.undef or weight.undef:
+            return None
+        raw_weight = _value_as_int(weight.bits, weight.ty.width, weight.ty.signed)
+        if raw_weight < 0:
+            return None
+        key = low.bits
+        prior = options.get(key)
+        options[key] = (item.low, raw_weight + (prior[1] if prior else 0))
+    models: list[tuple[int, Any]] = []
+    for low, weight in options.values():
+        if weight == 0:
+            continue
+        assumption = Expr("eq", (dist_expr.args[0], low), BOOL, dist_expr.loc)
+        result = solve(type(request)(
+            irs=request.irs,
+            random_paths=request.random_paths,
+            state=request.state,
+            var_index=request.var_index,
+            assumptions=(assumption,),
+        ))
+        if result.is_sat:
+            models.append((weight, result))
+    if not models:
+        return None
+    total = sum(weight for weight, _ in models)
+    draw_limit = ((1 << 64) // total) * total
+    while True:
+        draw = stream.draw_bits(64)
+        if draw < draw_limit:
+            break
+    pick = draw % total
+    for weight, result in models:
+        if pick < weight:
+            return result
+        pick -= weight
+    raise ConstraintBackendError("weighted singleton dist selection lost its chosen model")
+
+
+def _expr_fields(expr: Expr) -> set[str]:
+    if expr.op == "field":
+        return {str(expr.args[0])}
+    fields: set[str] = set()
+    for arg in expr.args:
+        if isinstance(arg, Expr):
+            fields.update(_expr_fields(arg))
+    return fields
+
+
+def _value_as_int(bits: int, width: int, signed: bool) -> int:
+    if not signed or width == 0:
+        return bits
+    sign = 1 << (width - 1)
+    return bits - (1 << width) if bits & sign else bits
 
 
 def _value_from_bits(desc: Any, bits: int) -> Any:

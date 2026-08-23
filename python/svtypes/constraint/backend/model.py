@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Mapping
 
-from ..ir import ConstraintIR, VarDecl
+from ..ir import ConstraintIR, Expr, VarDecl
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,12 +21,14 @@ class SolveRequest:
     random_paths: tuple[str, ...]
     state: Mapping[str, int]
     var_index: Mapping[str, VarDecl]
+    assumptions: tuple[Expr, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "irs", tuple(self.irs))
         object.__setattr__(self, "random_paths", tuple(self.random_paths))
         object.__setattr__(self, "state", MappingProxyType(dict(self.state)))
         object.__setattr__(self, "var_index", MappingProxyType(dict(self.var_index)))
+        object.__setattr__(self, "assumptions", tuple(self.assumptions))
 
 
 @dataclass(frozen=True, slots=True)

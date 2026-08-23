@@ -310,18 +310,24 @@ def test_remote_target_dist_expression_simulation():
 module tb;
   import svtypes_pkg::*;
   import dist_sv_test::*;
-  integer i;
+  integer i, choice4, choice7;
   initial begin
     DistPacket p;
     p = new();
     p.base = 4'd1;
     p.weight = 4'd2;
-    for (i = 0; i < 64; i++) begin
+    choice4 = 0;
+    choice7 = 0;
+    for (i = 0; i < 512; i++) begin
       if (!p.randomize()) $fatal(1, "dist unsat");
       if (!(p.choice == 4'd4 || p.choice == 4'd7 || p.choice == 4'd8 ||
             p.choice == 4'd9 || p.choice == 4'd11))
         $fatal(1, "dist support violation: %0d", p.choice);
+      if (p.choice == 4'd4) choice4++;
+      if (p.choice == 4'd7) choice7++;
     end
+    if (choice4 <= (choice7 * 2))
+      $fatal(1, "dist weight ratio unexpected: choice4=%0d choice7=%0d", choice4, choice7);
     $display("SVTYPES_DIST_PASS");
     $finish;
   end

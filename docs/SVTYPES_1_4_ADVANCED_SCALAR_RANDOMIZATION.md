@@ -77,11 +77,16 @@ uses rational arithmetic and a 64-bit rejection draw, not floating point.  This
 makes `:=` and `:/` observably distinct while preserving deterministic seeded
 execution.
 
-The existing SMT fallback is retained for rare rejection-sampling exhaustion;
-it proves hard-constraint satisfiability and returns a legal support value.  A
-later 1.4 solver-policy pass will replace that fallback with weighted model
-selection for extremely sparse or high-width distributions, so distribution
-weights remain exact even when direct candidate sampling is impractical.
+When direct sampling is impractical for a sparse, wide distribution made only
+of single values whose bounds and weights are already state-resolvable, the
+Python path proves every support value SAT and selects among the satisfiable
+values by the exact declared weights.  This avoids the former minimum-model
+bias for the common case `wide_field @ dist[VALUE_A @ 1, VALUE_B @ 3]`.
+
+The general SMT fallback remains a hard-satisfiability fallback for sparse
+ranges, multiple interacting distributions, and distribution bounds/weights
+that depend on unsolved leaves.  The later unified 1.4 solver-policy pass will
+extend exact weighted model selection to those shapes.
 
 ## Restrictions and future integration
 
@@ -90,8 +95,9 @@ weights remain exact even when direct candidate sampling is impractical.
   leaves; collection, dynamic-size, and handle targets belong to later
   milestones.
 - Dynamic expressions are represented in IR and rendered to SV without Python
-  pre-evaluation.  The weighted fallback enhancement above is required before
-  declaring the whole 1.4 milestone complete.
+  pre-evaluation.  Exact sparse fallback already covers state-resolvable
+  singleton distributions; dynamic ranges and interacting distributions remain
+  part of the pending solver-policy work.
 - `soft`, `solve before`, `unique`, and `randc` must share the solver-policy
   layer so their priority/order behavior cannot silently alter this interface.
 

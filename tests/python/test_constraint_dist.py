@@ -74,6 +74,29 @@ def test_dist_range_each_and_total_have_observable_different_distributions():
     assert sum(counts[4:]) < 300
 
 
+def test_sparse_wide_singleton_dist_uses_weighted_sat_fallback():
+    class Sparse(SvObject):
+        choice = Bit(32)
+
+        @constraint
+        def legal(self):
+            self.choice @ dist[
+                0x12345678 @ 1,
+                0x9ABCDEF0 @ 3,
+            ]
+
+    counts = {0x12345678: 0, 0x9ABCDEF0: 0}
+    obj = Sparse()
+    with RandomContext(seed=303):
+        for _ in range(240):
+            assert obj.randomize() is True
+            assert obj.choice.value in counts
+            counts[obj.choice.value] += 1
+    assert counts[0x12345678] > 30
+    assert counts[0x9ABCDEF0] > 120
+    assert counts[0x9ABCDEF0] > counts[0x12345678] * 2
+
+
 def test_dist_rejects_negative_weights_and_boolean_composition():
     with pytest.raises(ConstraintTypeError, match="non-negative"):
         class Negative(SvObject):

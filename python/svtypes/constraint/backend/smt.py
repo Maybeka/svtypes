@@ -45,6 +45,10 @@ def solve(request: SolveRequest) -> SolveResult:
             value, undef = _encode(z3, pred, terms, widths)
             solver.add(value)
             solver.add(z3.Not(undef))
+    for assumption in request.assumptions:
+        value, undef = _encode(z3, assumption, terms, widths)
+        solver.add(value)
+        solver.add(z3.Not(undef))
     constrained = [path for path in request.random_paths if path in terms]
     if solver.check() != z3.sat:
         return SolveResult.unsat()
