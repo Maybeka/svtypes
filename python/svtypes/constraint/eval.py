@@ -74,6 +74,11 @@ def eval_expr(expr: Expr, env: Mapping[str, int], vars_width: Mapping[str, tuple
         width, signed = vars_width[path]
         bits = env[path] & ((1 << width) - 1)
         return _resize(Value(bits, bv(width, signed)), expr.ty)
+    if expr.op == "size":
+        path = str(expr.args[1])
+        width, signed = vars_width[path]
+        bits = env[path] & ((1 << width) - 1)
+        return _resize(Value(bits, bv(width, signed)), expr.ty)
     if expr.op == "not":
         inner = eval_expr(expr.args[0], env, vars_width)
         return Value(0 if inner.bits else 1, BOOL, inner.undef)

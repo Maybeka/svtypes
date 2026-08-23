@@ -173,6 +173,10 @@ def _encode(z3: Any, expr: Expr, terms: dict[str, Any], widths: dict[str, int]) 
         path = str(expr.args[0])
         term = terms[path]
         return (_cast_bv(z3, term, widths[path], expr.ty.width or widths[path], expr.ty.signed), z3.BoolVal(False))
+    if expr.op == "size":
+        path = str(expr.args[1])
+        term = terms[path]
+        return (_cast_bv(z3, term, widths[path], expr.ty.width or widths[path], False), z3.BoolVal(False))
     if expr.op == "not":
         value, undef = _encode(z3, expr.args[0], terms, widths)
         return (z3.Not(value), undef)

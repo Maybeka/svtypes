@@ -245,6 +245,20 @@ class DynArray(CollectionBase, Generic[T]):
     def __len__(self):
         return len(self._elements)
 
+    def size(self) -> int:
+        """Return the current element count, matching SystemVerilog ``size()``."""
+        return len(self._elements)
+
+    def _resize_for_randomize(self, size: int) -> None:
+        """Apply the SV randomize resize rule while retaining existing elements."""
+        if size < 0 or size > self._max_length:
+            raise ResourceLimitError(
+                f"{self.__class__.__name__} randomize size {size} exceeds limit {self._max_length}"
+            )
+        del self._elements[size:]
+        while len(self._elements) < size:
+            self._elements.append(copy.deepcopy(self._elem_template))
+
     def pack(self, value: list[Any]) -> bytes:
         if len(value) > self._max_length:
             raise EncodeError(
@@ -392,6 +406,10 @@ class AssocArray(CollectionBase, Generic[K, V]):
         return self._elements[key]
 
     def __len__(self):
+        return len(self._elements)
+
+    def size(self) -> int:
+        """Return the current entry count, matching SystemVerilog ``size()``."""
         return len(self._elements)
 
     def pack(self, value: dict[Any, Any]) -> bytes:

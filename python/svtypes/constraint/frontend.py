@@ -28,6 +28,7 @@ from .ast import (
     Predicate,
     SourceLoc,
     SoftExpr,
+    SizeExpr,
     SolveBeforeExpr,
     UnaryExpr,
     UniqueExpr,
@@ -295,6 +296,10 @@ class _Converter:
                 else_expr=self.expr(node.orelse),
             )
         if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "size":
+                if node.keywords or node.args:
+                    raise _err(loc, "size() does not accept arguments")
+                return SizeExpr(loc=loc, base=self.expr(node.func.value))
             if isinstance(node.func, ast.Name) and node.func.id == "unique":
                 return self._unique_expr(node)
             if isinstance(node.func, ast.Name) and node.func.id == "soft":

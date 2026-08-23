@@ -34,6 +34,7 @@ def test_dyn_array():
     da = DynArray(Int())
     da.value = [1, 2, 3]
     assert da.value == [1, 2, 3]
+    assert da.size() == 3
     assert isinstance(da[0], Int)
     assert da[0].value == 1
 
@@ -53,6 +54,7 @@ def test_queue():
     q = Queue(Int())
     q.value = [10, 20]
     assert q.value == [10, 20]
+    assert q.size() == 2
 
     q.push_back(30)
     assert q.value == [10, 20, 30]
@@ -70,6 +72,7 @@ def test_assoc_array():
     aa = AssocArray(String(), Int())
     aa.value = {"apple": 1, "banana": 2}
     assert aa.value == {"apple": 1, "banana": 2}
+    assert aa.size() == 2
     assert isinstance(aa["apple"], Int)
     assert aa["apple"].value == 1
 

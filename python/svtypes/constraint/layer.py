@@ -204,6 +204,7 @@ def _is_super_call(node: ast.AST, alias: str) -> bool:
 
 
 def collect_rand_layers(cls: type) -> None:
+    from ..collection import DynArray, Queue
     from ..object import SvStruct
 
     is_struct = any(base.__name__ == "SvStruct" for base in cls.__mro__)
@@ -233,6 +234,15 @@ def collect_rand_layers(cls: type) -> None:
     params = {name for name, _ in getattr(cls, "_SvObject__svtypes_params", ())}
     constraints = getattr(cls, "_SvObject__svtypes_constraint_decls", {})
     members = dict(getattr(cls, "_SvObject__svtypes_members", ()))
+
+    if (own or parent_table) and any(
+        bool(getattr(desc, "rand", False)) and isinstance(desc, (DynArray, Queue))
+        for desc in members.values()
+    ):
+        raise DeclarationError(
+            f"{cls.__name__}: dynamic arrays and queues cannot participate in rand_layer; "
+            "SystemVerilog does not permit container rand_mode()"
+        )
 
     table: dict[str, RandLayerInfo] = dict(parent_table)
     for alias, decl in own.items():
@@ -382,6 +392,13 @@ def _validate_variable_target(
             f"{loc.format()}: {cls.__name__}.{decl.alias} cannot list "
             f"non-rand variable {path!r}"
         )
+    from ..collection import DynArray, Queue
+
+    if isinstance(desc, (DynArray, Queue)):
+        raise DeclarationError(
+            f"{loc.format()}: {cls.__name__}.{decl.alias} lists {path!r}, "
+            "but a dynamic array or queue has no SV container rand_mode()"
+        )
     current = desc
     walked = root
     for index in indices:
@@ -465,13 +482,15 @@ def _expand_one_path(path: str, members: dict[str, Any]) -> list[str]:
 
 
 def _expand_descriptor(path: str, desc: Any) -> list[str]:
-    from ..collection import Array
+    from ..collection import Array, DynArray, Queue
 
     if isinstance(desc, Array):
         out: list[str] = []
         for index in range(desc._size):
             out.extend(_expand_descriptor(f"{path}[{index}]", desc._elem_template))
         return out
+    if isinstance(desc, (DynArray, Queue)):
+        return []
     return [path]
 
 

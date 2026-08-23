@@ -10,6 +10,7 @@ import pytest
 from svtypes import (
     Array,
     Bit,
+    DynArray,
     Enum,
     Int,
     Logic,
@@ -19,6 +20,7 @@ from svtypes import (
     Reg,
     SvObject,
     SvStruct,
+    Queue,
     constraint,
     dist,
     rand_layer,
@@ -154,6 +156,28 @@ class SolveBeforePacket(SvObject):
         self.first < self.second
 
 
+class DynamicCollectionPacket(SvObject):
+    length = Bit(4)
+    data = DynArray(Bit(8), rand=True, max_length=8)
+
+    @constraint
+    def legal(self):
+        self.data.size() == self.length
+        self.length <= 4
+        for i in range(self.data.size()):
+            self.data[i] == i + 1
+
+
+class QueueCollectionPacket(SvObject):
+    data = Queue(Bit(8), rand=True, max_length=8)
+
+    @constraint
+    def legal(self):
+        self.data.size() == 3
+        for i in range(self.data.size()):
+            self.data[i] == i
+
+
 class DiffPacket(SvObject):
     addr = Bit(32)
     data = Logic(32)
@@ -217,6 +241,8 @@ def test_sv_constraint_renderer_contains_pass_markers():
     pkg = (runtime_root() / "sv" / "svtypes_pkg.sv").read_text()
     assert "svtypes.constraint-ir.v1" in pkg
     assert "svtypes.constraint-sample.v1" in pkg
+    dynamic = DynamicCollectionPacket.to_sv_obj()
+    assert "data.rand_mode()" not in dynamic
 
 
 def _assert_enabled_predicates(obj):
@@ -357,6 +383,76 @@ def test_remote_target_constraint_simulation():
     print(log)
     assert result.returncode == 0, log
     assert "SVTYPES_CONSTRAINT_PASS" in log, log
+
+
+@pytest.mark.remote_target
+def test_remote_target_dynamic_collection_simulation():
+    """Dynamic-array and queue size/foreach constraints run in SystemVerilog target."""
+    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+    reachable = subprocess.run(
+        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
+        capture_output=True,
+        text=True,
+    )
+    if reachable.returncode != 0:
+        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+    out = Path(__file__).resolve().parents[2] / ".tmp" / "dynamic_collection_sv"
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "dynamic_collection_sv_test.sv").write_text(
+        "\n".join(
+            [
+                "package dynamic_collection_sv_test;",
+                "  import svtypes_pkg::*;",
+                DynamicCollectionPacket.to_sv_obj(level=1),
+                QueueCollectionPacket.to_sv_obj(level=1),
+                "endpackage",
+                "",
+            ]
+        )
+    )
+    (out / "tb.sv").write_text(
+        """`timescale 1ns/1ps
+module tb;
+  import svtypes_pkg::*;
+  import dynamic_collection_sv_test::*;
+  integer i, j;
+  initial begin
+    DynamicCollectionPacket d;
+    QueueCollectionPacket q;
+    d = new(); q = new();
+    for (i = 0; i < 32; i++) begin
+      if (!d.randomize()) $fatal(1, "dynamic array unsat");
+      if (d.data.size() != d.length || d.data.size() > 4)
+        $fatal(1, "dynamic array size constraint");
+      foreach (d.data[j]) if (d.data[j] != j + 1)
+        $fatal(1, "dynamic array element constraint");
+      if (!q.randomize()) $fatal(1, "queue unsat");
+      if (q.data.size() != 3) $fatal(1, "queue size constraint");
+      foreach (q.data[j]) if (q.data[j] != j)
+        $fatal(1, "queue element constraint");
+    end
+    $display("SVTYPES_DYNAMIC_COLLECTION_PASS");
+    $finish;
+  end
+endmodule
+"""
+    )
+    remote = (
+        "bash -ilc '"
+        "cd /path/to/svtypes/.tmp/dynamic_collection_sv && "
+        "rm -rf simv csrc simv.daidir && "
+        "target -full64 -sverilog -timescale=1ns/1ps "
+        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
+        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
+        "dynamic_collection_sv_test.sv tb.sv -o simv && ./simv'"
+    )
+    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    log = result.stdout + result.stderr
+    print(log)
+    assert result.returncode == 0, log
+    assert "SVTYPES_DYNAMIC_COLLECTION_PASS" in log, log
 
 
 @pytest.mark.remote_target

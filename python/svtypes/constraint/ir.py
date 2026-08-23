@@ -73,6 +73,8 @@ class Expr:
             return ["int", int(self.args[0])]
         if self.op == "field":
             return ["field", str(self.args[0])]
+        if self.op == "size":
+            return ["size", str(self.args[0])]
         if self.op == "param":
             return ["param", str(self.args[0])]
         if self.op == "loopvar":
@@ -131,6 +133,7 @@ class VarDecl:
     projected_from: str | None
     enum_name: str | None
     descriptor: Any = None
+    kind: str = "field"
 
     def to_stable(self) -> dict[str, Any]:
         return {
@@ -140,6 +143,7 @@ class VarDecl:
             "projected_from": self.projected_from,
             "signed": self.signed,
             "width": self.width,
+            "kind": self.kind,
         }
 
 

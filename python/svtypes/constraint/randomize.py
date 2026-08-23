@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import copy
+from dataclasses import replace
 from types import FunctionType
 from typing import Any, Callable
 
+from ..collection import DynArray, Queue
 from ..errors import ConstraintBackendError, ConstraintError, DeclarationError
 from ..logic import Logic
 from .analyze import compile_block
 from .eval import eval_bool, eval_dist_weight, eval_expr
 from .frontend import parse_constraint_function
-from .ir import BOOL, ConstraintIR, Expr, VarDecl
+from .ir import BOOL, ConstraintIR, Expr, IRStmt, VarDecl, bv, c_bool, c_int
 from .leaves import (
     iter_class_leaves,
+    iter_object_leaves,
     leaf_has_xz,
     leaf_unsigned,
     resolve_attr,
@@ -152,8 +156,18 @@ def _effective_rand_mode(obj: Any, path: str) -> int:
     return 1
 
 
-def _solve(obj: Any, cls: type, stream: BitStream, extra: ConstraintIR | None) -> bool:
-    enabled = _enabled_irs(obj, cls, extra)
+def _solve(
+    obj: Any,
+    cls: type,
+    stream: BitStream,
+    extra: ConstraintIR | None,
+    enabled_override: list[ConstraintIR] | None = None,
+) -> bool:
+    enabled = enabled_override if enabled_override is not None else _enabled_irs(obj, cls, extra)
+    if enabled_override is None and any(
+        var.kind == "size" for ir in enabled for var in ir.vars
+    ):
+        return _solve_dynamic_collections(obj, cls, stream, enabled)
     mentioned: set[str] = set()
     var_index: dict[str, VarDecl] = {}
     for ir in enabled:
@@ -161,7 +175,7 @@ def _solve(obj: Any, cls: type, stream: BitStream, extra: ConstraintIR | None) -
             mentioned.add(var.path)
             var_index[var.path] = var
 
-    leaves = list(iter_class_leaves(cls))
+    leaves = list(iter_object_leaves(obj, cls))
     unconstrained: list[tuple[str, Any]] = []
     constrained: list[tuple[str, Any]] = []
     state_paths: list[str] = []
@@ -307,6 +321,250 @@ def _solve(obj: Any, cls: type, stream: BitStream, extra: ConstraintIR | None) -
     _commit_randc_state(obj, randc_seen, signature)
     obj._SvObject__svtypes_randomize_status = RandomizeStatus(True, "sat")
     return True
+
+
+def _solve_dynamic_collections(
+    obj: Any,
+    cls: type,
+    stream: BitStream,
+    enabled: list[ConstraintIR],
+) -> bool:
+    """Solve dynamic sizes first, then solve the expanded element constraints.
+
+    This mirrors the LRM ordering for a constrained dynamic array or queue.
+    The first pass deliberately contains no foreach element predicates; after
+    resizing, the second pass expands those predicates at the chosen size.
+    """
+
+    from .backend.model import SolveRequest
+    from .backend.smt import solve
+
+    all_leaves = list(iter_class_leaves(cls))
+    mentioned = {var.path for ir in enabled for var in ir.vars if var.kind == "field"}
+    var_index = {
+        var.path: var
+        for ir in enabled
+        for var in ir.vars
+        if var.kind in {"field", "size"} and "[" not in var.path
+    }
+    size_vars = {var.path: var for var in var_index.values() if var.kind == "size"}
+    if not size_vars:
+        return _solve(obj, cls, stream, None, enabled)
+
+    static_snapshot = snapshot_leaves(obj, [path for path, _, _ in all_leaves])
+    collection_snapshot = {
+        str(var.path): copy.deepcopy(resolve_attr(obj, str(var.path).removeprefix("@size:"))._elements)
+        for var in size_vars.values()
+    }
+    try:
+        widths = {path: (desc.width, bool(desc.signed)) for path, desc, _ in all_leaves}
+        widths.update({path: (var.width, var.signed) for path, var in var_index.items()})
+        env: dict[str, int] = {}
+        state: dict[str, int] = {}
+        constrained: list[tuple[str, Any]] = []
+        unconstrained: list[tuple[str, Any]] = []
+        for path, desc, declared_rand in all_leaves:
+            active = declared_rand and _effective_rand_mode(obj, path) == 1
+            if active and path in mentioned:
+                constrained.append((path, desc))
+            elif active:
+                unconstrained.append((path, desc))
+            else:
+                value = leaf_unsigned(resolve_attr(obj, path), resolve_attr(obj, path).value)
+                env[path] = value
+                state[path] = value
+
+        constrained_size_keys = _explicit_size_constraint_keys(enabled)
+        active_sizes: list[tuple[str, Any]] = []
+        for key, var in size_vars.items():
+            collection = resolve_attr(obj, key.removeprefix("@size:"))
+            if (
+                key in constrained_size_keys
+                and var.declared_rand
+                and _effective_rand_mode(obj, key.removeprefix("@size:")) == 1
+            ):
+                active_sizes.append((key, collection))
+            else:
+                value = collection.size()
+                env[key] = value
+                state[key] = value
+
+        assignments: dict[str, Any] = {}
+        for path, desc in unconstrained:
+            value = sample_unconstrained(desc, stream)
+            assignments[path] = value
+            env[path] = leaf_unsigned(desc, value)
+
+        random_paths = tuple([path for path, _ in constrained] + [path for path, _ in active_sizes])
+        chosen: dict[str, int] | None = None
+        for _ in range(32):
+            local = dict(env)
+            candidate: dict[str, int] = {}
+            for path, desc in constrained:
+                value = sample_unconstrained(desc, stream)
+                candidate[path] = leaf_unsigned(desc, value)
+                local[path] = candidate[path]
+            for path, collection in active_sizes:
+                value = stream.draw_bits(32) % (collection._max_length + 1)
+                candidate[path] = value
+                local[path] = value
+            if all(eval_bool(pred, local, widths) for ir in enabled for pred in ir.predicates):
+                chosen = candidate
+                break
+
+        if chosen is None:
+            assumptions: list[Expr] = []
+            for path, collection in active_sizes:
+                size_expr = Expr("size", (path.removeprefix("@size:"), path), bv(32, False))
+                # Keep the resource ceiling out of generated SV; it is the
+                # Python container's established decoder/encoder safety cap.
+                assumptions.append(Expr("le", (size_expr, c_int(collection._max_length)), BOOL))
+            request = SolveRequest(
+                irs=tuple(enabled),
+                random_paths=random_paths,
+                state=state,
+                var_index=var_index,
+                assumptions=tuple(assumptions),
+            )
+            result = solve(request)
+            if not result.is_sat:
+                obj._SvObject__svtypes_randomize_status = RandomizeStatus(False, "unsat")
+                return False
+            chosen = result.assignments
+
+        for path, value in assignments.items():
+            resolve_attr(obj, path).value = value
+        for path, desc in constrained:
+            resolve_attr(obj, path).value = _value_from_bits(desc, chosen[path])
+        for path, collection in active_sizes:
+            collection._resize_for_randomize(chosen[path])
+
+        expanded = [_expand_dynamic_ir(obj, ir) for ir in enabled]
+        prior_modes = dict(obj._SvObject__svtypes_rand_modes)
+        try:
+            for path, _desc, declared_rand in all_leaves:
+                if declared_rand:
+                    obj._SvObject__svtypes_rand_modes[path] = 0
+            ok = _solve(obj, cls, stream, None, expanded)
+            if not ok:
+                restore_leaves(obj, static_snapshot)
+                for key, elements in collection_snapshot.items():
+                    resolve_attr(obj, key.removeprefix("@size:"))._elements = elements
+            return ok
+        finally:
+            obj._SvObject__svtypes_rand_modes = prior_modes
+    except Exception:
+        restore_leaves(obj, static_snapshot)
+        for key, elements in collection_snapshot.items():
+            resolve_attr(obj, key.removeprefix("@size:"))._elements = elements
+        raise
+
+
+def _expand_dynamic_ir(obj: Any, ir: ConstraintIR) -> ConstraintIR:
+    """Expand dynamic foreach statements after their collection sizes are fixed."""
+
+    from .analyze import _collect_solve_before, _flatten_hard_stmt, _flatten_soft_stmt
+
+    def expr(value: Expr, loop: str | None = None, index: int | None = None) -> Expr:
+        if value.op == "size":
+            return c_int(resolve_attr(obj, str(value.args[0])).size(), value.loc)
+        if value.op == "loopvar" and loop == str(value.args[0]):
+            assert index is not None
+            return c_int(index, value.loc)
+        args: list[Any] = []
+        changed = False
+        for arg in value.args:
+            if isinstance(arg, Expr):
+                new = expr(arg, loop, index)
+            elif isinstance(arg, tuple):
+                new = tuple(
+                    replace(item, low=expr(item.low, loop, index), high=expr(item.high, loop, index) if item.high is not None else None, weight=expr(item.weight, loop, index))
+                    if hasattr(item, "low") and hasattr(item, "weight") else item
+                    for item in arg
+                )
+            else:
+                new = arg
+            args.append(new)
+            changed = changed or new is not arg
+        if value.op == "field" and loop is not None:
+            path = str(args[0]).replace(f"[{loop}]", f"[{index}]")
+            changed = changed or path != args[0]
+            args[0] = path
+        return Expr(value.op, tuple(args), value.ty, value.loc, value.undef, value.hint) if changed else value
+
+    def statement(stmt: IRStmt, loop: str | None = None, index: int | None = None) -> list[IRStmt]:
+        if stmt.kind == "for" and stmt.array is not None:
+            collection = resolve_attr(obj, stmt.array)
+            if isinstance(collection, (DynArray, Queue)):
+                out: list[IRStmt] = []
+                for item_index in range(collection.size()):
+                    for child in stmt.then_body:
+                        out.extend(statement(child, stmt.var, item_index))
+                return out
+        return [IRStmt(
+            kind=stmt.kind,
+            expr=expr(stmt.expr, loop, index) if stmt.expr is not None else None,
+            cond=expr(stmt.cond, loop, index) if stmt.cond is not None else None,
+            then_body=[item for child in stmt.then_body for item in statement(child, loop, index)],
+            else_body=[item for child in stmt.else_body for item in statement(child, loop, index)],
+            var=stmt.var,
+            start=expr(stmt.start, loop, index) if stmt.start is not None else None,
+            stop=expr(stmt.stop, loop, index) if stmt.stop is not None else None,
+            array=stmt.array,
+            before=stmt.before,
+            after=stmt.after,
+        )]
+
+    statements = [item for stmt in ir.statements for item in statement(stmt)]
+    dynamic_vars = {
+        path: VarDecl(path, declared, desc.width, bool(desc.signed), None, None, desc)
+        for path, desc, declared in iter_object_leaves(obj)
+    }
+    vars = [var for var in ir.vars if var.kind == "field" and "[" not in var.path]
+    vars.extend(var for path, var in dynamic_vars.items() if path not in {item.path for item in vars})
+    return ConstraintIR(
+        name=ir.name,
+        predicates=[_flatten_hard_stmt(stmt) for stmt in statements],
+        soft_predicates=[predicate for stmt in statements for predicate in _flatten_soft_stmt(stmt)],
+        solve_before=[edge for stmt in statements for edge in _collect_solve_before(stmt)],
+        vars=vars,
+        parameters=ir.parameters,
+        statements=statements,
+    )
+
+
+def _explicit_size_constraint_keys(irs: list[ConstraintIR]) -> set[str]:
+    """Return size variables used by predicates, excluding foreach bounds."""
+
+    keys: set[str] = set()
+
+    def visit_expr(expr: Expr | None) -> None:
+        if expr is None:
+            return
+        if expr.op == "size":
+            keys.add(str(expr.args[1]))
+        for arg in expr.args:
+            if isinstance(arg, Expr):
+                visit_expr(arg)
+            elif isinstance(arg, tuple):
+                for item in arg:
+                    if hasattr(item, "low"):
+                        visit_expr(item.low)
+                        visit_expr(item.high)
+                        visit_expr(item.weight)
+
+    def visit_stmt(stmt: IRStmt) -> None:
+        if stmt.kind in {"pred", "soft"}:
+            visit_expr(stmt.expr)
+        elif stmt.kind == "if":
+            visit_expr(stmt.cond)
+            for child in [*stmt.then_body, *stmt.else_body]:
+                visit_stmt(child)
+
+    for ir in irs:
+        for stmt in ir.statements:
+            visit_stmt(stmt)
+    return keys
 
 
 def _active_dist_exprs(

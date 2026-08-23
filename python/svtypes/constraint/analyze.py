@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..bit import Bit
-from ..collection import Array
+from ..collection import Array, AssocArray, DynArray, Queue
 from ..enum import Enum
 from ..errors import (
     ConstraintNameError,
@@ -35,6 +35,7 @@ from .ast import (
     Predicate,
     SourceLoc,
     SoftExpr,
+    SizeExpr,
     SolveBeforeExpr,
     UnaryExpr,
     UniqueExpr,
@@ -185,6 +186,8 @@ class _Analyzer:
             return self.index(node)
         if isinstance(node, MemberRef):
             return self.member(node)
+        if isinstance(node, SizeExpr):
+            return self.size(node)
         if isinstance(node, UnaryExpr):
             inner = self.expr(node.expr)
             if node.op == "not":
@@ -353,6 +356,31 @@ class _Analyzer:
             return self.leaf_ref(path, nested, node.loc)
         raise ConstraintNameError(f"{node.loc.format()}: cannot access {node.name!r}")
 
+    def size(self, node: SizeExpr) -> Expr:
+        parts, desc = self._ref_descriptor(node.base)
+        path = format_path(parts)
+        if isinstance(desc, AssocArray):
+            raise ConstraintUnsupportedError(
+                f"{node.loc.format()}: associative-array size() is not a random constraint variable"
+            )
+        if not isinstance(desc, (DynArray, Queue)):
+            raise ConstraintTypeError(f"{node.loc.format()}: size() requires a dynamic array or queue")
+        key = f"@size:{path}"
+        self.vars.setdefault(
+            key,
+            VarDecl(
+                path=key,
+                declared_rand=bool(getattr(desc, "rand", False)),
+                width=32,
+                signed=False,
+                projected_from=None,
+                enum_name=None,
+                descriptor=desc,
+                kind="size",
+            ),
+        )
+        return Expr("size", (path, key), bv(32, False), node.loc)
+
     def index(self, node: IndexRef) -> Expr:
         path_parts, desc = self._ref_descriptor(node)
         return self.leaf_ref(format_path(path_parts), desc, node.loc)
@@ -388,12 +416,14 @@ class _Analyzer:
             else:
                 index = self.const_int(index_expr, node.loc)
                 if not isinstance(desc, Array):
-                    raise ConstraintUnsupportedError(f"{node.loc.format()}: indexing is only allowed on fixed arrays")
+                    raise ConstraintUnsupportedError(
+                        f"{node.loc.format()}: a dynamic array or queue may only be indexed by its range() loop variable"
+                    )
                 if index < 0 or index >= desc._size:
                     raise ConstraintTypeError(f"{node.loc.format()}: index {index} is out of range")
                 index_part = index
-            if not isinstance(desc, Array):
-                raise ConstraintUnsupportedError(f"{node.loc.format()}: indexing is only allowed on fixed arrays")
+            if not isinstance(desc, (Array, DynArray, Queue)):
+                raise ConstraintUnsupportedError(f"{node.loc.format()}: indexing is only allowed on arrays and queues")
             return [*parts, index_part], desc._elem_template
         if isinstance(node, MemberRef):
             parts, desc = self._ref_descriptor(node.base)

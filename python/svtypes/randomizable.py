@@ -8,7 +8,7 @@ from typing import Any
 def is_randomizable(desc: Any) -> bool:
     """Return whether *desc* can enter the constraint solver domain."""
     from .bit import Bit
-    from .collection import Array
+    from .collection import Array, DynArray, Queue
     from .enum import Enum
     from .logic import Logic
     from .object import SvStruct
@@ -20,5 +20,7 @@ def is_randomizable(desc: Any) -> bool:
     if isinstance(desc, SvStruct):
         return all(is_randomizable(member) for _, member in desc._SvObject__svtypes_members)
     if isinstance(desc, Array):
+        return is_randomizable(desc._elem_template)
+    if isinstance(desc, (DynArray, Queue)):
         return is_randomizable(desc._elem_template)
     return False

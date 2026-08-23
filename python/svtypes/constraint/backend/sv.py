@@ -24,8 +24,17 @@ def render_constraint_blocks(cls: type, indent: str, step: str) -> list[str]:
 
 def _sv_rand_mode_paths(cls: type, names: tuple[str, ...] | list[str]) -> list[str]:
     from ..layer import expand_declared_paths
+    from ...collection import DynArray, Queue
 
-    return list(expand_declared_paths(cls, names))
+    members = dict(getattr(cls, "_SvObject__svtypes_members", ()))
+    # SV permits rand_mode() only on a singular variable.  A dynamic array or
+    # queue is randomizable, but `array.rand_mode()` is illegal; its elements
+    # are the singular variables.  Do not emit an invalid call in the helper.
+    return [
+        path
+        for path in expand_declared_paths(cls, names)
+        if not isinstance(members.get(path.split(".", 1)[0].split("[", 1)[0]), (DynArray, Queue))
+    ]
 
 
 def _mode_tmp(kind: str, path: str) -> str:
@@ -134,6 +143,8 @@ def render_expr(expr: Expr) -> str:
         return _render_int(expr)
     if expr.op == "field":
         return _field_sv(str(expr.args[0]))
+    if expr.op == "size":
+        return f"{_field_sv(str(expr.args[0]))}.size()"
     if expr.op in ("param", "loopvar"):
         return str(expr.args[0])
     if expr.op == "not":

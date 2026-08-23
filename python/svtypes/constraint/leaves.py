@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Iterator
 
 from ..bit import Bit
-from ..collection import Array
+from ..collection import Array, DynArray, Queue
 from ..enum import Enum
 from ..errors import ConstraintError
 from ..logic import Logic, LogicValue
@@ -82,6 +82,42 @@ def iter_class_leaves(cls: type) -> Iterator[tuple[str, Any, bool]]:
         declared_rand = bool(getattr(desc, "rand", False)) and is_randomizable(desc)
         for path, leaf in flatten_descriptor(desc, name):
             yield path, leaf, declared_rand
+
+
+def iter_object_leaves(obj: Any, cls: type | None = None) -> Iterator[tuple[str, Any, bool]]:
+    """Flatten scalar leaves, expanding dynamic arrays and queues at their current size."""
+
+    if cls is None:
+        cls = obj.__class__
+    for name, desc in getattr(cls, "_SvObject__svtypes_members", ()):
+        declared_rand = bool(getattr(desc, "rand", False)) and is_randomizable(desc)
+        yield from _flatten_object_descriptor(getattr(obj, name), desc, name, declared_rand)
+
+
+def _flatten_object_descriptor(
+    value: Any,
+    desc: Any,
+    path: str,
+    declared_rand: bool,
+) -> Iterator[tuple[str, Any, bool]]:
+    if _is_handle(desc):
+        return
+    if isinstance(desc, Array):
+        for index, element in enumerate(value._elements):
+            yield from _flatten_object_descriptor(element, desc._elem_template, f"{path}[{index}]", declared_rand)
+        return
+    if isinstance(desc, (DynArray, Queue)):
+        for index, element in enumerate(value._elements):
+            yield from _flatten_object_descriptor(element, desc._elem_template, f"{path}[{index}]", declared_rand)
+        return
+    if isinstance(desc, SvStruct):
+        for name, member in desc.__class__._SvObject__svtypes_members:
+            yield from _flatten_object_descriptor(
+                getattr(value, name), member, f"{path}.{name}", declared_rand
+            )
+        return
+    if isinstance(desc, (Bit, Logic, Enum)):
+        yield path, desc, declared_rand
 
 
 def resolve_attr(obj: Any, path: str) -> Any:

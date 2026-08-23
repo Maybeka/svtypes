@@ -72,6 +72,13 @@ class MemberRef(AstNode):
 
 
 @dataclass
+class SizeExpr(AstNode):
+    """A collection ``size()`` expression."""
+
+    base: AstNode
+
+
+@dataclass
 class NameRef(AstNode):
     kind: str
     name: str
