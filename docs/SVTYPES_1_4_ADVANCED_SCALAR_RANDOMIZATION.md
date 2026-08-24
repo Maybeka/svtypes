@@ -85,11 +85,13 @@ This covers singleton choices, finite ranges, `:/` total-range weights, and
 multiple direct distributions that constrain one another, without
 minimum-model bias.
 
-The general SMT fallback remains a hard-satisfiability fallback for support
-sets above that bound, conditional distributions, and distribution
-bounds/weights that depend on unsolved leaves. Those shapes remain the
-outstanding distribution-policy work; they must not be presented as having an
-exact Python frequency contract.
+Conditional distributions and bounds/weights that depend on other constrained
+random leaves use a second exact policy: Python enumerates complete constrained
+models through the same 4096-model limit, applies each active branch's
+selected/total weight, and chooses a model by the resulting rational weight.
+The general SMT fallback remains a hard-satisfiability fallback only when that
+bounded model space is exceeded; those large shapes must not be presented as
+having an exact Python frequency contract.
 
 ## Restrictions and future integration
 
@@ -99,9 +101,9 @@ exact Python frequency contract.
   allocated rand-handle leaf uses the same IR and solver path.
 - Dynamic expressions are represented in IR and rendered to SV without Python
   pre-evaluation. Exact finite fallback covers state-resolvable direct support
-  products through 4096 combinations; conditional distributions and bounds or
-  weights depending on unsolved leaves remain part of the pending
-  solver-policy work.
+  products and, through a bounded complete-model enumeration, conditional
+  distributions and bounds/weights depending on other random leaves. Both
+  paths are limited to 4096 support combinations/models.
 - `soft`, `solve before`, `unique`, and `randc` share the runtime solve path;
   their declared priority/order behavior is covered independently of weighted
   distribution selection.

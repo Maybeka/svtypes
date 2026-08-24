@@ -1164,10 +1164,9 @@ def _solve_finite_dist(
     accepting an arbitrary SMT model.
     """
 
-    # A branch that depends on an unsolved leaf cannot be selected before the
-    # backend solves it.  The exact sparse path therefore handles only direct
-    # top-level dist statements; conditional dist continues through the
-    # general fallback.
+    # Prefer sparse support enumeration when direct distributions expose it.
+    # Conditional distributions and random-dependent bounds/weights use the
+    # bounded complete-model policy below instead.
     dist_exprs = [
         stmt.expr
         for ir in irs
@@ -1175,7 +1174,7 @@ def _solve_finite_dist(
         if stmt.kind == "pred" and stmt.expr is not None and stmt.expr.op == "dist"
     ]
     if not dist_exprs:
-        return None
+        return _solve_enumerated_dist(request, irs, env, widths, stream, solve) if _irs_contain_dist(irs) else None
     from fractions import Fraction
     from math import lcm
     from .ir import c_int
@@ -1186,13 +1185,13 @@ def _solve_finite_dist(
     for dist_expr in dist_exprs:
         options = _finite_dist_options(dist_expr, env, widths, random_paths)
         if options is None:
-            return None
+            return _solve_enumerated_dist(request, irs, env, widths, stream, solve)
         nonzero = {value: weight for value, weight in options.items() if weight > 0}
         if not nonzero:
             return None
         combinations *= len(nonzero)
         if combinations > 4096:
-            return None
+            return _solve_enumerated_dist(request, irs, env, widths, stream, solve)
         supports.append((dist_expr.args[0], dist_expr.loc, nonzero))
 
     # Keep distinct support combinations even if the backend returns the same
@@ -1237,6 +1236,90 @@ def _solve_finite_dist(
             return result
         pick -= weight
     raise ConstraintBackendError("weighted finite dist selection lost its chosen model")
+
+
+def _solve_enumerated_dist(
+    request: Any,
+    irs: list[ConstraintIR],
+    env: dict[str, int],
+    widths: dict[str, tuple[int, bool]],
+    stream: BitStream,
+    solve: Any,
+) -> Any | None:
+    """Exactly weight conditional distributions over a bounded model space.
+
+    Each model is blocked by its complete constrained-random assignment.  Its
+    weight is the product of selected/total weights for the distributions
+    active in that model's branch.  This preserves branch-local normalization
+    (unlike multiplying raw item weights when a branch has a different total).
+    Returning ``None`` retains the established general-SMT fallback once more
+    than 4096 models would be required.
+    """
+    from fractions import Fraction
+    from math import lcm
+
+    if not request.random_paths:
+        return None
+    assumptions = list(request.assumptions)
+    models: list[tuple[Fraction, Any]] = []
+    attempted = 0
+    while True:
+        result = solve(replace(request, assumptions=tuple(assumptions)))
+        if not result.is_sat:
+            break
+        attempted += 1
+        if attempted > 4096:
+            return None
+        local = dict(env)
+        local.update(result.assignments)
+        weight = Fraction(1)
+        for expr in _active_dist_exprs(irs, local, widths):
+            selected, bound, undef = eval_dist_weight(expr, local, widths)
+            if undef or selected <= 0 or bound <= 0:
+                weight = Fraction(0)
+                break
+            weight *= selected / bound
+        if weight > 0:
+            models.append((weight, result))
+        alternatives: list[Expr] = []
+        for path in request.random_paths:
+            decl = request.var_index.get(path)
+            if decl is None or path not in result.assignments:
+                return None
+            alternatives.append(
+                Expr(
+                    "ne",
+                    (
+                        Expr("field", (path,), bv(decl.width, decl.signed)),
+                        c_int(result.assignments[path]),
+                    ),
+                    BOOL,
+                )
+            )
+        blocker = alternatives[0]
+        for alternative in alternatives[1:]:
+            blocker = Expr("lor", (blocker, alternative), BOOL)
+        assumptions.append(blocker)
+    if not models:
+        return None
+    denominator = 1
+    for weight, _result in models:
+        denominator = lcm(denominator, weight.denominator)
+    weighted = [(int(weight * denominator), result) for weight, result in models]
+    total = sum(weight for weight, _result in weighted)
+    if total <= 0:
+        return None
+    limit = ((1 << 64) // total) * total
+    while True:
+        draw = stream.draw_bits(64)
+        if draw < limit:
+            break
+    pick = draw % total
+    for weight, result in weighted:
+        if pick < weight:
+            return result
+        pick -= weight
+    raise ConstraintBackendError("weighted model selection lost its chosen model")
 
 
 def _finite_dist_options(

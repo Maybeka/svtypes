@@ -162,6 +162,53 @@ def test_interacting_direct_distributions_use_the_product_of_declared_weights():
     assert counts[1] > counts[0] * 5
 
 
+def test_conditional_dist_uses_branch_local_weight_normalization():
+    class Conditional(SvObject):
+        gate = Bit(1)
+        choice = Bit(8)
+
+        @constraint
+        def legal(self):
+            if self.gate == 0:
+                self.choice @ dist[2 @ 3, 3 @ 1]
+            else:
+                self.choice @ dist[0 @ 1, 1 @ 3]
+
+    counts = {0: 0, 1: 0, 2: 0, 3: 0}
+    packet = Conditional()
+    with RandomContext(seed=308):
+        for _ in range(240):
+            assert packet.randomize()
+            counts[packet.choice.value] += 1
+    assert counts[1] > counts[0] * 2
+    assert counts[2] > counts[3] * 2
+    # Both branch totals are normalized independently: a high-weight value
+    # from either branch is common, not one branch being favored by its raw
+    # total weight.
+    assert abs(counts[1] - counts[2]) < 70
+
+
+def test_dist_weight_can_depend_on_another_random_leaf():
+    class DependentWeight(SvObject):
+        gate = Bit(2)
+        choice = Bit(8)
+
+        @constraint
+        def legal(self):
+            self.gate < 2
+            self.choice @ dist[0 @ (self.gate + 1), 1 @ 1]
+
+    counts = {0: 0, 1: 0}
+    packet = DependentWeight()
+    with RandomContext(seed=309):
+        for _ in range(240):
+            assert packet.randomize()
+            counts[packet.choice.value] += 1
+    # gate is unconstrained and uniform.  The two conditional distributions
+    # yield P(choice=0) = (1/2 + 2/3) / 2 = 7/12.
+    assert counts[0] > counts[1]
+
+
 def test_dist_applies_after_dynamic_element_expansion():
     class DynamicDist(SvObject):
         data = DynArray(Bit(2), rand=True, max_length=2)

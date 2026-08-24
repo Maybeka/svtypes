@@ -695,6 +695,18 @@ def test_remote_target_dist_expression_simulation():
     )
     if reachable.returncode != 0:
         pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+
+    class ConditionalDistPacket(SvObject):
+        gate = Bit(1)
+        choice = Bit(8)
+
+        @constraint
+        def legal(self):
+            if self.gate == 0:
+                self.choice @ dist[2 @ 3, 3 @ 1]
+            else:
+                self.choice @ dist[0 @ 1, 1 @ 3]
+
     out = Path(__file__).resolve().parents[2] / ".tmp" / "dist_sv"
     if out.exists():
         shutil.rmtree(out)
@@ -705,6 +717,7 @@ def test_remote_target_dist_expression_simulation():
                 "package dist_sv_test;",
                 "  import svtypes_pkg::*;",
                 DistPacket.to_sv_obj(level=1),
+                ConditionalDistPacket.to_sv_obj(level=1),
                 "endpackage",
                 "",
             ]
@@ -718,7 +731,9 @@ module tb;
   integer i, choice4, choice7;
   initial begin
     DistPacket p;
+    ConditionalDistPacket c;
     p = new();
+    c = new();
     p.base = 4'd1;
     p.weight = 4'd2;
     choice4 = 0;
@@ -730,6 +745,10 @@ module tb;
         $fatal(1, "dist support violation: %0d", p.choice);
       if (p.choice == 4'd4) choice4++;
       if (p.choice == 4'd7) choice7++;
+      if (!c.randomize()) $fatal(1, "conditional dist unsat");
+      if ((c.gate == 0 && !(c.choice == 8'd2 || c.choice == 8'd3)) ||
+          (c.gate == 1 && !(c.choice == 8'd0 || c.choice == 8'd1)))
+        $fatal(1, "conditional dist support violation");
     end
     if (choice4 <= (choice7 * 2))
       $fatal(1, "dist weight ratio unexpected: choice4=%0d choice7=%0d", choice4, choice7);
