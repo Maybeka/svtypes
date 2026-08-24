@@ -37,7 +37,7 @@ class ConstraintHandle:
 
 
 def bind_runtime_field(value: Any, owner: Any, name: str, desc: Any) -> Any:
-    from ..collection import Array
+    from ..collection import Array, DynArray, Queue
     from ..object import ObjectDescriptor, SvObject
 
     if isinstance(desc, ObjectDescriptor) or (
@@ -80,11 +80,34 @@ def bind_runtime_field(value: Any, owner: Any, name: str, desc: Any) -> Any:
                     return _root._svtypes_rand_mode(_path, on)
 
                 object.__setattr__(element, "rand_mode", element_rand_mode)
+    elif isinstance(value, (DynArray, Queue)):
+        bind_runtime_collection_elements(value)
     return value
 
 
+def bind_runtime_collection_elements(value: Any) -> None:
+    """Bind per-element mode handles for an already-bound dynamic collection."""
+    from ..collection import DynArray, Queue
+    from ..object import ObjectDescriptor, SvObject
+
+    if not isinstance(value, (DynArray, Queue)):
+        return
+    root = getattr(value, "_svtypes_mode_root", None)
+    path = getattr(value, "_svtypes_mode_path", "")
+    declared = bool(getattr(value, "_svtypes_declared_rand", False))
+    if root is None:
+        return
+    for index, element in enumerate(value._elements):
+        if isinstance(value._elem_template, ObjectDescriptor) or (
+            isinstance(value._elem_template, SvObject) and not isinstance(value._elem_template, SvStruct)
+        ):
+            continue
+        child_path = f"{path}[{index}]"
+        bind_nested(element, root, child_path, declared)
+
+
 def bind_nested(value: Any, root: Any, path: str, declared: bool) -> None:
-    from ..collection import Array
+    from ..collection import Array, DynArray, Queue
 
     object.__setattr__(value, "_svtypes_mode_root", root)
     object.__setattr__(value, "_svtypes_mode_path", path)
@@ -97,6 +120,8 @@ def bind_nested(value: Any, root: Any, path: str, declared: bool) -> None:
     if isinstance(value, Array):
         for index, element in enumerate(value._elements):
             bind_nested(element, root, f"{path}[{index}]", declared)
+    elif isinstance(value, (DynArray, Queue)):
+        bind_runtime_collection_elements(value)
     elif isinstance(value, SvStruct):
         for member_name, _member_desc in value.__class__._SvObject__svtypes_members:
             bind_nested(getattr(value, member_name), root, f"{path}.{member_name}", declared)

@@ -148,11 +148,27 @@ def test_associative_array_size_is_not_a_random_constraint_variable():
                 self.data.size() == 1
 
 
-def test_dynamic_collection_cannot_enter_a_rand_layer():
-    with pytest.raises(DeclarationError, match="cannot participate in rand_layer"):
-        class LayeredDynamic(SvObject):
-            data = DynArray(Bit(8), rand=True)
+def test_dynamic_collection_layer_controls_existing_elements_individually():
+    class LayeredDynamic(SvObject):
+        data = DynArray(Bit(8), rand=True, max_length=4)
 
-            @rand_layer(1)
-            def top(self):
-                self.data
+        @constraint
+        def legal(self):
+            self.data.size() == 2
+            for i in range(self.data.size()):
+                self.data[i] == i + 3
+
+        @rand_layer(1)
+        def top(self):
+            self.data
+            self.legal
+
+    packet = LayeredDynamic()
+    packet.data.value = [3]
+    assert packet.data[0].rand_mode() == 1
+    packet.data[0].rand_mode(0)
+    assert packet.layered_randomize()
+    assert packet.data.size() == 2
+    assert packet.data[0].value == 3
+    assert packet.data[0].rand_mode() == 0
+    assert packet.data[1].rand_mode() == 1

@@ -42,6 +42,12 @@ def _mode_tmp(kind: str, path: str) -> str:
     return f"__svtypes_{kind}_{ident}"
 
 
+def _dynamic_layer_roots(cls: type, names: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    from ..layer import dynamic_layer_roots
+
+    return dynamic_layer_roots(cls, names)
+
+
 def render_layered_randomize_context(indent: str, step: str) -> list[str]:
     """Emit hook-visible state for the generated layered entry point."""
     ind = indent + step
@@ -63,6 +69,11 @@ def render_layered_randomize(cls: type, indent: str, step: str) -> list[str]:
     batches = getattr(cls, "_SvObject__svtypes_layer_batches", ())
     targets = _sv_rand_mode_paths(cls, getattr(cls, "_SvObject__svtypes_sv_rand_targets", ()))
     constraints = tuple(getattr(cls, "_SvObject__svtypes_constraint_irs", {}))
+    dynamic_roots: list[str] = []
+    for batch in batches:
+        for root in _dynamic_layer_roots(cls, batch.variables):
+            if root not in dynamic_roots:
+                dynamic_roots.append(root)
     ind = indent + step
     inner = indent + step + step
     lines = [
@@ -74,6 +85,8 @@ def render_layered_randomize(cls: type, indent: str, step: str) -> list[str]:
     ]
     for path in targets:
         lines.append(f"{inner}int {_mode_tmp('rand', path)};")
+    for root in dynamic_roots:
+        lines.append(f"{inner}int {_mode_tmp('rand_dyn', root)}[$];")
     for name in constraints:
         lines.append(f"{inner}int {_mode_tmp('cstr', name)};")
     lines.append(f"{inner}__svtypes_ok = 1;")
@@ -82,6 +95,12 @@ def render_layered_randomize(cls: type, indent: str, step: str) -> list[str]:
     lines.append(f"{inner}__svtypes_layered_randomize_active = 1;")
     for path in targets:
         lines.append(f"{inner}{_mode_tmp('rand', path)} = {path}.rand_mode();")
+    for root in dynamic_roots:
+        tmp = _mode_tmp("rand_dyn", root)
+        lines.append(f"{inner}foreach ({root}[i]) begin")
+        lines.append(f"{inner}{step}{tmp}.push_back({root}[i].rand_mode());")
+        lines.append(f"{inner}{step}{root}[i].rand_mode(0);")
+        lines.append(f"{inner}end")
     for name in constraints:
         lines.append(f"{inner}{_mode_tmp('cstr', name)} = {name}.constraint_mode();")
     for path in targets:
@@ -90,10 +109,18 @@ def render_layered_randomize(cls: type, indent: str, step: str) -> list[str]:
         lines.append(f"{inner}{name}.constraint_mode(0);")
     for batch in batches:
         batch_paths = _sv_rand_mode_paths(cls, batch.variables)
+        batch_dynamic_roots = _dynamic_layer_roots(cls, batch.variables)
         lines.append(f"{inner}if (__svtypes_ok) begin")
         lines.append(f"{inner}{step}__svtypes_layered_randomize_priority = {batch.priority};")
         for path in batch_paths:
             lines.append(f"{inner}{step}{path}.rand_mode(1);")
+        for root in batch_dynamic_roots:
+            tmp = _mode_tmp("rand_dyn", root)
+            lines.append(f"{inner}{step}foreach ({root}[i]) begin")
+            lines.append(f"{inner}{step}{step}if (i < {tmp}.size()) begin")
+            lines.append(f"{inner}{step}{step}{step}if ({tmp}[i]) {root}[i].rand_mode(1);")
+            lines.append(f"{inner}{step}{step}end else {root}[i].rand_mode(1);")
+            lines.append(f"{inner}{step}end")
         for name in batch.constraints:
             lines.append(f"{inner}{step}{name}.constraint_mode(1);")
         lines.append(f"{inner}{step}if (!this.randomize()) begin")
@@ -102,12 +129,22 @@ def render_layered_randomize(cls: type, indent: str, step: str) -> list[str]:
         lines.append(f"{inner}{step}else begin")
         for path in batch_paths:
             lines.append(f"{inner}{step}{step}{path}.rand_mode(0);")
+        for root in batch_dynamic_roots:
+            tmp = _mode_tmp("rand_dyn", root)
+            lines.append(f"{inner}{step}{step}foreach ({root}[i])")
+            lines.append(f"{inner}{step}{step}{step}if (i < {tmp}.size()) {root}[i].rand_mode(0);")
         for name in batch.constraints:
             lines.append(f"{inner}{step}{step}{name}.constraint_mode(0);")
         lines.append(f"{inner}{step}end")
         lines.append(f"{inner}end")
     for path in targets:
         lines.append(f"{inner}{path}.rand_mode({_mode_tmp('rand', path)});")
+    for root in dynamic_roots:
+        tmp = _mode_tmp("rand_dyn", root)
+        lines.append(f"{inner}foreach ({root}[i]) begin")
+        lines.append(f"{inner}{step}if (i < {tmp}.size()) {root}[i].rand_mode({tmp}[i]);")
+        lines.append(f"{inner}{step}else {root}[i].rand_mode(1);")
+        lines.append(f"{inner}end")
     for name in constraints:
         lines.append(f"{inner}{name}.constraint_mode({_mode_tmp('cstr', name)});")
     lines.append(f"{inner}__svtypes_layered_randomize_active = __svtypes_previous_layered_active;")

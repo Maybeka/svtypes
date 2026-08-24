@@ -1427,6 +1427,20 @@ def test_remote_target_layered_randomize_simulation():
             self.words[1]
             self.second_eq
 
+    class DynPkt(SvObject):
+        data = DynArray(Bit(8), rand=True, max_length=4)
+
+        @constraint
+        def legal(self):
+            self.data.size() == 2
+            for i in range(self.data.size()):
+                self.data[i] == i + 3
+
+        @rand_layer(1)
+        def elements(self):
+            self.data
+            self.legal
+
     out = Path(__file__).resolve().parents[2] / ".tmp" / "layered_sv"
     if out.exists():
         shutil.rmtree(out)
@@ -1437,6 +1451,7 @@ def test_remote_target_layered_randomize_simulation():
             "  import svtypes_pkg::*;",
             LayerPkt.to_sv_obj(level=1),
             WordPkt.to_sv_obj(level=1),
+            DynPkt.to_sv_obj(level=1),
             "endpackage",
             "",
         ]
@@ -1527,6 +1542,18 @@ module tb;
       if (w.words[1] != w.words[0]) $fatal(1, "WordPkt second uses first as state");
       if (w.words[0].rand_mode() != 0) $fatal(1, "WordPkt element mode restore");
       w.words[0].rand_mode(w0_mode);
+    end
+    begin
+      DynPkt d;
+      d = new();
+      d.data = new[1];
+      d.data[0] = 8'd3;
+      d.data[0].rand_mode(0);
+      if (!d.layered_randomize()) $fatal(1, "DynPkt layered unsat");
+      if (d.data.size() != 2 || d.data[0] != 8'd3)
+        $fatal(1, "DynPkt values");
+      if (d.data[0].rand_mode() != 0 || d.data[1].rand_mode() != 1)
+        $fatal(1, "DynPkt element mode restore");
     end
     $display("SVTYPES_LAYERED_PASS");
     $finish;

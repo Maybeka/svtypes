@@ -385,16 +385,25 @@ def layered_randomize_object(obj: Any) -> bool:
     targets = getattr(cls, "_SvObject__svtypes_sv_rand_targets", ())
     constraints = tuple(getattr(cls, "_SvObject__svtypes_constraint_irs", {}))
     rand_snap, cstr_snap = _snapshot_modes(obj)
+    dynamic_roots = _layered_dynamic_roots(cls, batches)
+    dynamic_snap = _snapshot_dynamic_element_modes(obj, cls, dynamic_roots)
     active_snap = obj._SvObject__svtypes_layered_randomize_active
     priority_snap = obj._SvObject__svtypes_layered_randomize_priority
     try:
         obj._SvObject__svtypes_layered_randomize_active = True
         obj._SvObject__svtypes_rand_modes = {name: 0 for name in targets}
+        # A dynamic collection's aggregate rand_mode controls its size.  A
+        # rand_layer instead owns existing scalar elements individually, so an
+        # outside aggregate setting must not leak into this custom algorithm.
+        for root in dynamic_roots:
+            obj._SvObject__svtypes_rand_modes.pop(root, None)
+        for path in dynamic_snap:
+            obj._SvObject__svtypes_rand_modes[path] = 0
         obj._SvObject__svtypes_constraint_modes = {name: 0 for name in constraints}
         last_status = None
         for batch in batches:
             obj._SvObject__svtypes_layered_randomize_priority = batch.priority
-            _set_batch_modes(obj, cls, batch.variables, batch.constraints, 1)
+            _set_batch_modes(obj, cls, batch.variables, batch.constraints, 1, dynamic_snap)
             ok = randomize_object(obj)
             last_status = obj._SvObject__svtypes_randomize_status
             if not ok:
@@ -406,7 +415,7 @@ def layered_randomize_object(obj: Any) -> bool:
                     last_status,
                 )
                 return False
-            _set_batch_modes(obj, cls, batch.variables, batch.constraints, 0)
+            _set_batch_modes(obj, cls, batch.variables, batch.constraints, 0, dynamic_snap)
         obj._SvObject__svtypes_layered_randomize_status = LayeredRandomizeStatus(
             True,
             last_status.reason if last_status is not None else "sat",
@@ -416,7 +425,7 @@ def layered_randomize_object(obj: Any) -> bool:
         )
         return True
     finally:
-        _restore_modes(obj, rand_snap, cstr_snap)
+        _restore_modes(obj, rand_snap, cstr_snap, dynamic_roots, dynamic_snap)
         obj._SvObject__svtypes_layered_randomize_active = active_snap
         obj._SvObject__svtypes_layered_randomize_priority = priority_snap
 
@@ -428,8 +437,24 @@ def _snapshot_modes(obj: Any) -> tuple[dict[str, int], dict[str, int]]:
     )
 
 
-def _restore_modes(obj: Any, rand_modes: dict[str, int], constraint_modes: dict[str, int]) -> None:
-    obj._SvObject__svtypes_rand_modes = dict(rand_modes)
+def _restore_modes(
+    obj: Any,
+    rand_modes: dict[str, int],
+    constraint_modes: dict[str, int],
+    dynamic_roots: tuple[str, ...] = (),
+    dynamic_snap: dict[str, int] | None = None,
+) -> None:
+    restored = dict(rand_modes)
+    for root in dynamic_roots:
+        # Aggregate modes are intentionally outside layered semantics.  The
+        # current elements are restored below; elements created during the run
+        # have no entry snapshot and therefore remain enabled.
+        restored.pop(root, None)
+    if dynamic_snap is not None:
+        current = _current_dynamic_element_paths(obj, obj.__class__, dynamic_roots)
+        for path in current:
+            restored[path] = dynamic_snap.get(path, 1)
+    obj._SvObject__svtypes_rand_modes = restored
     obj._SvObject__svtypes_constraint_modes = dict(constraint_modes)
 
 
@@ -439,15 +464,55 @@ def _set_batch_modes(
     variables: tuple[str, ...],
     constraints: tuple[str, ...],
     on: int,
+    dynamic_snap: dict[str, int] | None = None,
 ) -> None:
-    from .layer import expand_declared_paths
+    from .layer import dynamic_layer_roots, expand_declared_paths
 
     rand_modes = obj._SvObject__svtypes_rand_modes
     constraint_modes = obj._SvObject__svtypes_constraint_modes
     for path in expand_declared_paths(cls, variables):
         rand_modes[path] = on
+    if dynamic_snap is not None:
+        for root in dynamic_layer_roots(cls, variables):
+            for path in _current_dynamic_element_paths(obj, cls, (root,)):
+                # An entry-disabled element never becomes enabled.  Elements
+                # allocated by an earlier randomize call have no entry mode
+                # and stay enabled through the remainder of this invocation.
+                if path in dynamic_snap:
+                    rand_modes[path] = dynamic_snap[path] if on else 0
+                elif on:
+                    rand_modes[path] = 1
     for name in constraints:
         constraint_modes[name] = on
+
+
+def _layered_dynamic_roots(cls: type, batches: tuple[Any, ...]) -> tuple[str, ...]:
+    from .layer import dynamic_layer_roots
+
+    roots: list[str] = []
+    for batch in batches:
+        for root in dynamic_layer_roots(cls, batch.variables):
+            if root not in roots:
+                roots.append(root)
+    return tuple(roots)
+
+
+def _current_dynamic_element_paths(
+    obj: Any, cls: type, roots: tuple[str, ...]
+) -> set[str]:
+    prefixes = tuple(f"{root}[" for root in roots)
+    return {
+        path
+        for path, _desc, _declared in iter_object_leaves(obj, cls)
+        if path.startswith(prefixes)
+    }
+
+
+def _snapshot_dynamic_element_modes(
+    obj: Any, cls: type, roots: tuple[str, ...]
+) -> dict[str, int]:
+    modes = obj._SvObject__svtypes_rand_modes
+    return {path: modes.get(path, 1) for path in _current_dynamic_element_paths(obj, cls, roots)}
 
 
 def _enabled_irs(obj: Any, cls: type, extra: ConstraintIR | None) -> list[ConstraintIR]:

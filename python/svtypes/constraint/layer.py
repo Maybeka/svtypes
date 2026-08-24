@@ -235,15 +235,6 @@ def collect_rand_layers(cls: type) -> None:
     constraints = getattr(cls, "_SvObject__svtypes_constraint_decls", {})
     members = dict(getattr(cls, "_SvObject__svtypes_members", ()))
 
-    if (own or parent_table) and any(
-        bool(getattr(desc, "rand", False)) and isinstance(desc, (AssocArray, DynArray, Queue))
-        for desc in members.values()
-    ):
-        raise DeclarationError(
-            f"{cls.__name__}: runtime-sized collections cannot participate in rand_layer; "
-            "SystemVerilog does not permit container rand_mode()"
-        )
-
     table: dict[str, RandLayerInfo] = dict(parent_table)
     for alias, decl in own.items():
         _check_layer_alias(cls, alias, fields, params, constraints)
@@ -394,11 +385,18 @@ def _validate_variable_target(
         )
     from ..collection import AssocArray, DynArray, Queue
 
-    if isinstance(desc, (AssocArray, DynArray, Queue)):
+    if isinstance(desc, AssocArray):
         raise DeclarationError(
             f"{loc.format()}: {cls.__name__}.{decl.alias} lists {path!r}, "
-            "but a runtime-sized collection has no SV container rand_mode()"
+            "but associative-array entries have no stable rand_layer target"
         )
+    if isinstance(desc, (DynArray, Queue)):
+        if indices:
+            raise DeclarationError(
+                f"{loc.format()}: {cls.__name__}.{decl.alias} lists {path!r}; "
+                "a DynArray or Queue must be listed as a whole collection"
+            )
+        return
     current = desc
     walked = root
     for index in indices:
@@ -459,6 +457,24 @@ def expand_declared_paths(cls: type, paths: tuple[str, ...] | list[str]) -> tupl
                 seen.add(item)
                 out.append(item)
     return tuple(out)
+
+
+def dynamic_layer_roots(
+    cls: type, paths: tuple[str, ...] | list[str]
+) -> tuple[str, ...]:
+    """Return dynamic-array/queue roots listed by a layer declaration.
+
+    These roots deliberately do not expand to static ``rand_mode`` targets:
+    layered randomization snapshots their *current elements* at run time.
+    """
+    from ..collection import DynArray, Queue
+
+    members = dict(getattr(cls, "_SvObject__svtypes_members", ()))
+    return tuple(
+        path
+        for path in paths
+        if "[" not in path and isinstance(members.get(path), (DynArray, Queue))
+    )
 
 
 def singular_rand_paths(cls: type) -> tuple[str, ...]:

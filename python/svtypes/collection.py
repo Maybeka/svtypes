@@ -238,6 +238,7 @@ class DynArray(CollectionBase, Generic[T]):
                 new_elem = copy.deepcopy(self._elem_template)
                 new_elem.value = v
                 self._elements.append(new_elem)
+        self._bind_mode_elements()
 
     def __getitem__(self, i: int) -> T:
         return self._elements[i]
@@ -258,6 +259,14 @@ class DynArray(CollectionBase, Generic[T]):
         del self._elements[size:]
         while len(self._elements) < size:
             self._elements.append(copy.deepcopy(self._elem_template))
+        self._bind_mode_elements()
+
+    def _bind_mode_elements(self) -> None:
+        """Refresh optional per-element rand_mode handles after mutation."""
+        if getattr(self, "_svtypes_mode_root", None) is not None:
+            from .constraint.modes import bind_runtime_collection_elements
+
+            bind_runtime_collection_elements(self)
 
     def pack(self, value: list[Any]) -> bytes:
         if len(value) > self._max_length:
@@ -343,6 +352,7 @@ class Queue(DynArray[T]):
             new_elem = copy.deepcopy(self._elem_template)
             new_elem.value = val
             self._elements.append(new_elem)
+        self._bind_mode_elements()
 
     def pop_front(self) -> Any:
         if not self._elements:

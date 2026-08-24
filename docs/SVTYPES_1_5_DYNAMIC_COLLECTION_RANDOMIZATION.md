@@ -67,17 +67,34 @@ class Lookup(SvObject):
 
 ## rand_mode 与分层随机
 
-SystemVerilog target 确认 `dyn_array.rand_mode()` 和 `queue.rand_mode()` 非法，因为这两者是
-non-singular 容器；只能对现存元素调用 `rand_mode()`。为避免生成非法 SV，自动生成的
-`layered_randomize()` 不会对动态数组或队列直接发出该调用。
+SystemVerilog target 确认动态数组和队列支持设置形式的 `rand_mode(0)` / `rand_mode(1)`；但它们是
+non-singular 容器，不能使用无参查询形式 `rand_mode()`。现存的标量元素可以查询和设置，
+例如 `data[0].rand_mode()`。
 
-因此本阶段不支持将动态数组或队列作为 `rand_layer` 的可控成员。普通 `randomize()`
-的动态集合语义已完成；动态集合的分层 mode 规则需要在后续版本基于“尺寸”和“现存/新增
-元素”的 SV 行为单独设计，并同时补充 Python/SystemVerilog target 对照。
+动态数组或队列可作为一个整体列入 `@rand_layer`，但不能列出具体下标。这里的“整体”只
+是成员归属声明，不是对容器调用 `rand_mode()`，也不控制其尺寸：
+
+```python
+class LayeredPacket(SvObject):
+    data = DynArray(Bit(8), rand=True, max_length=64)
+
+    @rand_layer(10)
+    def payload(self):
+        self.data
+```
+
+进入 `layered_randomize()` 时，运行时会逐个保存当时存在的元素 mode，并关闭这些元素。
+轮到 `payload` 优先级时，仅原来开启的元素开启；原来关闭的元素始终保持关闭。每轮结束后，
+进入时已有的元素再次关闭。若随机过程改变了长度，新出现的元素没有进入时快照，保持开启。
+退出时，仍存在的原始编号恢复到原 mode；新编号保持开启。容器自身的 mode 和长度不属于
+这个分层算法，外部对容器整体设置的 mode 不影响层内逐元素控制。
+
+同一实现同时用于 Python 与生成的 SV；生成代码只对 `data[i]` 发出合法的
+`rand_mode` 调用。
 
 ## 验证
 
 - Python：尺寸约束、动态数组和队列的 `foreach`、未约束尺寸保持、失败恢复、关联数组
-  拒绝路径。
+  拒绝路径，以及分层随机下既有元素的逐元素 mode 保存/恢复。
 - SystemVerilog target：同一组 `size()` + `foreach` 源约束在动态数组与队列上各随机 32 次，并检查尺寸
-  与每个元素。
+  与每个元素；分层随机回归还检查动态数组元素关闭、层内随机和恢复后的 mode。
