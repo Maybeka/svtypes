@@ -210,6 +210,21 @@ pre_randomize()
 
 由于分优先级过程对每个 priority 批次调用一次正常 `randomize()`，hooks 会被多次调用：每批次一次 `pre_randomize()`，每个成功批次一次 `post_randomize()`。
 
+hook 可通过以下同名 Python/SV 方法判断当前调用是否由分层入口发起，并取得当前批次的
+priority：
+
+```python
+if self.svtypes_layered_randomize_active():
+    priority = self.svtypes_layered_randomize_priority()
+```
+
+- 在普通 `randomize()`，以及 `layered_randomize()` 返回后，`active()` 为 `False`。
+- 在每个批次的 `pre_randomize()` 和成功的 `post_randomize()` 内，`active()` 为 `True`，
+  `priority()` 为该批次的值，包括 builtin 的 `0` 和负 priority。
+- `priority()` 在 `active()` 为 `False` 时返回 `0`，因此必须以 `active()` 区分 builtin
+  priority `0` 与非分层调用。
+- 这两个方法是框架拥有的方法，Python 子类不得重定义；生成的 SV 中也不得手工覆盖。
+
 ## 6. `layered_randomize()` 算法
 
 对实际对象按以下步骤执行：

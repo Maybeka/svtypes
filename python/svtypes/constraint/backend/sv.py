@@ -42,6 +42,23 @@ def _mode_tmp(kind: str, path: str) -> str:
     return f"__svtypes_{kind}_{ident}"
 
 
+def render_layered_randomize_context(indent: str, step: str) -> list[str]:
+    """Emit hook-visible state for the generated layered entry point."""
+    ind = indent + step
+    inner = indent + step + step
+    return [
+        "",
+        f"{ind}protected bit __svtypes_layered_randomize_active;",
+        f"{ind}protected int __svtypes_layered_randomize_priority;",
+        f"{ind}function bit svtypes_layered_randomize_active();",
+        f"{inner}return __svtypes_layered_randomize_active;",
+        f"{ind}endfunction",
+        f"{ind}function int svtypes_layered_randomize_priority();",
+        f"{inner}return __svtypes_layered_randomize_priority;",
+        f"{ind}endfunction",
+    ]
+
+
 def render_layered_randomize(cls: type, indent: str, step: str) -> list[str]:
     batches = getattr(cls, "_SvObject__svtypes_layer_batches", ())
     targets = _sv_rand_mode_paths(cls, getattr(cls, "_SvObject__svtypes_sv_rand_targets", ()))
@@ -52,12 +69,17 @@ def render_layered_randomize(cls: type, indent: str, step: str) -> list[str]:
         "",
         f"{ind}virtual function int layered_randomize();",
         f"{inner}int __svtypes_ok;",
+        f"{inner}bit __svtypes_previous_layered_active;",
+        f"{inner}int __svtypes_previous_layered_priority;",
     ]
     for path in targets:
         lines.append(f"{inner}int {_mode_tmp('rand', path)};")
     for name in constraints:
         lines.append(f"{inner}int {_mode_tmp('cstr', name)};")
     lines.append(f"{inner}__svtypes_ok = 1;")
+    lines.append(f"{inner}__svtypes_previous_layered_active = __svtypes_layered_randomize_active;")
+    lines.append(f"{inner}__svtypes_previous_layered_priority = __svtypes_layered_randomize_priority;")
+    lines.append(f"{inner}__svtypes_layered_randomize_active = 1;")
     for path in targets:
         lines.append(f"{inner}{_mode_tmp('rand', path)} = {path}.rand_mode();")
     for name in constraints:
@@ -69,6 +91,7 @@ def render_layered_randomize(cls: type, indent: str, step: str) -> list[str]:
     for batch in batches:
         batch_paths = _sv_rand_mode_paths(cls, batch.variables)
         lines.append(f"{inner}if (__svtypes_ok) begin")
+        lines.append(f"{inner}{step}__svtypes_layered_randomize_priority = {batch.priority};")
         for path in batch_paths:
             lines.append(f"{inner}{step}{path}.rand_mode(1);")
         for name in batch.constraints:
@@ -87,6 +110,8 @@ def render_layered_randomize(cls: type, indent: str, step: str) -> list[str]:
         lines.append(f"{inner}{path}.rand_mode({_mode_tmp('rand', path)});")
     for name in constraints:
         lines.append(f"{inner}{name}.constraint_mode({_mode_tmp('cstr', name)});")
+    lines.append(f"{inner}__svtypes_layered_randomize_active = __svtypes_previous_layered_active;")
+    lines.append(f"{inner}__svtypes_layered_randomize_priority = __svtypes_previous_layered_priority;")
     lines.append(f"{inner}return __svtypes_ok;")
     lines.append(f"{ind}endfunction")
     return lines

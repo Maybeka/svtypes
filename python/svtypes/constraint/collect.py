@@ -31,9 +31,17 @@ _RESERVED = {
     "apply_plusargs",
     "svtypes_randomize_status",
     "svtypes_layered_randomize_status",
+    "svtypes_layered_randomize_active",
+    "svtypes_layered_randomize_priority",
 }
 
-_FINAL_ENTRY_METHODS = frozenset({"randomize", "randomize_with", "layered_randomize"})
+_FINAL_ENTRY_METHODS = frozenset({
+    "randomize",
+    "randomize_with",
+    "layered_randomize",
+    "svtypes_layered_randomize_active",
+    "svtypes_layered_randomize_priority",
+})
 
 
 def constraint(fn: Any = None, *args: Any, **kwargs: Any) -> ConstraintDecl:

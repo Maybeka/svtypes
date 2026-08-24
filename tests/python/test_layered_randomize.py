@@ -513,9 +513,51 @@ def test_final_entry_methods_cannot_be_redefined():
             def layered_randomize(self):
                 return False
 
+    with pytest.raises(DeclarationError, match="framework-owned"):
+        class BadLayerContext(SvObject):
+            addr = Bit(8)
+
+            def svtypes_layered_randomize_priority(self):
+                return 0
+
     pkt = type("Plain", (SvObject,), {"addr": Bit(8)})()
     with pytest.raises(TypeError, match="does not accept arguments"):
         pkt.layered_randomize(1)
+
+
+def test_hooks_can_observe_current_layered_randomize_priority():
+    seen: list[tuple[str, bool, int]] = []
+
+    class Packet(SvObject):
+        high = Bit(8)
+        low = Bit(8)
+
+        @rand_layer(5)
+        def high_layer(self):
+            self.high
+
+        @rand_layer(-2)
+        def low_layer(self):
+            self.low
+
+        def pre_randomize(self):
+            seen.append(("pre", self.svtypes_layered_randomize_active(), self.svtypes_layered_randomize_priority()))
+
+        def post_randomize(self):
+            seen.append(("post", self.svtypes_layered_randomize_active(), self.svtypes_layered_randomize_priority()))
+
+    packet = Packet()
+    assert not packet.svtypes_layered_randomize_active()
+    assert packet.layered_randomize()
+    assert seen == [
+        ("pre", True, 5),
+        ("post", True, 5),
+        ("pre", True, 0),
+        ("post", True, 0),
+        ("pre", True, -2),
+        ("post", True, -2),
+    ]
+    assert not packet.svtypes_layered_randomize_active()
 
 
 def test_generated_sv_emits_layered_randomize_and_schema_identity():

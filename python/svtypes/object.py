@@ -334,6 +334,8 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         self.__svtypes_constraint_modes: dict[str, int] = {}
         self.__svtypes_randomize_status = None
         self.__svtypes_layered_randomize_status = None
+        self.__svtypes_layered_randomize_active = False
+        self.__svtypes_layered_randomize_priority = 0
         if not _defer_identity:
             register_object(self)
 
@@ -367,6 +369,8 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             copied.__svtypes_constraint_modes = dict(self.__svtypes_constraint_modes)
             copied.__svtypes_randomize_status = self.__svtypes_randomize_status
             copied.__svtypes_layered_randomize_status = self.__svtypes_layered_randomize_status
+            copied.__svtypes_layered_randomize_active = False
+            copied.__svtypes_layered_randomize_priority = 0
         return copied
 
     def __copy__(self):
@@ -897,6 +901,14 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
     def post_randomize(self) -> None:
         return None
 
+    def svtypes_layered_randomize_active(self) -> bool:
+        """Whether a hook is executing inside ``layered_randomize()``."""
+        return self.__svtypes_layered_randomize_active
+
+    def svtypes_layered_randomize_priority(self) -> int:
+        """Current layered priority; meaningful only while ``active()`` is true."""
+        return self.__svtypes_layered_randomize_priority
+
     @property
     def svtypes_randomize_status(self):
         return self.__svtypes_randomize_status
@@ -1255,13 +1267,18 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                  )
              lines.append(declaration)
 
-        from .constraint.backend.sv import render_constraint_blocks, render_layered_randomize
+        from .constraint.backend.sv import (
+            render_constraint_blocks,
+            render_layered_randomize,
+            render_layered_randomize_context,
+        )
 
         if "_SvObject__svtypes_emit_specialization_class" not in cls.__dict__:
             # Constraints render only on the class that declares them. A
             # specialize() product inherits the template's blocks (written with
             # parameter names) via extends and must not re-declare them;
             # templates and ParamRef-forwarding subclasses render their own.
+            lines.extend(render_layered_randomize_context(ind_str, cls.IND))
             lines.extend(render_constraint_blocks(cls, ind_str, cls.IND))
             lines.extend(render_layered_randomize(cls, ind_str, cls.IND))
 

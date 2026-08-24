@@ -318,11 +318,15 @@ def layered_randomize_object(obj: Any) -> bool:
     targets = getattr(cls, "_SvObject__svtypes_sv_rand_targets", ())
     constraints = tuple(getattr(cls, "_SvObject__svtypes_constraint_irs", {}))
     rand_snap, cstr_snap = _snapshot_modes(obj)
+    active_snap = obj._SvObject__svtypes_layered_randomize_active
+    priority_snap = obj._SvObject__svtypes_layered_randomize_priority
     try:
+        obj._SvObject__svtypes_layered_randomize_active = True
         obj._SvObject__svtypes_rand_modes = {name: 0 for name in targets}
         obj._SvObject__svtypes_constraint_modes = {name: 0 for name in constraints}
         last_status = None
         for batch in batches:
+            obj._SvObject__svtypes_layered_randomize_priority = batch.priority
             _set_batch_modes(obj, cls, batch.variables, batch.constraints, 1)
             ok = randomize_object(obj)
             last_status = obj._SvObject__svtypes_randomize_status
@@ -346,6 +350,8 @@ def layered_randomize_object(obj: Any) -> bool:
         return True
     finally:
         _restore_modes(obj, rand_snap, cstr_snap)
+        obj._SvObject__svtypes_layered_randomize_active = active_snap
+        obj._SvObject__svtypes_layered_randomize_priority = priority_snap
 
 
 def _snapshot_modes(obj: Any) -> tuple[dict[str, int], dict[str, int]]:

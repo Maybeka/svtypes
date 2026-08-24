@@ -1364,11 +1364,15 @@ module tb;
   class HookPkt extends LayerPkt;
     int pre_count;
     int post_count;
+    int priorities[$];
     function void pre_randomize();
       pre_count++;
+      if (!svtypes_layered_randomize_active()) $fatal(1, "HookPkt inactive pre");
+      priorities.push_back(svtypes_layered_randomize_priority());
     endfunction
     function void post_randomize();
       post_count++;
+      if (!svtypes_layered_randomize_active()) $fatal(1, "HookPkt inactive post");
     endfunction
   endclass
 
@@ -1400,6 +1404,11 @@ module tb;
     if (!h.layered_randomize()) $fatal(1, "HookPkt layered unsat");
     if (h.pre_count != 3) $fatal(1, "HookPkt pre_count %0d", h.pre_count);
     if (h.post_count != 3) $fatal(1, "HookPkt post_count %0d", h.post_count);
+    if (h.priorities.size() != 3 || h.priorities[0] != 100 ||
+        h.priorities[1] != 0 || h.priorities[2] != -50)
+      $fatal(1, "HookPkt layered priorities");
+    if (h.svtypes_layered_randomize_active())
+      $fatal(1, "HookPkt active after layered_randomize");
 
     if (f.layered_randomize()) $fatal(1, "failing layered should be 0");
     if (f.pre_count != 3) $fatal(1, "fail pre_count %0d", f.pre_count);
