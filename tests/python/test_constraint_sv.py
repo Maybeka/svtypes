@@ -1563,6 +1563,7 @@ module tb;
       d = new();
       d.data = new[1];
       d.data[0] = 8'd3;
+      d.data.rand_mode(0);
       d.data[0].rand_mode(0);
       if (!d.layered_randomize()) $fatal(1, "DynPkt layered unsat");
       if (d.data.size() != 2 || d.data[0] != 8'd3)

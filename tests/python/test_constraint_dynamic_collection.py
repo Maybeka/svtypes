@@ -2,8 +2,9 @@
 
 import pytest
 
-from svtypes import AssocArray, Bit, ConstraintUnsupportedError, DeclarationError, DynArray, Queue, String, SvObject, constraint, rand_layer
+from svtypes import Array, AssocArray, Bit, ConstraintUnsupportedError, DeclarationError, DynArray, Queue, String, SvObject, constraint, rand_layer
 from svtypes.constraint.modes import path_prefixes
+from svtypes.constraint.randomize import _dynamic_size_ir
 
 
 class DynamicPacket(SvObject):
@@ -118,6 +119,26 @@ def test_dynamic_size_search_retries_when_nonempty_elements_are_unsat():
     assert packet.data.size() == 0
 
 
+def test_dynamic_size_phase_keeps_fixed_array_constraints():
+    class MixedSize(SvObject):
+        fixed = Array(Bit(2), 1)
+        data = DynArray(Bit(8), rand=True, max_length=4)
+
+        @constraint
+        def legal(self):
+            self.fixed[0] == 2
+            self.data.size() == self.fixed[0]
+            for i in range(self.data.size()):
+                self.data[i] == i
+
+    ir = MixedSize._SvObject__svtypes_constraint_irs["legal"]
+    assert "fixed[0]" in {var.path for var in _dynamic_size_ir(ir).vars}
+    packet = MixedSize()
+    assert packet.randomize()
+    assert packet.fixed[0].value == 2
+    assert packet.data.value == [0, 1]
+
+
 def test_associative_array_randomizes_existing_values_by_python_key_iteration():
     packet = AssocPacket()
     packet.table.value = {1: 99, 7: 99}
@@ -166,6 +187,7 @@ def test_dynamic_collection_layer_controls_existing_elements_individually():
     packet = LayeredDynamic()
     packet.data.value = [3]
     assert packet.data[0].rand_mode() == 1
+    packet.data.rand_mode(0)
     packet.data[0].rand_mode(0)
     assert packet.layered_randomize()
     assert packet.data.size() == 2

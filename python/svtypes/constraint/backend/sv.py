@@ -99,8 +99,12 @@ def render_layered_randomize(cls: type, indent: str, step: str) -> list[str]:
         tmp = _mode_tmp("rand_dyn", root)
         lines.append(f"{inner}foreach ({root}[i]) begin")
         lines.append(f"{inner}{step}{tmp}.push_back({root}[i].rand_mode());")
-        lines.append(f"{inner}{step}{root}[i].rand_mode(0);")
         lines.append(f"{inner}end")
+        # A container-level mode controls size as well as element visibility.
+        # Element snapshots above are authoritative; re-enable the container
+        # so size randomization can proceed, then close entry elements.
+        lines.append(f"{inner}{root}.rand_mode(1);")
+        lines.append(f"{inner}foreach ({root}[i]) {root}[i].rand_mode(0);")
     for name in constraints:
         lines.append(f"{inner}{_mode_tmp('cstr', name)} = {name}.constraint_mode();")
     for path in targets:

@@ -511,8 +511,10 @@ def _current_dynamic_element_paths(
 def _snapshot_dynamic_element_modes(
     obj: Any, cls: type, roots: tuple[str, ...]
 ) -> dict[str, int]:
-    modes = obj._SvObject__svtypes_rand_modes
-    return {path: modes.get(path, 1) for path in _current_dynamic_element_paths(obj, cls, roots)}
+    return {
+        path: _effective_rand_mode(obj, path)
+        for path in _current_dynamic_element_paths(obj, cls, roots)
+    }
 
 
 def _enabled_irs(obj: Any, cls: type, extra: ConstraintIR | None) -> list[ConstraintIR]:
@@ -732,11 +734,21 @@ def _solve_dynamic_collections(
     from .backend.smt import solve
 
     all_leaves = list(iter_class_leaves(cls))
-    var_index = {
-        var.path: var
+    all_vars = [
+        var
         for ir in enabled
         for var in ir.vars
-        if var.kind in {"field", "size"} and "[" not in var.path
+        if var.kind in {"field", "size"}
+    ]
+    dynamic_roots = {
+        var.path.removeprefix("@size:")
+        for var in all_vars
+        if var.kind == "size"
+    }
+    var_index = {
+        var.path: var
+        for var in all_vars
+        if not any(var.path.startswith(f"{root}[") for root in dynamic_roots)
     }
     size_vars = {var.path: var for var in var_index.values() if var.kind == "size"}
     if not size_vars:
@@ -821,10 +833,19 @@ def _dynamic_size_ir(ir: ConstraintIR) -> ConstraintIR:
     complete constraint set for the element solve.
     """
 
+    dynamic_roots = {
+        var.path.removeprefix("@size:")
+        for var in ir.vars
+        if var.kind == "size"
+    }
+
+    def is_runtime_element_path(path: str) -> bool:
+        return any(path.startswith(f"{root}[") for root in dynamic_roots)
+
     def has_runtime_element(value: Expr | None) -> bool:
         if value is None:
             return False
-        if value.op == "field" and "[" in str(value.args[0]):
+        if value.op == "field" and is_runtime_element_path(str(value.args[0])):
             return True
         return any(
             has_runtime_element(arg)
@@ -846,7 +867,7 @@ def _dynamic_size_ir(ir: ConstraintIR) -> ConstraintIR:
             return None if has_runtime_element(value.expr) else value
         if value.kind == "solve_before":
             paths = (*((value.before or ())), *((value.after or ())))
-            return None if any("[" in path for path in paths) else value
+            return None if any(is_runtime_element_path(path) for path in paths) else value
         if has_runtime_element(value.cond):
             return None
         then_body = [child for item in value.then_body if (child := statement(item)) is not None]
@@ -861,9 +882,9 @@ def _dynamic_size_ir(ir: ConstraintIR) -> ConstraintIR:
         solve_before=[
             (before, after)
             for before, after in ir.solve_before
-            if not any("[" in path for path in (*before, *after))
+            if not any(is_runtime_element_path(path) for path in (*before, *after))
         ],
-        vars=[var for var in ir.vars if "[" not in var.path],
+        vars=[var for var in ir.vars if not is_runtime_element_path(var.path)],
         parameters=ir.parameters,
         statements=statements,
     )
