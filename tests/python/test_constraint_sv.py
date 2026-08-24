@@ -1591,10 +1591,26 @@ module tb;
         $fatal(1, "DynPkt element mode restore");
     end
     begin
+      DynPkt d;
+      d = new();
+      d.data = new[1];
+      d.data[0] = 8'd99;
+      d.data.rand_mode(0);
+      if (d.data[0].rand_mode() != 0)
+        $fatal(1, "DynPkt element mode query");
+      if (d.layered_randomize()) $fatal(1, "DynPkt aggregate mode should close element");
+      if (d.data[0] != 8'd99)
+        $fatal(1, "DynPkt aggregate mode changed disabled element");
+      if (d.data[0].rand_mode() != 0)
+        $fatal(1, "DynPkt aggregate mode element restore");
+    end
+    begin
       QueuePkt q;
       q = new();
       q.data.push_back(8'd3);
-      q.data[0].rand_mode(0);
+      q.data.rand_mode(0);
+      if (q.data[0].rand_mode() != 0)
+        $fatal(1, "QueuePkt element mode query");
       if (!q.layered_randomize()) $fatal(1, "QueuePkt layered unsat");
       if (q.data.size() != 2 || q.data[0] != 8'd3)
         $fatal(1, "QueuePkt values");

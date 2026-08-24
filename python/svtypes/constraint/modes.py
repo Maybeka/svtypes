@@ -62,6 +62,11 @@ def bind_runtime_field(value: Any, owner: Any, name: str, desc: Any) -> Any:
     object.__setattr__(value, "_svtypes_declared_rand", declared)
     if declared:
         def rand_mode(on: int | None = None, _root=root, _path=path) -> int:
+            if on is None and isinstance(value, (DynArray, Queue)):
+                raise ConstraintError(
+                    "rand_mode() query is not valid on a non-singular dynamic collection; "
+                    "query an element instead"
+                )
             return _root._svtypes_rand_mode(_path, on)
 
         object.__setattr__(value, "rand_mode", rand_mode)

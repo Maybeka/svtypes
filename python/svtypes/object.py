@@ -870,7 +870,14 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         from .constraint.modes import _require_mode_arg
 
         if on is None:
-            return self.__svtypes_rand_modes.get(path, 1)
+            # SV's per-variable query observes a disabled enclosing aggregate
+            # as well as a setting on the leaf itself.
+            from .constraint.modes import path_prefixes
+
+            for prefix in path_prefixes(path):
+                if self.__svtypes_rand_modes.get(prefix, 1) == 0:
+                    return 0
+            return 1
         self.__svtypes_rand_modes[path] = _require_mode_arg(on)
         return self.__svtypes_rand_modes[path]
 

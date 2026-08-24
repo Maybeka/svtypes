@@ -2,7 +2,7 @@
 
 import pytest
 
-from svtypes import Array, AssocArray, Bit, ConstraintUnsupportedError, DeclarationError, DynArray, Queue, String, SvObject, constraint, rand_layer
+from svtypes import Array, AssocArray, Bit, ConstraintError, ConstraintUnsupportedError, DeclarationError, DynArray, Queue, String, SvObject, constraint, rand_layer
 from svtypes.constraint.modes import path_prefixes
 from svtypes.constraint.randomize import _dynamic_size_ir
 
@@ -196,6 +196,34 @@ def test_dynamic_collection_layer_controls_existing_elements_individually():
     assert packet.data[1].rand_mode() == 1
 
 
+def test_dynamic_collection_layer_uses_observable_element_mode():
+    class LayeredDynamic(SvObject):
+        data = DynArray(Bit(8), rand=True, max_length=4)
+
+        @constraint
+        def legal(self):
+            self.data.size() == 2
+            for i in range(self.data.size()):
+                self.data[i] == i + 3
+
+        @rand_layer(1)
+        def top(self):
+            self.data
+            self.legal
+
+    packet = LayeredDynamic()
+    packet.data.value = [99]
+    packet.data.rand_mode(0)
+    # The per-element SV query is the source of truth: it observes the
+    # disabled aggregate and therefore this element stays disabled.
+    assert packet.data[0].rand_mode() == 0
+    assert not packet.layered_randomize()
+    assert packet.data[0].value == 99
+    assert packet.data[0].rand_mode() == 0
+    with pytest.raises(ConstraintError, match="non-singular"):
+        packet.data.rand_mode()
+
+
 def test_queue_layer_controls_existing_elements_individually():
     class LayeredQueue(SvObject):
         data = Queue(Bit(8), rand=True, max_length=4)
@@ -213,12 +241,15 @@ def test_queue_layer_controls_existing_elements_individually():
 
     packet = LayeredQueue()
     packet.data.value = [3]
-    packet.data[0].rand_mode(0)
+    packet.data.rand_mode(0)
+    assert packet.data[0].rand_mode() == 0
     assert packet.layered_randomize()
     assert packet.data.size() == 2
     assert packet.data[0].value == 3
     assert packet.data[0].rand_mode() == 0
     assert packet.data[1].rand_mode() == 1
+    with pytest.raises(ConstraintError, match="non-singular"):
+        packet.data.rand_mode()
 
 
 def test_queue_pop_front_rebinds_element_rand_mode_paths_without_moving_modes():
