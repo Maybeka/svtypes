@@ -560,6 +560,52 @@ def test_hooks_can_observe_current_layered_randomize_priority():
     assert not packet.svtypes_layered_randomize_active()
 
 
+def test_hooks_can_apply_different_actions_at_each_layered_priority():
+    class Packet(SvObject):
+        high = Bit(8)
+        middle = Bit(8)
+        low = Bit(8)
+        gate = Bit(8, rand=False)
+
+        @constraint
+        def middle_uses_high_pre_hook_state(self):
+            self.middle == self.gate
+
+        @rand_layer(10)
+        def high_layer(self):
+            self.high
+
+        @rand_layer(1)
+        def middle_layer(self):
+            self.middle
+            self.middle_uses_high_pre_hook_state
+
+        @rand_layer(-1)
+        def low_layer(self):
+            self.low
+
+        def pre_randomize(self):
+            if not self.svtypes_layered_randomize_active():
+                return
+            if self.svtypes_layered_randomize_priority() == 10:
+                self.gate.value = 42
+
+        def post_randomize(self):
+            if not self.svtypes_layered_randomize_active():
+                return
+            priority = self.svtypes_layered_randomize_priority()
+            if priority == 1:
+                self.middle_seen_in_post = self.middle.value
+            elif priority == -1:
+                self.low_seen_in_post = self.low.value
+
+    packet = Packet()
+    assert packet.layered_randomize()
+    assert packet.middle.value == 42
+    assert packet.middle_seen_in_post == 42
+    assert packet.low_seen_in_post == packet.low.value
+
+
 def test_generated_sv_emits_layered_randomize_and_schema_identity():
     class Packet(SvObject):
         addr = Bit(32)
