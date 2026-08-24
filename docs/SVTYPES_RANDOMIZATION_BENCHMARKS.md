@@ -19,6 +19,7 @@ The baseline scenarios intentionally cover the principal solver paths:
 
 - scalar hard constraints;
 - weighted scalar `dist`;
+- wide direct-range `dist` without support expansion;
 - dynamic collection size plus `foreach` constraints;
 - direct and container-held non-null `rand Object` graphs.
 

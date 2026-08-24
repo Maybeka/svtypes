@@ -52,6 +52,17 @@ class DistributionPacket(SvObject):
         self.choice @ dist[1 @ 1, (2, 5) / 4, 9 @ 3]
 
 
+class LargeDistributionPacket(SvObject):
+    choice = Bit(32)
+
+    @constraint
+    def legal(self):
+        self.choice @ dist[
+            (0x10200000, 0x10201000) / 1,
+            0x50607080 @ 3,
+        ]
+
+
 class DynamicPacket(SvObject):
     length = Bit(4)
     data = DynArray(Bit(8), rand=True, max_length=16)
@@ -141,6 +152,7 @@ def main() -> int:
     scenarios: tuple[tuple[str, Callable[[], SvObject]], ...] = (
         ("scalar_hard_constraints", ScalarPacket),
         ("scalar_distribution", DistributionPacket),
+        ("large_range_distribution", LargeDistributionPacket),
         ("dynamic_size_and_foreach", DynamicPacket),
         ("direct_rand_handle_graph", _handle_parent),
         ("container_rand_handle_graph", _container_handle_parent),
