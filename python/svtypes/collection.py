@@ -358,6 +358,10 @@ class Queue(DynArray[T]):
         if not self._elements:
             raise IndexError("pop from empty queue")
         elem = self._elements.pop(0)
+        # Queue element modes are associated with their index, matching SV:
+        # an empty index's explicit mode remains available if it is populated
+        # again.  Rebind closures after the indices shift.
+        self._bind_mode_elements()
         from .object import ObjectDescriptor
         if isinstance(self._elem_template, ObjectDescriptor):
             return elem

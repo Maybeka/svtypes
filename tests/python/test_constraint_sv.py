@@ -1581,6 +1581,19 @@ module tb;
       if (q.data[0].rand_mode() != 0 || q.data[1].rand_mode() != 1)
         $fatal(1, "QueuePkt element mode restore");
     end
+    begin
+      QueuePkt q;
+      q = new();
+      q.data.push_back(8'd10);
+      q.data.push_back(8'd20);
+      q.data[1].rand_mode(0);
+      void'(q.data.pop_front());
+      if (q.data[0].rand_mode() != 1)
+        $fatal(1, "QueuePkt pop_front mode reset");
+      q.data.push_back(8'd30);
+      if (q.data[1].rand_mode() != 0)
+        $fatal(1, "QueuePkt pop_front retained index mode");
+    end
     $display("SVTYPES_LAYERED_PASS");
     $finish;
   end

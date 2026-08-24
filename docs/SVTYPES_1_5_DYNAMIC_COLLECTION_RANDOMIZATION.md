@@ -92,6 +92,10 @@ class LayeredPacket(SvObject):
 同一实现同时用于 Python 与生成的 SV；生成代码只对 `data[i]` 发出合法的
 `rand_mode` 调用。
 
+队列的逐元素 mode 以**当前数值下标**为单位，而不随 value 在 `pop_front()` 后左移：若
+`queue[1].rand_mode(0)` 后弹出 `queue[0]`，新的 `queue[0]` 仍是默认开启；以后再次填充
+`queue[1]` 时，该下标的显式关闭 mode 仍生效。该规则已经与 SystemVerilog target 对照验证。
+
 ## 验证
 
 - Python：尺寸约束、动态数组和队列的 `foreach`、未约束尺寸保持、失败恢复、关联数组

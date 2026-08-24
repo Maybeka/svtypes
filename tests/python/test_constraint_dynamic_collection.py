@@ -197,3 +197,16 @@ def test_queue_layer_controls_existing_elements_individually():
     assert packet.data[0].value == 3
     assert packet.data[0].rand_mode() == 0
     assert packet.data[1].rand_mode() == 1
+
+
+def test_queue_pop_front_rebinds_element_rand_mode_paths_without_moving_modes():
+    class QueueModes(SvObject):
+        data = Queue(Bit(8), rand=True, max_length=4)
+
+    packet = QueueModes()
+    packet.data.value = [10, 20]
+    packet.data[1].rand_mode(0)
+    assert packet.data.pop_front() == 10
+    assert packet.data[0].rand_mode() == 1
+    packet.data.push_back(30)
+    assert packet.data[1].rand_mode() == 0
