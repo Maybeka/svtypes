@@ -172,3 +172,28 @@ def test_dynamic_collection_layer_controls_existing_elements_individually():
     assert packet.data[0].value == 3
     assert packet.data[0].rand_mode() == 0
     assert packet.data[1].rand_mode() == 1
+
+
+def test_queue_layer_controls_existing_elements_individually():
+    class LayeredQueue(SvObject):
+        data = Queue(Bit(8), rand=True, max_length=4)
+
+        @constraint
+        def legal(self):
+            self.data.size() == 2
+            for i in range(self.data.size()):
+                self.data[i] == i + 3
+
+        @rand_layer(1)
+        def top(self):
+            self.data
+            self.legal
+
+    packet = LayeredQueue()
+    packet.data.value = [3]
+    packet.data[0].rand_mode(0)
+    assert packet.layered_randomize()
+    assert packet.data.size() == 2
+    assert packet.data[0].value == 3
+    assert packet.data[0].rand_mode() == 0
+    assert packet.data[1].rand_mode() == 1

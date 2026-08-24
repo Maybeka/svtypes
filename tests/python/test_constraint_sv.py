@@ -1441,6 +1441,20 @@ def test_remote_target_layered_randomize_simulation():
             self.data
             self.legal
 
+    class QueuePkt(SvObject):
+        data = Queue(Bit(8), rand=True, max_length=4)
+
+        @constraint
+        def legal(self):
+            self.data.size() == 2
+            for i in range(self.data.size()):
+                self.data[i] == i + 3
+
+        @rand_layer(1)
+        def elements(self):
+            self.data
+            self.legal
+
     out = Path(__file__).resolve().parents[2] / ".tmp" / "layered_sv"
     if out.exists():
         shutil.rmtree(out)
@@ -1452,6 +1466,7 @@ def test_remote_target_layered_randomize_simulation():
             LayerPkt.to_sv_obj(level=1),
             WordPkt.to_sv_obj(level=1),
             DynPkt.to_sv_obj(level=1),
+            QueuePkt.to_sv_obj(level=1),
             "endpackage",
             "",
         ]
@@ -1554,6 +1569,17 @@ module tb;
         $fatal(1, "DynPkt values");
       if (d.data[0].rand_mode() != 0 || d.data[1].rand_mode() != 1)
         $fatal(1, "DynPkt element mode restore");
+    end
+    begin
+      QueuePkt q;
+      q = new();
+      q.data.push_back(8'd3);
+      q.data[0].rand_mode(0);
+      if (!q.layered_randomize()) $fatal(1, "QueuePkt layered unsat");
+      if (q.data.size() != 2 || q.data[0] != 8'd3)
+        $fatal(1, "QueuePkt values");
+      if (q.data[0].rand_mode() != 0 || q.data[1].rand_mode() != 1)
+        $fatal(1, "QueuePkt element mode restore");
     end
     $display("SVTYPES_LAYERED_PASS");
     $finish;
