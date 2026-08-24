@@ -65,6 +65,11 @@ class targetContainerHandleParent(SvObject):
     dynamic = DynArray(Object("targetHandleChild", registry=target_handle_pkg, rand=True))
     queue = Queue(Object("targetHandleChild", registry=target_handle_pkg, rand=True))
     table = AssocArray(Bit(8), Object("targetHandleChild", registry=target_handle_pkg, rand=True))
+    target = Bit(8)
+
+    @constraint
+    def cross_legal(self):
+        self.target == self.dynamic[0].data + 1
 
 
 class CPacket(SvObject):
@@ -653,6 +658,8 @@ module tb;
       if (!p.randomize()) $fatal(1, "rand handle container randomize unsat");
       if (fixed.data > 10 || dynamic.data > 10 || queued.data > 10 || mapped.data > 10)
         $fatal(1, "rand handle container child constraint violated");
+      if (p.target != dynamic.data + 1)
+        $fatal(1, "rand handle container parent constraint violated");
     end
     $display("SVTYPES_RAND_HANDLE_CONTAINER_PASS");
     $finish;

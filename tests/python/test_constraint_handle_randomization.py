@@ -123,6 +123,16 @@ class ContainerHandleParent(SvObject):
     table = AssocArray(Bit(8), Object("HandleChild", registry=handle_pkg, rand=True))
 
 
+@svobj(registry=handle_pkg)
+class ContainerCrossHandleParent(SvObject):
+    dynamic = DynArray(Object("HandleChild", registry=handle_pkg, rand=True))
+    target = Bit(8)
+
+    @constraint
+    def cross_legal(self):
+        self.target == self.dynamic[0].data + 1
+
+
 def test_rand_handle_joins_parent_and_child_constraints_and_hooks():
     parent = HandleParent()
     child = HandleChild()
@@ -243,3 +253,33 @@ def test_existing_rand_handle_elements_in_all_container_kinds_join_the_solve():
     for child in (fixed, dynamic, queued, mapped):
         assert child.data.value <= 10
         assert (child.pre_count, child.post_count) == (1, 1)
+
+
+def test_container_handle_can_participate_in_a_parent_cross_constraint():
+    parent = ContainerCrossHandleParent()
+    child = HandleChild()
+    parent.dynamic.value = [child]
+
+    assert parent.randomize()
+    assert child.data.value <= 10
+    assert parent.target.value == child.data.value + 1
+
+
+def test_null_container_handle_in_a_parent_constraint_reports_its_entry_path():
+    parent = ContainerCrossHandleParent()
+    parent.dynamic.value = [None]
+
+    assert not parent.randomize()
+    assert parent.svtypes_randomize_status.reason == "null_handle"
+    assert parent.svtypes_randomize_status.state_path == "dynamic[0]"
+
+
+def test_shared_container_handle_is_solved_once_by_identity():
+    parent = ContainerHandleParent()
+    child = HandleChild()
+    parent.dynamic.value = [child]
+    parent.queue.value = [child]
+
+    assert parent.randomize()
+    assert child.data.value <= 10
+    assert (child.pre_count, child.post_count) == (1, 1)

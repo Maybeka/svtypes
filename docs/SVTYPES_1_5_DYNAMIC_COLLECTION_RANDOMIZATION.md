@@ -41,6 +41,10 @@ class Packet(SvObject):
 `for i in range(data.size())` 中的 `size()` 仅表示迭代边界，不算作尺寸约束，因而
 不会令原本未约束的空动态数组自行增长。
 
+动态数组和队列也可使用非负常量索引，例如 `self.data[0]`；它会原样生成对应的
+SV 下标表达式。调用者必须以尺寸约束或已有元素保证该位置存在。可变索引仍只接受
+`range(collection.size())` 的循环变量，保证 Python 与 SV 的 `foreach` 语义一致。
+
 ## 关联数组
 
 `AssocArray` 也提供运行时 `.size()` 查询，与 SV 的容器 API 一致。但其键集合不是

@@ -286,30 +286,51 @@ def _visit_rand_container_handles(
 def _null_handle_path(root: Any, path: str) -> str | None:
     """Return the first null handle crossed by *path*, without descriptor get."""
 
-    from ..object import ObjectDescriptor
+    from ..collection import Array, AssocArray, DynArray, Queue
+    from ..object import ObjectDescriptor, SvObject
 
-    # Template foreach paths still contain a symbolic ``[i]``/``[key]`` and
-    # are expanded later.  They cannot be resolved against one runtime entry
-    # here; the current 1.6 handle traversal covers direct handle members.
-    if "[" in path or "{" in path:
-        return None
     current = root
-    traversed: list[str] = []
-    for token in split_path(path):
-        if isinstance(token, tuple):
-            current = current._elements[token[1]]
+    desc: Any | None = None
+    traversed = ""
+    # Structured foreach templates use symbolic ``[i]`` / ``[key]`` paths.
+    # They are expanded against actual entries later, so no individual null
+    # handle can be identified at this stage.
+    try:
+        tokens = split_path(path)
+    except ValueError:
+        return None
+    for token in tokens:
+        if isinstance(token, tuple) and token[0] == "assoc":
+            if not isinstance(desc, AssocArray):
+                return None
+            traversed = assoc_path(traversed, token[1])
+            desc = desc._val_template
+            current = current._elements.get(token[1])
+            if isinstance(desc, ObjectDescriptor) and current is None:
+                return traversed
             continue
         if isinstance(token, int):
-            current = current[token]
+            if not isinstance(desc, (Array, DynArray, Queue)):
+                return None
+            traversed = f"{traversed}[{token}]"
+            desc = desc._elem_template
+            try:
+                current = current._elements[token]
+            except IndexError:
+                return None
+            if isinstance(desc, ObjectDescriptor) and current is None:
+                return traversed
             continue
+        if not isinstance(current, SvObject):
+            return None
         desc = dict(current.__class__._SvObject__svtypes_members).get(token)
         if desc is None:
             return None
-        traversed.append(token)
+        traversed = f"{traversed}.{token}" if traversed else token
         if isinstance(desc, ObjectDescriptor):
             child = current.__dict__.get(desc._cache_key)
             if child is None:
-                return ".".join(traversed)
+                return traversed
             current = child
         else:
             current = getattr(current, token)

@@ -457,12 +457,18 @@ class _Analyzer:
                 )
             else:
                 index = self.const_int(index_expr, node.loc)
-                if not isinstance(desc, Array):
+                if isinstance(desc, Array):
+                    if index < 0 or index >= desc._size:
+                        raise ConstraintTypeError(f"{node.loc.format()}: index {index} is out of range")
+                elif isinstance(desc, (DynArray, Queue)):
+                    if index < 0:
+                        raise ConstraintTypeError(
+                            f"{node.loc.format()}: dynamic-array index must be non-negative"
+                        )
+                else:
                     raise ConstraintUnsupportedError(
-                        f"{node.loc.format()}: a dynamic array or queue may only be indexed by its range() loop variable"
+                        f"{node.loc.format()}: associative-array indexing requires a foreach loop variable"
                     )
-                if index < 0 or index >= desc._size:
-                    raise ConstraintTypeError(f"{node.loc.format()}: index {index} is out of range")
                 index_part = index
             if not isinstance(desc, (Array, DynArray, Queue, AssocArray)):
                 raise ConstraintUnsupportedError(f"{node.loc.format()}: indexing is only allowed on collections")
