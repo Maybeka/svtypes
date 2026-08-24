@@ -47,6 +47,9 @@ priority = 0
 - packed vector 的 bit select 不是独立随机变量，不能单独分组或控制。
 - 动态索引、slice、负/越界索引必须拒绝。同一数组的不同元素可以归入不同 priority，但同一元素不可重复归属。
 - 无法生成合法 `target.rand_mode()` 的 SvTypes 内部 leaf path 必须在类创建期拒绝，不能为了 Python 求解器自行拆分。
+- `DynArray` 与 `Queue` 可以以容器根名称作为一个 layer 成员，不能列出具体下标；其
+  语义是运行时逐个控制现存元素，而不是对 non-singular 容器调用无参 `rand_mode()`。
+  `AssocArray` 仍不能列入 layer，因为其运行时 key 没有可声明的稳定归属 target。
 
 关闭的随机变量不被写回，其当前值作为 constraint solver 的 state；这与 SystemVerilog `rand_mode(0)` 一致。普通 `randomize()` 继续遵守调用前的 modes；`layered_randomize()` 对调用前 modes 的特殊处理见 §6。
 
@@ -229,18 +232,27 @@ if self.svtypes_layered_randomize_active():
 
 对实际对象按以下步骤执行：
 
-1. 枚举最终类的全部 SV 可控 rand target 和最终有效 constraints。
-2. 精确快照其 mode 表状态：不仅保存有效值，也保存某项是否不存在显式表项，以便恢复默认值语义。该快照只用于退出恢复，不参与本次分优先级随机化的成员选择。
-3. 临时关闭所有 rand target 的 `rand_mode` 和全部 constraint 的 `constraint_mode`。
+1. 枚举最终类的全部静态 SV 可控 rand target、最终有效 constraints，以及 layer 中列出的
+   `DynArray` / `Queue`。
+2. 精确快照静态 target 与 constraint 的 mode 表状态；对每个动态容器仅快照进入时已存在
+   元素的逐元素 mode。两类快照都只用于退出恢复，不参与本次分优先级随机化的静态成员选择。
+3. 临时关闭所有静态 rand target、动态容器的进入时元素和全部 constraint。
 4. 将全部显式 priority 组与隐式 builtin priority `0` 一起按 priority 从高到低处理。
 5. 对每个批次：
-   1. 为属于该批次的全部变量和 constraints 开启 mode，不考虑进入方法时的 mode 值。
+   1. 为属于该批次的全部静态变量和 constraints 开启 mode，不考虑进入方法时的 mode 值。
+      对属于该批次的动态容器，只有进入时开启的元素开启；进入时关闭的元素保持关闭。
+      随机过程中新增的动态元素保持开启。
    2. 调用一次普通 `randomize()`。
    3. 若返回 `False`，停止后续批次并进入退出流程。
    4. 若返回 `True`，关闭刚完成批次的成员，继续下一批次。
-6. 无论正常返回、`False` 或异常，都在 `finally` 等价路径中恢复步骤 2 的完整 mode 快照。
+6. 无论正常返回、`False` 或异常，都在 `finally` 等价路径中恢复步骤 2 的 mode 快照。动态
+   容器只按仍存在的原始编号恢复；新增元素保持开启。动态容器整体 mode 与尺寸不属于此算法。
 
-因此：进入前关闭的成员会在其声明的 priority 批次中照常参与随机化；调用前 modes 对 `layered_randomize()` 的内部行为没有影响，只会在退出时被完整恢复。高 priority 成功值在低 priority 批次中是 state；失败不回滚此前成功批次的值；`RandomContext.call_index` 按每次实际 `randomize()` 推进；无显式 layer 时只执行一次 builtin 批次。若同时存在 priority `100`、builtin `0` 和 priority `-50`，执行顺序必须是 `100 -> builtin -> -50`。
+因此：对于静态成员，进入前关闭的成员会在其声明的 priority 批次中照常参与随机化；调用前
+modes 对其内部行为没有影响，只会在退出时被完整恢复。动态容器遵循前述逐元素例外。高 priority
+成功值在低 priority 批次中是 state；失败不回滚此前成功批次的值；`RandomContext.call_index`
+按每次实际 `randomize()` 推进；无显式 layer 时只执行一次 builtin 批次。若同时存在 priority
+`100`、builtin `0` 和 priority `-50`，执行顺序必须是 `100 -> builtin -> -50`。
 
 `pre_randomize()` 内主动修改 mode 仍遵循 SV hook 语义，并可影响它所在的那一次普通 `randomize()`；这不属于调用 `layered_randomize()` 前遗留的外部 mode 设置。无论 hook 如何修改，方法退出时仍恢复进入时快照。
 
