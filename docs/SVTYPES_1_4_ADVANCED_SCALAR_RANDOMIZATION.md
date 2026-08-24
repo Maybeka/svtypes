@@ -93,7 +93,7 @@ exact Python frequency contract.
 
 ## Restrictions and future integration
 
-- `dist` on a future `randc` target will be rejected, following SV.
+- `dist` on a `randc` target is rejected, following SV.
 - The source form remains scalar-oriented.  After runtime expansion, a
   distribution over a current dynamic-collection element or an already
   allocated rand-handle leaf uses the same IR and solver path.
