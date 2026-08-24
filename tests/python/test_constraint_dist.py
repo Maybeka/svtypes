@@ -209,6 +209,30 @@ def test_dist_weight_can_depend_on_another_random_leaf():
     assert counts[0] > counts[1]
 
 
+def test_dist_range_bounds_can_depend_on_another_random_leaf():
+    class DependentBounds(SvObject):
+        base = Bit(2)
+        choice = Bit(8)
+
+        @constraint
+        def legal(self):
+            self.base < 2
+            self.choice @ dist[
+                (self.base, self.base) @ 3,
+                (self.base + 2, self.base + 2) @ 1,
+            ]
+
+    counts = {0: 0, 1: 0, 2: 0, 3: 0}
+    packet = DependentBounds()
+    with RandomContext(seed=310):
+        for _ in range(240):
+            assert packet.randomize()
+            assert packet.choice.value in counts
+            counts[packet.choice.value] += 1
+    assert counts[0] > counts[2] * 2
+    assert counts[1] > counts[3] * 2
+
+
 def test_dist_applies_after_dynamic_element_expansion():
     class DynamicDist(SvObject):
         data = DynArray(Bit(2), rand=True, max_length=2)
