@@ -260,7 +260,10 @@ modes 对其内部行为没有影响，只会在退出时被完整恢复。动�
 
 ## 7. 失败信息与状态
 
-现有 `svtypes_randomize_status` 只有 `ok` 和 `reason`（`"sat"`、`"unsat"`、`"state_xz"`），不能报告 UNSAT 涉及的 constraint、state field path 或失败优先级。
+`svtypes_randomize_status` 提供 `ok`、`reason`（`"sat"`、`"unsat"`、`"state_xz"`、
+`"null_handle"`）、可选的 `state_path` 以及 `active_constraints`。后者是本次实际送入
+求解器的稳定 constraint 名称序列，用于诊断，不是 UNSAT core，不能解释为每一项都参与了
+失败证明。
 
 本功能必须新增只读的分优先级状态：
 
@@ -280,7 +283,9 @@ class LayeredRandomizeStatus:
 - `svtypes_randomize_status` 保持最后一次实际 `randomize()` 的状态。
 - hook 或 backend 抛异常时异常原样传播，且不得把它伪报为 `unsat`。
 
-同时应扩展普通 `RandomizeStatus` 的可选诊断：至少在 `state_xz` 时提供 `state_path`；若 backend 可给出 UNSAT 解释，可附约束名和摘要，但首版不承诺 UNSAT core。
+`state_xz` 与 `null_handle` 通过 `state_path` 标出路径；分层状态继续嵌入完整的普通 status，
+因此同时给出失败 priority/alias 与该批次的 active constraint 上下文。后端仍不承诺
+UNSAT core。
 
 ## 8. SystemVerilog 生成
 

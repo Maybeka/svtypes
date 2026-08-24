@@ -398,6 +398,7 @@ def test_layered_failure_status_does_not_rollback_earlier_success():
     assert status.failed_priority == -50
     assert status.failed_aliases == ("payload_data",)
     assert pkt.svtypes_randomize_status.reason == "unsat"
+    assert pkt.svtypes_randomize_status.active_constraints == ("payload_legal",)
     assert pkt.addr.value == 7
     assert pkt.payload.value == 4
 

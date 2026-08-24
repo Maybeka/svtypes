@@ -80,6 +80,7 @@ class RandomizeStatus:
     ok: bool
     reason: str
     state_path: str | None = None
+    active_constraints: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

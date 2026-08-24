@@ -228,6 +228,7 @@ def test_unsat_is_transactional_for_every_leaf():
         assert obj.randomize() is False
         assert ctx.call_index == 2
     assert obj.svtypes_randomize_status.reason == "unsat"
+    assert obj.svtypes_randomize_status.active_constraints == ("a", "b")
     assert _leaf_snapshot(obj) == before
 
 

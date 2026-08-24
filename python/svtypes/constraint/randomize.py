@@ -544,7 +544,7 @@ def _solve(
 ) -> bool:
     if graph is not None and graph.null_path is not None:
         obj._SvObject__svtypes_randomize_status = RandomizeStatus(
-            False, "null_handle", graph.null_path
+            False, "null_handle", graph.null_path, _constraint_names(graph.irs)
         )
         return False
     enabled = (
@@ -588,7 +588,9 @@ def _solve(
     for path in state_paths:
         target = resolve_attr(obj, path)
         if isinstance(target, Logic) and leaf_has_xz(target, target.value):
-            obj._SvObject__svtypes_randomize_status = RandomizeStatus(False, "state_xz", path)
+            obj._SvObject__svtypes_randomize_status = RandomizeStatus(
+                False, "state_xz", path, _constraint_names(enabled)
+            )
             return False
 
     snapshot = snapshot_leaves(obj, write_paths)
@@ -621,7 +623,7 @@ def _solve(
     if not constrained:
         if not all(eval_bool(pred, env, widths) for ir in enabled for pred in ir.predicates):
             restore_leaves(obj, snapshot)
-            obj._SvObject__svtypes_randomize_status = RandomizeStatus(False, "unsat")
+            obj._SvObject__svtypes_randomize_status = _unsat_status(enabled)
             return False
         chosen = {}
     else:
@@ -698,7 +700,7 @@ def _solve(
                     result = reset_result
             if not result.is_sat:
                 restore_leaves(obj, snapshot)
-                obj._SvObject__svtypes_randomize_status = RandomizeStatus(False, "unsat")
+                obj._SvObject__svtypes_randomize_status = _unsat_status(enabled)
                 return False
             chosen = {}
             for path, desc in constrained:
@@ -713,7 +715,9 @@ def _solve(
         restore_leaves(obj, snapshot)
         raise
     _commit_randc_state(obj, randc_seen, signature, graph)
-    obj._SvObject__svtypes_randomize_status = RandomizeStatus(True, "sat")
+    obj._SvObject__svtypes_randomize_status = RandomizeStatus(
+        True, "sat", active_constraints=_constraint_names(enabled)
+    )
     return True
 
 
@@ -800,7 +804,7 @@ def _solve_dynamic_collections(
             )
             candidates = _enumerate_dynamic_size_models(solve, request, active_sizes, stream)
             if not candidates:
-                obj._SvObject__svtypes_randomize_status = RandomizeStatus(False, "unsat")
+                obj._SvObject__svtypes_randomize_status = _unsat_status(enabled)
                 return False
 
         while candidates:
@@ -815,13 +819,29 @@ def _solve_dynamic_collections(
             for key, elements in collection_snapshot.items():
                 resolve_attr(obj, key.removeprefix("@size:"))._elements = copy.deepcopy(elements)
 
-        obj._SvObject__svtypes_randomize_status = RandomizeStatus(False, "unsat")
+        # The last expanded element solve already recorded its active set.
+        # If no candidate reached that solve, retain the outer constraint set.
+        if obj._SvObject__svtypes_randomize_status is None:
+            obj._SvObject__svtypes_randomize_status = _unsat_status(enabled)
         return False
     except Exception:
         restore_leaves(obj, static_snapshot)
         for key, elements in collection_snapshot.items():
             resolve_attr(obj, key.removeprefix("@size:"))._elements = elements
         raise
+
+
+def _constraint_names(irs: list[ConstraintIR]) -> tuple[str, ...]:
+    """Return the stable names of constraints active in one solve attempt.
+
+    This is diagnostic context, not an UNSAT core: a backend may need all or
+    only some of the listed constraints to prove the result unsatisfiable.
+    """
+    return tuple(dict.fromkeys(ir.name for ir in irs))
+
+
+def _unsat_status(irs: list[ConstraintIR]) -> RandomizeStatus:
+    return RandomizeStatus(False, "unsat", active_constraints=_constraint_names(irs))
 
 
 def _dynamic_size_ir(ir: ConstraintIR) -> ConstraintIR:
