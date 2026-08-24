@@ -969,7 +969,15 @@ def _solve_finite_dist(
     stream: BitStream,
     solve: Any,
 ) -> Any | None:
-    """Choose a finite, state-resolvable `dist` support value by its weight."""
+    """Choose finite, state-resolvable direct distributions by joint weight.
+
+    The generic SMT solver is a satisfiability engine, not a weighted model
+    sampler.  For a bounded Cartesian product of direct ``dist`` supports,
+    enumerate the support choices, prove each combination satisfiable, then
+    choose a witness by the product of its declared weights.  This preserves
+    weights when distributions constrain one another instead of silently
+    accepting an arbitrary SMT model.
+    """
 
     # A branch that depends on an unsolved leaf cannot be selected before the
     # backend solves it.  The exact sparse path therefore handles only direct
@@ -981,18 +989,86 @@ def _solve_finite_dist(
         for stmt in ir.statements
         if stmt.kind == "pred" and stmt.expr is not None and stmt.expr.op == "dist"
     ]
-    if len(dist_exprs) != 1:
+    if not dist_exprs:
         return None
-    dist_expr = dist_exprs[0]
     from fractions import Fraction
     from math import lcm
     from .ir import c_int
 
+    random_paths = set(request.random_paths)
+    supports: list[tuple[Expr, Any, dict[int, Fraction]]] = []
+    combinations = 1
+    for dist_expr in dist_exprs:
+        options = _finite_dist_options(dist_expr, env, widths, random_paths)
+        if options is None:
+            return None
+        nonzero = {value: weight for value, weight in options.items() if weight > 0}
+        if not nonzero:
+            return None
+        combinations *= len(nonzero)
+        if combinations > 4096:
+            return None
+        supports.append((dist_expr.args[0], dist_expr.loc, nonzero))
+
+    # Keep distinct support combinations even if the backend returns the same
+    # completion for unrelated leaves: each combination represents a declared
+    # distribution event, so their weights add.
+    model_weights: dict[tuple[tuple[str, int], ...], tuple[Fraction, Any]] = {}
+    choices: list[tuple[Fraction, tuple[Expr, ...]]] = [(Fraction(1), ())]
+    for left, loc, options in supports:
+        choices = [
+            (
+                prior_weight * weight,
+                (*prior_assumptions, Expr("eq", (left, c_int(value, loc)), BOOL, loc)),
+            )
+            for prior_weight, prior_assumptions in choices
+            for value, weight in options.items()
+        ]
+    for weight, assumptions in choices:
+        result = solve(replace(request, assumptions=(*request.assumptions, *assumptions)))
+        if result.is_sat:
+            key = tuple(sorted(result.assignments.items()))
+            previous = model_weights.get(key)
+            model_weights[key] = (
+                weight if previous is None else previous[0] + weight,
+                result,
+            )
+    models = list(model_weights.values())
+    if not models:
+        return None
+    denominator = 1
+    for weight, _ in models:
+        denominator = lcm(denominator, weight.denominator)
+    integer_weights = [(int(weight * denominator), result) for weight, result in models]
+    total = sum(weight for weight, _ in integer_weights)
+    draw_limit = ((1 << 64) // total) * total
+    while True:
+        draw = stream.draw_bits(64)
+        if draw < draw_limit:
+            break
+    pick = draw % total
+    for weight, result in integer_weights:
+        if pick < weight:
+            return result
+        pick -= weight
+    raise ConstraintBackendError("weighted finite dist selection lost its chosen model")
+
+
+def _finite_dist_options(
+    dist_expr: Expr,
+    env: dict[str, int],
+    widths: dict[str, tuple[int, bool]],
+    random_paths: set[str],
+) -> dict[int, Any] | None:
+    """Resolve one direct ``dist`` support to exact rational per-value weights."""
+
+    from fractions import Fraction
+
     options: dict[int, Fraction] = {}
     for item in dist_expr.args[1]:
-        if _expr_fields(item.low) & set(request.random_paths):
+        if _expr_fields(item.low) & random_paths or _expr_fields(item.weight) & random_paths:
             return None
-        if _expr_fields(item.weight) & set(request.random_paths):
+        if item.high is not None and _expr_fields(item.high) & random_paths:
             return None
         low = eval_expr(item.low, env, widths)
         high = eval_expr(item.high, env, widths) if item.high is not None else None
@@ -1012,39 +1088,7 @@ def _solve_finite_dist(
         contribution = Fraction(raw_weight, 1 if item.each else count)
         for value in range(low_value, high_value + 1):
             options[value] = options.get(value, Fraction(0)) + contribution
-    models: list[tuple[Fraction, Any]] = []
-    for value, weight in options.items():
-        if weight == 0:
-            continue
-        assumption = Expr("eq", (dist_expr.args[0], c_int(value, dist_expr.loc)), BOOL, dist_expr.loc)
-        result = solve(type(request)(
-            irs=request.irs,
-            random_paths=request.random_paths,
-            state=request.state,
-            var_index=request.var_index,
-            assumptions=(*request.assumptions, assumption),
-            soft_constraints=request.soft_constraints,
-        ))
-        if result.is_sat:
-            models.append((weight, result))
-    if not models:
-        return None
-    denominator = 1
-    for weight, _ in models:
-        denominator = lcm(denominator, weight.denominator)
-    integer_weights = [(int(weight * denominator), result) for weight, result in models]
-    total = sum(weight for weight, _ in integer_weights)
-    draw_limit = ((1 << 64) // total) * total
-    while True:
-        draw = stream.draw_bits(64)
-        if draw < draw_limit:
-            break
-    pick = draw % total
-    for weight, result in integer_weights:
-        if pick < weight:
-            return result
-        pick -= weight
-    raise ConstraintBackendError("weighted singleton dist selection lost its chosen model")
+    return options
 
 
 def _expr_fields(expr: Expr) -> set[str]:

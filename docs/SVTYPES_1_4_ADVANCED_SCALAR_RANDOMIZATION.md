@@ -80,14 +80,17 @@ execution.
 
 When direct sampling is impractical for a sparse, wide distribution whose
 bounds and weights are already state-resolvable, the Python path expands up to
-4096 support values, proves every value SAT, and selects among satisfiable
-values by the exact declared weights.  This covers both singleton choices and
-finite ranges, including `:/` total-range weights, without minimum-model bias.
+4096 joint support combinations, proves each combination SAT, and selects among
+the satisfiable combinations by the product of their exact declared weights.
+This covers singleton choices, finite ranges, `:/` total-range weights, and
+multiple direct distributions that constrain one another, without
+minimum-model bias.
 
 The general SMT fallback remains a hard-satisfiability fallback for support
-sets above that bound, multiple interacting distributions, and distribution
-bounds/weights that depend on unsolved leaves.  The later unified 1.4
-solver-policy pass will extend exact weighted model selection to those shapes.
+sets above that bound, conditional distributions, and distribution
+bounds/weights that depend on unsolved leaves. Those shapes remain the
+outstanding distribution-policy work; they must not be presented as having an
+exact Python frequency contract.
 
 ## Restrictions and future integration
 
@@ -96,9 +99,10 @@ solver-policy pass will extend exact weighted model selection to those shapes.
   leaves; collection, dynamic-size, and handle targets belong to later
   milestones.
 - Dynamic expressions are represented in IR and rendered to SV without Python
-  pre-evaluation.  Exact finite fallback covers state-resolvable support sets
-  through 4096 values; dynamic ranges and interacting distributions remain
-  part of the pending solver-policy work.
+  pre-evaluation. Exact finite fallback covers state-resolvable direct support
+  products through 4096 combinations; conditional distributions and bounds or
+  weights depending on unsolved leaves remain part of the pending
+  solver-policy work.
 - `soft`, `solve before`, `unique`, and `randc` must share the solver-policy
   layer so their priority/order behavior cannot silently alter this interface.
 

@@ -122,6 +122,29 @@ def test_sparse_wide_range_dist_uses_total_range_weight_fallback():
     assert sum(counts[value] for value in range(0x10203040, 0x10203044)) < 90
 
 
+def test_interacting_direct_distributions_use_the_product_of_declared_weights():
+    class Correlated(SvObject):
+        first = Bit(1)
+        second = Bit(1)
+
+        @constraint
+        def legal(self):
+            self.first @ dist[0 @ 1, 1 @ 3]
+            self.second @ dist[0 @ 1, 1 @ 3]
+            self.first == self.second
+
+    counts = {0: 0, 1: 0}
+    obj = Correlated()
+    with RandomContext(seed=305):
+        for _ in range(400):
+            assert obj.randomize()
+            assert obj.first.value == obj.second.value
+            counts[obj.first.value] += 1
+    # The feasible (0, 0) and (1, 1) choices have weights 1*1 and 3*3.
+    assert counts[1] > 320
+    assert counts[1] > counts[0] * 5
+
+
 def test_dist_rejects_negative_weights_and_boolean_composition():
     with pytest.raises(ConstraintTypeError, match="non-negative"):
         class Negative(SvObject):
