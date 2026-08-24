@@ -1366,18 +1366,23 @@ module tb;
     int post_count;
     int priorities[$];
     bit use_layered_hook_actions;
+    bit lock_seen_in_low_pre;
     bit [7:0] payload_seen_in_post;
     function void pre_randomize();
       pre_count++;
       if (!svtypes_layered_randomize_active()) $fatal(1, "HookPkt inactive pre");
       priorities.push_back(svtypes_layered_randomize_priority());
-      if (use_layered_hook_actions && svtypes_layered_randomize_priority() == 100)
-        lock = 1'b1;
+      if (use_layered_hook_actions && svtypes_layered_randomize_priority() == -50) begin
+        if (lock != 1'b1) $fatal(1, "HookPkt high post did not precede low pre");
+        lock_seen_in_low_pre = 1'b1;
+      end
     endfunction
     function void post_randomize();
       post_count++;
       if (!svtypes_layered_randomize_active()) $fatal(1, "HookPkt inactive post");
-      if (use_layered_hook_actions && svtypes_layered_randomize_priority() == -50)
+      if (use_layered_hook_actions && svtypes_layered_randomize_priority() == 100)
+        lock = 1'b1;
+      else if (use_layered_hook_actions && svtypes_layered_randomize_priority() == -50)
         payload_seen_in_post = payload;
     endfunction
   endclass
@@ -1416,7 +1421,7 @@ module tb;
       $fatal(1, "HookPkt layered priorities");
     if (h.svtypes_layered_randomize_active())
       $fatal(1, "HookPkt active after layered_randomize");
-    if (h.lock != 1'b1 || h.payload_seen_in_post != h.payload)
+    if (h.lock != 1'b1 || !h.lock_seen_in_low_pre || h.payload_seen_in_post != h.payload)
       $fatal(1, "HookPkt priority-specific hook actions");
 
     if (f.layered_randomize()) $fatal(1, "failing layered should be 0");

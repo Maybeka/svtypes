@@ -587,20 +587,23 @@ def test_hooks_can_apply_different_actions_at_each_layered_priority():
         def pre_randomize(self):
             if not self.svtypes_layered_randomize_active():
                 return
-            if self.svtypes_layered_randomize_priority() == 10:
-                self.gate.value = 42
+            if self.svtypes_layered_randomize_priority() == 1:
+                self.gate_seen_in_middle_pre = self.gate.value
 
         def post_randomize(self):
             if not self.svtypes_layered_randomize_active():
                 return
             priority = self.svtypes_layered_randomize_priority()
-            if priority == 1:
+            if priority == 10:
+                self.gate.value = 42
+            elif priority == 1:
                 self.middle_seen_in_post = self.middle.value
             elif priority == -1:
                 self.low_seen_in_post = self.low.value
 
     packet = Packet()
     assert packet.layered_randomize()
+    assert packet.gate_seen_in_middle_pre == 42
     assert packet.middle.value == 42
     assert packet.middle_seen_in_post == 42
     assert packet.low_seen_in_post == packet.low.value
