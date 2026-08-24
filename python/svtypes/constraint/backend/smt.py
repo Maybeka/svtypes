@@ -97,10 +97,13 @@ def solve_ordered(
     *,
     max_values: int = 4096,
 ) -> SolveResult | None:
-    """Choose finite ordered domains before obtaining the remaining model.
+    """Choose ordered domains before obtaining the remaining model.
 
-    Returning ``None`` means at least one ordered domain is too large for the
-    exact finite-domain policy; the caller can then use its general strategy.
+    Small feasible domains are enumerated and selected exactly.  For a larger
+    domain, choose satisfiable bits of the ordered term in random stream order
+    instead of abandoning solve-order semantics for a deterministic minimum
+    model.  The large-domain policy is deliberately a selection-order policy,
+    not a claim of uniform model counting.
     """
 
     z3, solver, terms, _widths = _build_solver(request)
@@ -110,6 +113,16 @@ def solve_ordered(
         term = terms.get(path)
         if term is None:
             return None
+        # A packed domain wider than 12 bits necessarily has more than 4096
+        # representable values.  Start the scalable policy immediately rather
+        # than spending thousands of solver calls proving that fact.  Narrow
+        # terms still receive exact feasible-value enumeration below.
+        if term.size() > max_values.bit_length() - 1:
+            selected = _random_feasible_value(z3, solver, term, choose)
+            solver.add(term == z3.BitVecVal(selected, term.size()))
+            if solver.check() != z3.sat:
+                raise ConstraintBackendError("ordered solve selected an infeasible value")
+            continue
         solver.push()
         options: list[int] = []
         while solver.check() == z3.sat:
@@ -118,14 +131,36 @@ def solve_ordered(
             options.append(value)
             if len(options) > max_values:
                 solver.pop()
-                return None
+                selected = _random_feasible_value(z3, solver, term, choose)
+                solver.add(term == z3.BitVecVal(selected, term.size()))
+                break
             solver.add(term != z3.BitVecVal(value, term.size()))
-        solver.pop()
-        selected = options[choose(len(options))]
-        solver.add(term == z3.BitVecVal(selected, term.size()))
+        else:
+            solver.pop()
+            selected = options[choose(len(options))]
+            solver.add(term == z3.BitVecVal(selected, term.size()))
         if solver.check() != z3.sat:
             raise ConstraintBackendError("ordered solve selected an infeasible value")
     return _minimum_result(z3, solver, terms, request.random_paths)
+
+
+def _random_feasible_value(z3: Any, solver: Any, term: Any, choose: Any) -> int:
+    """Commit random satisfiable bits of one term without domain enumeration."""
+
+    for bit_index in range(term.size() - 1, -1, -1):
+        bit = z3.Extract(bit_index, bit_index, term)
+        wanted = choose(2)
+        solver.push()
+        solver.add(bit == wanted)
+        if solver.check() == z3.sat:
+            solver.pop()
+            solver.add(bit == wanted)
+            continue
+        solver.pop()
+        solver.add(bit == 1 - wanted)
+    if solver.check() != z3.sat:
+        raise ConstraintBackendError("random ordered model selection lost satisfiability")
+    return _as_long(solver.model(), term)
 
 
 def _minimum_result(z3: Any, solver: Any, terms: dict[str, Any], random_paths: tuple[str, ...]) -> SolveResult:

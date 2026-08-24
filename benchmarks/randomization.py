@@ -25,6 +25,7 @@ from svtypes import (
     constraint,
     dist,
     get_package,
+    solve_before,
     svobj,
 )
 
@@ -61,6 +62,16 @@ class LargeDistributionPacket(SvObject):
             (0x10200000, 0x10201000) / 1,
             0x50607080 @ 3,
         ]
+
+
+class WideOrderedPacket(SvObject):
+    first = Bit(13)
+    second = Bit(13)
+
+    @constraint
+    def legal(self):
+        solve_before(self.first, self.second)
+        self.second == self.first
 
 
 class DynamicPacket(SvObject):
@@ -153,6 +164,7 @@ def main() -> int:
         ("scalar_hard_constraints", ScalarPacket),
         ("scalar_distribution", DistributionPacket),
         ("large_range_distribution", LargeDistributionPacket),
+        ("wide_solve_before", WideOrderedPacket),
         ("dynamic_size_and_foreach", DynamicPacket),
         ("direct_rand_handle_graph", _handle_parent),
         ("container_rand_handle_graph", _container_handle_parent),

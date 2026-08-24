@@ -1044,6 +1044,16 @@ def test_remote_target_solve_before_simulation():
     )
     if reachable.returncode != 0:
         pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+
+    class WideSolveBeforePacket(SvObject):
+        first = Bit(13)
+        second = Bit(13)
+
+        @constraint
+        def order(self):
+            solve_before(self.first, self.second)
+            self.second == self.first
+
     out = Path(__file__).resolve().parents[2] / ".tmp" / "solve_before_sv"
     if out.exists():
         shutil.rmtree(out)
@@ -1054,6 +1064,7 @@ def test_remote_target_solve_before_simulation():
                 "package solve_before_sv_test;",
                 "  import svtypes_pkg::*;",
                 SolveBeforePacket.to_sv_obj(level=1),
+                WideSolveBeforePacket.to_sv_obj(level=1),
                 "endpackage",
                 "",
             ]
@@ -1067,11 +1078,19 @@ module tb;
   integer i;
   initial begin
     SolveBeforePacket p;
+    WideSolveBeforePacket wide;
+    bit saw_wide_nonzero;
     p = new();
+    wide = new();
+    saw_wide_nonzero = 0;
     for (i = 0; i < 64; i++) begin
       if (!p.randomize()) $fatal(1, "solve-before unsat");
       if (!(p.first < p.second)) $fatal(1, "solve-before hard constraint escaped");
+      if (!wide.randomize()) $fatal(1, "wide solve-before unsat");
+      if (wide.first != wide.second) $fatal(1, "wide solve-before hard constraint escaped");
+      if (wide.first != 0) saw_wide_nonzero = 1;
     end
+    if (!saw_wide_nonzero) $fatal(1, "wide solve-before minimum-model collapse");
     $display("SVTYPES_SOLVE_BEFORE_PASS");
     $finish;
   end

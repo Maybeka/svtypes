@@ -213,14 +213,14 @@ conditional placement are rejected.  Cyclic ordering edges are reported at
 randomization time.
 
 The Python backend treats this as a selection-order policy, never as a hard
-constraint.  For each ordered variable with at most 4096 currently feasible
+constraint.  For each ordered variable whose packed domain fits within 4096
 values, it enumerates feasible values, selects one from the deterministic
-random stream, fixes it, and proceeds to the next ordered variable.  This
-matches the observable “solve this variable before that variable” behavior on
-the scalar finite domains used for validation.  If a domain exceeds that
-bounded exact policy, Python retains the topological candidate-draw ordering
-and falls back to the general solver; expanding that path into a scalable
-weighted model sampler remains part of the pending distribution-policy work.
+random stream, fixes it, and proceeds to the next ordered variable.  For wider
+domains, it fixes the ordered variable one satisfiable bit at a time using the
+same stream, then proceeds to the next variable.  Thus a wide ordered field
+does not degrade to the deterministic minimum model.  The large-domain path is
+deliberately not a uniform model-counting claim; `solve before` controls
+selection order, not a probability contract.
 
 ## Verification
 

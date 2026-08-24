@@ -56,3 +56,27 @@ def test_solve_before_rejects_non_rand_randc_overlap_and_cycles():
 
     with pytest.raises(ConstraintError, match="cycle"):
         Cycle().randomize()
+
+
+def test_solve_before_randomizes_a_wide_feasible_domain_without_enumeration():
+    class WideOrdered(SvObject):
+        first = Bit(13)
+        second = Bit(13)
+
+        @constraint
+        def order(self):
+            solve_before(self.first, self.second)
+            self.second == self.first
+
+    packet = WideOrdered()
+    values: list[int] = []
+    with RandomContext(seed=702):
+        for _ in range(3):
+            assert packet.randomize()
+            assert packet.second.value == packet.first.value
+            values.append(packet.first.value)
+    # A 13-bit equality pair has more than the exact 4096-value policy.
+    # The scalable ordered path must not collapse every call to the minimum
+    # model (zero).
+    assert any(value != 0 for value in values)
+    assert len(set(values)) > 1
