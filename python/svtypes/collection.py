@@ -396,11 +396,19 @@ class AssocArray(CollectionBase, Generic[K, V]):
             raise EncodeError(
                 f"AssocArray length {len(vals)} exceeds encoder limit {self._max_length}"
             )
+        from .object import ObjectDescriptor, SvObject
+
         self._elements = {}
         for k, v in vals.items():
-            new_val_elem = copy.deepcopy(self._val_template)
-            new_val_elem.value = v
-            self._elements[k] = new_val_elem
+            if (
+                isinstance(self._val_template, ObjectDescriptor)
+                or (isinstance(self._val_template, SvObject) and isinstance(v, SvObject))
+            ):
+                self._elements[k] = v
+            else:
+                new_val_elem = copy.deepcopy(self._val_template)
+                new_val_elem.value = v
+                self._elements[k] = new_val_elem
 
     def __getitem__(self, key: Any) -> V:
         return self._elements[key]

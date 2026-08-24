@@ -1,6 +1,17 @@
 """Recursive constrained-random regressions for ``rand`` class handles."""
 
-from svtypes import Bit, Object, SvObject, constraint, get_package, svobj
+from svtypes import (
+    Array,
+    AssocArray,
+    Bit,
+    DynArray,
+    Object,
+    Queue,
+    SvObject,
+    constraint,
+    get_package,
+    svobj,
+)
 
 
 handle_pkg = get_package("test_constraint_handle_randomization")
@@ -104,6 +115,14 @@ class HandleRandcParent(SvObject):
     child = Object("HandleRandcChild", registry=handle_pkg, rand=True)
 
 
+@svobj(registry=handle_pkg)
+class ContainerHandleParent(SvObject):
+    fixed = Array(Object("HandleChild", registry=handle_pkg, rand=True), 1)
+    dynamic = DynArray(Object("HandleChild", registry=handle_pkg, rand=True))
+    queue = Queue(Object("HandleChild", registry=handle_pkg, rand=True))
+    table = AssocArray(Bit(8), Object("HandleChild", registry=handle_pkg, rand=True))
+
+
 def test_rand_handle_joins_parent_and_child_constraints_and_hooks():
     parent = HandleParent()
     child = HandleChild()
@@ -205,3 +224,22 @@ def test_child_randc_state_belongs_to_the_child_across_joint_calls():
     assert len(set(values)) == 4
     assert "data" in child._SvObject__svtypes_randc_state
     assert "child.data" not in parent._SvObject__svtypes_randc_state
+
+
+def test_existing_rand_handle_elements_in_all_container_kinds_join_the_solve():
+    parent = ContainerHandleParent()
+    fixed = HandleChild()
+    dynamic = HandleChild()
+    queued = HandleChild()
+    mapped = HandleChild()
+    for child in (fixed, dynamic, queued, mapped):
+        child.data.value = 99
+    parent.fixed.value = [fixed]
+    parent.dynamic.value = [dynamic]
+    parent.queue.value = [queued]
+    parent.table.value = {7: mapped}
+
+    assert parent.randomize()
+    for child in (fixed, dynamic, queued, mapped):
+        assert child.data.value <= 10
+        assert (child.pre_count, child.post_count) == (1, 1)

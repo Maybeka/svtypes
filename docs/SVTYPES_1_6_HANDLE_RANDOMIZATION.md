@@ -12,9 +12,10 @@
 ## 图遍历
 
 - 图根是调用 `randomize()` 的对象。
-- 只沿实例中已存在的直接 **`rand` handle** 缓存遍历；未缓存的 `ObjectDescriptor` 视为
-  null，遍历不得调用其 `__get__()`，以免隐式构造对象。对象容器元素的递归随机化留待后续
-  版本，不能误视为本版本已经支持。
+- 沿实例中已存在的直接 **`rand` handle** 缓存，或 `Array`、`DynArray`、`Queue`、
+  `AssocArray` 中已有的 `rand Object` 元素遍历；未缓存的 `ObjectDescriptor`、null
+  容器元素及动态容器扩容后出现的 descriptor template 都视为 null。遍历不得调用
+  `__get__()`，以免隐式构造对象。
 - 每个对象按 Python identity 去重；共享引用和环不会产生重复叶子或重复约束。
 - 每个对象第一次遇到时获得 canonical path。其他边只是 alias，指向相同的运行时变量。
 
@@ -50,6 +51,7 @@ path 为前缀；父对象约束中对 handle 成员的引用也解析到同一�
 
 - 不随机 handle/null/拓扑，不自动 new 对象；`Object(..., rand=True)` 只表示递归随机化，
   不表示随机选择或分配 handle。
+- 容器遍历只跟随已有的非空 handle；不会改变容器尺寸，也不会创建或删除关联数组键。
 - 不支持 `randc` handle。
 - `Real`、`String`、`RemoteRef` 等既有非随机域仍不进入联合求解。
 

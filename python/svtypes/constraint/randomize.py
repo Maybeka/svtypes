@@ -183,7 +183,13 @@ def _remap_graph_ir(ir: ConstraintIR, aliases: dict[str, str]) -> ConstraintIR:
 
 
 def _collect_random_graph(root: Any, root_cls: type, extra: ConstraintIR | None) -> _RandomGraph:
-    """Collect allocated rand-object members without materializing null handles."""
+    """Collect allocated rand-object members without materializing null handles.
+
+    A random class handle may occur directly on an object or as an existing
+    element of any unpacked collection.  The traversal never allocates a
+    handle: null entries, and descriptor templates used as Python's placeholder
+    for newly resized collections, are deliberately skipped.
+    """
 
     nodes: list[_GraphNode] = []
     identities: dict[int, str] = {}
@@ -197,13 +203,19 @@ def _collect_random_graph(root: Any, root_cls: type, extra: ConstraintIR | None)
         identities[id(obj)] = path
         nodes.append(_GraphNode(path, obj, cls))
         for name, desc in getattr(cls, "_SvObject__svtypes_members", ()):
+            member_path = _with_prefix(path, name)
             from ..object import ObjectDescriptor
 
-            if not isinstance(desc, ObjectDescriptor) or not desc.rand:
+            if isinstance(desc, ObjectDescriptor):
+                if not desc.rand:
+                    continue
+                # Do not use getattr(): ObjectDescriptor.__get__ allocates a
+                # child on demand, whereas SV randomize never does so.
+                child = obj.__dict__.get(desc._cache_key)
+                if child is not None:
+                    visit(child, child.__class__, member_path)
                 continue
-            child = obj.__dict__.get(desc._cache_key)
-            if child is not None:
-                visit(child, child.__class__, _with_prefix(path, name))
+            _visit_rand_container_handles(getattr(obj, name), desc, member_path, visit)
 
     visit(root, root_cls, "")
     leaves: list[tuple[str, Any, bool]] = []
@@ -235,6 +247,40 @@ def _collect_random_graph(root: Any, root_cls: type, extra: ConstraintIR | None)
         owners=owners,
         null_path=null_path,
     )
+
+
+def _visit_rand_container_handles(
+    value: Any,
+    desc: Any,
+    path: str,
+    visit: Callable[[Any, type, str], None],
+) -> None:
+    """Visit allocated ``rand Object`` elements below one collection member."""
+
+    from ..collection import Array, AssocArray, DynArray, Queue
+    from ..object import ObjectDescriptor, SvObject
+
+    if isinstance(desc, ObjectDescriptor):
+        if desc.rand and isinstance(value, SvObject):
+            visit(value, value.__class__, path)
+        return
+    if isinstance(desc, Array):
+        for index, element in enumerate(value._elements):
+            _visit_rand_container_handles(
+                element, desc._elem_template, f"{path}[{index}]", visit
+            )
+        return
+    if isinstance(desc, (DynArray, Queue)):
+        for index, element in enumerate(value._elements):
+            _visit_rand_container_handles(
+                element, desc._elem_template, f"{path}[{index}]", visit
+            )
+        return
+    if isinstance(desc, AssocArray):
+        for key, element in value._elements.items():
+            _visit_rand_container_handles(
+                element, desc._val_template, assoc_path(path, key), visit
+            )
 
 
 def _null_handle_path(root: Any, path: str) -> str | None:
