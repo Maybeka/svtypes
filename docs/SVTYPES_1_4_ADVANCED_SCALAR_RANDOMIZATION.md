@@ -4,13 +4,12 @@
 
 1.4 adds the SystemVerilog scalar constrained-random constructs that need
 solver-policy support in addition to ordinary Boolean predicates: `dist`,
-`randc`, `soft`, `solve before`, and `unique`.  The work is deliberately
-independent of container randomization (1.5) and non-null object-handle
-participation (1.6).
+`randc`, `soft`, `solve before`, and `unique`.  The work was deliberately
+separated from container randomization (1.5) and non-null object-handle
+participation (1.6); those later features now reuse the same IR.
 
 This document records the accepted scalar interfaces and their semantic
-contracts.  `solve before` remains pending the shared distribution-policy
-layer.
+contracts.
 
 ## `dist` source interface
 
@@ -95,16 +94,17 @@ exact Python frequency contract.
 ## Restrictions and future integration
 
 - `dist` on a future `randc` target will be rejected, following SV.
-- The current scalar implementation supports integral Bit, Logic, and Enum
-  leaves; collection, dynamic-size, and handle targets belong to later
-  milestones.
+- The source form remains scalar-oriented.  After runtime expansion, a
+  distribution over a current dynamic-collection element or an already
+  allocated rand-handle leaf uses the same IR and solver path.
 - Dynamic expressions are represented in IR and rendered to SV without Python
   pre-evaluation. Exact finite fallback covers state-resolvable direct support
   products through 4096 combinations; conditional distributions and bounds or
   weights depending on unsolved leaves remain part of the pending
   solver-policy work.
-- `soft`, `solve before`, `unique`, and `randc` must share the solver-policy
-  layer so their priority/order behavior cannot silently alter this interface.
+- `soft`, `solve before`, `unique`, and `randc` share the runtime solve path;
+  their declared priority/order behavior is covered independently of weighted
+  distribution selection.
 
 ## `randc` semantic design
 

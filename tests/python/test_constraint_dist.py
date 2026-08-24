@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from svtypes import Bit, ConstraintTypeError, RandomContext, SvObject, constraint, dist
+from svtypes import Bit, ConstraintTypeError, DynArray, Object, RandomContext, SvObject, constraint, dist, get_package, svobj
 from svtypes.constraint.eval import eval_bool
 from svtypes.constraint.leaves import iter_class_leaves, leaf_unsigned, resolve_attr
 
@@ -19,6 +19,23 @@ class DistPacket(SvObject):
             (8, 10) / (self.weight + 1),
             12,
         ]
+
+
+dist_handle_pkg = get_package("dist_handle_randomization")
+
+
+@svobj(registry=dist_handle_pkg)
+class DistHandleChild(SvObject):
+    choice = Bit(2)
+
+
+@svobj(registry=dist_handle_pkg)
+class HandleDistPacket(SvObject):
+    child = Object("DistHandleChild", registry=dist_handle_pkg, rand=True)
+
+    @constraint
+    def legal(self):
+        self.child.choice @ dist[0 @ 1, 3 @ 3]
 
 
 def _env_and_widths(obj: SvObject) -> tuple[dict[str, int], dict[str, tuple[int, bool]]]:
@@ -143,6 +160,35 @@ def test_interacting_direct_distributions_use_the_product_of_declared_weights():
     # The feasible (0, 0) and (1, 1) choices have weights 1*1 and 3*3.
     assert counts[1] > 320
     assert counts[1] > counts[0] * 5
+
+
+def test_dist_applies_after_dynamic_element_expansion():
+    class DynamicDist(SvObject):
+        data = DynArray(Bit(2), rand=True, max_length=2)
+
+        @constraint
+        def legal(self):
+            self.data.size() == 1
+            self.data[0] @ dist[0 @ 1, 3 @ 3]
+
+    counts = {0: 0, 3: 0}
+    packet = DynamicDist()
+    with RandomContext(seed=306):
+        for _ in range(160):
+            assert packet.randomize()
+            counts[packet.data[0].value] += 1
+    assert counts[3] > counts[0] * 2
+
+
+def test_dist_applies_to_an_allocated_rand_handle_leaf():
+    counts = {0: 0, 3: 0}
+    packet = HandleDistPacket()
+    packet.child = DistHandleChild()
+    with RandomContext(seed=307):
+        for _ in range(160):
+            assert packet.randomize()
+            counts[packet.child.choice.value] += 1
+    assert counts[3] > counts[0] * 2
 
 
 def test_dist_rejects_negative_weights_and_boolean_composition():

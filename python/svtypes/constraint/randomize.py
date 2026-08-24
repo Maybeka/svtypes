@@ -771,6 +771,7 @@ def _solve_dynamic_collections(
 
         candidates: list[dict[str, int]] = [{}]
         if active_sizes:
+            size_irs = [_dynamic_size_ir(ir) for ir in enabled]
             assumptions: list[Expr] = []
             for path, collection in active_sizes:
                 size_expr = Expr("size", (path.removeprefix("@size:"), path), bv(32, False))
@@ -778,12 +779,12 @@ def _solve_dynamic_collections(
                 # Python container's established decoder/encoder safety cap.
                 assumptions.append(Expr("le", (size_expr, c_int(collection._max_length)), BOOL))
             request = SolveRequest(
-                irs=tuple(enabled),
+                irs=tuple(size_irs),
                 random_paths=tuple(path for path, _ in active_sizes),
                 state=state,
                 var_index=var_index,
                 assumptions=tuple(assumptions),
-                soft_constraints=_ordered_soft_constraints(enabled),
+                soft_constraints=_ordered_soft_constraints(size_irs),
             )
             candidates = _enumerate_dynamic_size_models(solve, request, active_sizes, stream)
             if not candidates:
@@ -809,6 +810,63 @@ def _solve_dynamic_collections(
         for key, elements in collection_snapshot.items():
             resolve_attr(obj, key.removeprefix("@size:"))._elements = elements
         raise
+
+
+def _dynamic_size_ir(ir: ConstraintIR) -> ConstraintIR:
+    """Drop element-dependent statements from the dynamic-size solve pass.
+
+    A constant index such as ``data[0]`` is as unavailable before resizing as
+    a ``foreach`` body.  The size pass must therefore not hand it to SMT;
+    after a candidate size is applied, :func:`_expand_dynamic_ir` restores the
+    complete constraint set for the element solve.
+    """
+
+    def has_runtime_element(value: Expr | None) -> bool:
+        if value is None:
+            return False
+        if value.op == "field" and "[" in str(value.args[0]):
+            return True
+        return any(
+            has_runtime_element(arg)
+            for arg in value.args
+            if isinstance(arg, Expr)
+        ) or any(
+            has_runtime_element(part)
+            for arg in value.args
+            if isinstance(arg, tuple)
+            for item in arg
+            for part in (getattr(item, "low", None), getattr(item, "high", None), getattr(item, "weight", None))
+            if isinstance(part, Expr)
+        )
+
+    def statement(value: IRStmt) -> IRStmt | None:
+        if value.kind in {"for", "assoc_foreach"}:
+            return None
+        if value.kind in {"pred", "soft"}:
+            return None if has_runtime_element(value.expr) else value
+        if value.kind == "solve_before":
+            paths = (*((value.before or ())), *((value.after or ())))
+            return None if any("[" in path for path in paths) else value
+        if has_runtime_element(value.cond):
+            return None
+        then_body = [child for item in value.then_body if (child := statement(item)) is not None]
+        else_body = [child for item in value.else_body if (child := statement(item)) is not None]
+        return replace(value, then_body=then_body, else_body=else_body)
+
+    statements = [item for stmt in ir.statements if (item := statement(stmt)) is not None]
+    return ConstraintIR(
+        name=ir.name,
+        predicates=[item for item in ir.predicates if not has_runtime_element(item)],
+        soft_predicates=[item for item in ir.soft_predicates if not has_runtime_element(item)],
+        solve_before=[
+            (before, after)
+            for before, after in ir.solve_before
+            if not any("[" in path for path in (*before, *after))
+        ],
+        vars=[var for var in ir.vars if "[" not in var.path],
+        parameters=ir.parameters,
+        statements=statements,
+    )
 
 
 def _expand_dynamic_ir(obj: Any, ir: ConstraintIR) -> ConstraintIR:
