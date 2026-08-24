@@ -77,13 +77,18 @@ uses rational arithmetic and a 64-bit rejection draw, not floating point.  This
 makes `:=` and `:/` observably distinct while preserving deterministic seeded
 execution.
 
-When direct sampling is impractical for a sparse, wide distribution whose
-bounds and weights are already state-resolvable, the Python path expands up to
-4096 joint support combinations, proves each combination SAT, and selects among
-the satisfiable combinations by the product of their exact declared weights.
-This covers singleton choices, finite ranges, `:/` total-range weights, and
-multiple direct distributions that constrain one another, without
-minimum-model bias.
+For state-resolvable direct distributions, Python does not immediately turn a
+large declared range into a minimum SMT model merely because it exceeds the
+4096-combination enumerator.  Below that limit it proves every support
+combination SAT and selects among the satisfiable combinations by the product
+of their exact declared weights.  Beyond it, Python draws each direct `:=`/`:/`
+item by its exact total mass, draws a value uniformly within the selected
+range, and uses SAT as rejection sampling for the resulting combination.  This
+covers singleton choices, finite and wide ranges, `:/` total-range weights,
+and multiple direct distributions that constrain one another without
+materializing every range member.  If bounded rejection cannot find a feasible
+combination, the general bounded model policy below remains the resource
+boundary.
 
 Conditional distributions and bounds/weights that depend on other constrained
 random leaves use a second exact policy: Python enumerates complete constrained
@@ -100,10 +105,10 @@ having an exact Python frequency contract.
   distribution over a current dynamic-collection element or an already
   allocated rand-handle leaf uses the same IR and solver path.
 - Dynamic expressions are represented in IR and rendered to SV without Python
-  pre-evaluation. Exact finite fallback covers state-resolvable direct support
-  products and, through a bounded complete-model enumeration, conditional
-  distributions and bounds/weights depending on other random leaves. Both
-  paths are limited to 4096 support combinations/models.
+  pre-evaluation. State-resolvable direct support ranges use exact weighted
+  draws without a support-materialization limit; conditional distributions and
+  bounds/weights depending on other random leaves use bounded complete-model
+  enumeration (4096 models).
 - `soft`, `solve before`, `unique`, and `randc` share the runtime solve path;
   their declared priority/order behavior is covered independently of weighted
   distribution selection.

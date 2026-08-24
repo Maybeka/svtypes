@@ -707,6 +707,29 @@ def test_remote_target_dist_expression_simulation():
             else:
                 self.choice @ dist[0 @ 1, 1 @ 3]
 
+    class LargeRangeDistPacket(SvObject):
+        choice = Bit(32)
+
+        @constraint
+        def legal(self):
+            self.choice @ dist[
+                (0x10200000, 0x10201000) / 1,
+                0x50607080 @ 3,
+            ]
+
+    class MixedDistPacket(SvObject):
+        gate = Bit(1)
+        direct = Bit(1)
+        branch = Bit(2)
+
+        @constraint
+        def legal(self):
+            self.direct @ dist[0 @ 1, 1 @ 3]
+            if self.gate == 0:
+                self.branch @ dist[0 @ 3, 1 @ 1]
+            else:
+                self.branch @ dist[2 @ 1, 3 @ 3]
+
     out = Path(__file__).resolve().parents[2] / ".tmp" / "dist_sv"
     if out.exists():
         shutil.rmtree(out)
@@ -718,6 +741,8 @@ def test_remote_target_dist_expression_simulation():
                 "  import svtypes_pkg::*;",
                 DistPacket.to_sv_obj(level=1),
                 ConditionalDistPacket.to_sv_obj(level=1),
+                LargeRangeDistPacket.to_sv_obj(level=1),
+                MixedDistPacket.to_sv_obj(level=1),
                 "endpackage",
                 "",
             ]
@@ -728,16 +753,24 @@ def test_remote_target_dist_expression_simulation():
 module tb;
   import svtypes_pkg::*;
   import dist_sv_test::*;
-  integer i, choice4, choice7;
+  integer i, choice4, choice7, large_singleton, large_range, mixed_zero, mixed_one;
   initial begin
     DistPacket p;
     ConditionalDistPacket c;
+    LargeRangeDistPacket wide_dist;
+    MixedDistPacket mixed;
     p = new();
     c = new();
+    wide_dist = new();
+    mixed = new();
     p.base = 4'd1;
     p.weight = 4'd2;
     choice4 = 0;
     choice7 = 0;
+    large_singleton = 0;
+    large_range = 0;
+    mixed_zero = 0;
+    mixed_one = 0;
     for (i = 0; i < 512; i++) begin
       if (!p.randomize()) $fatal(1, "dist unsat");
       if (!(p.choice == 4'd4 || p.choice == 4'd7 || p.choice == 4'd8 ||
@@ -749,9 +782,22 @@ module tb;
       if ((c.gate == 0 && !(c.choice == 8'd2 || c.choice == 8'd3)) ||
           (c.gate == 1 && !(c.choice == 8'd0 || c.choice == 8'd1)))
         $fatal(1, "conditional dist support violation");
+      if (!wide_dist.randomize()) $fatal(1, "large range dist unsat");
+      if (wide_dist.choice == 32'h50607080) large_singleton++;
+      else if (wide_dist.choice >= 32'h10200000 && wide_dist.choice <= 32'h10201000) large_range++;
+      else $fatal(1, "large range dist support violation: %0h", wide_dist.choice);
+      if (!mixed.randomize()) $fatal(1, "mixed dist unsat");
+      if ((mixed.gate == 0 && !(mixed.branch == 0 || mixed.branch == 1)) ||
+          (mixed.gate == 1 && !(mixed.branch == 2 || mixed.branch == 3)))
+        $fatal(1, "mixed dist branch support violation");
+      if (mixed.direct == 0) mixed_zero++; else mixed_one++;
     end
     if (choice4 <= (choice7 * 2))
       $fatal(1, "dist weight ratio unexpected: choice4=%0d choice7=%0d", choice4, choice7);
+    if (large_singleton <= large_range)
+      $fatal(1, "large range dist weight ratio unexpected: singleton=%0d range=%0d", large_singleton, large_range);
+    if (mixed_one <= (mixed_zero * 2))
+      $fatal(1, "mixed dist direct weight ratio unexpected: zero=%0d one=%0d", mixed_zero, mixed_one);
     $display("SVTYPES_DIST_PASS");
     $finish;
   end

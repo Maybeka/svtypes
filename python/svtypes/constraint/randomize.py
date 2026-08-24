@@ -1167,6 +1167,8 @@ def _solve_finite_dist(
     # Prefer sparse support enumeration when direct distributions expose it.
     # Conditional distributions and random-dependent bounds/weights use the
     # bounded complete-model policy below instead.
+    if _has_conditional_dist(irs):
+        return _solve_enumerated_dist(request, irs, env, widths, stream, solve)
     dist_exprs = [
         stmt.expr
         for ir in irs
@@ -1185,12 +1187,22 @@ def _solve_finite_dist(
     for dist_expr in dist_exprs:
         options = _finite_dist_options(dist_expr, env, widths, random_paths)
         if options is None:
+            sampled = _solve_sampled_direct_dist(
+                request, dist_exprs, env, widths, stream, solve
+            )
+            if sampled is not None:
+                return sampled
             return _solve_enumerated_dist(request, irs, env, widths, stream, solve)
         nonzero = {value: weight for value, weight in options.items() if weight > 0}
         if not nonzero:
             return None
         combinations *= len(nonzero)
         if combinations > 4096:
+            sampled = _solve_sampled_direct_dist(
+                request, dist_exprs, env, widths, stream, solve
+            )
+            if sampled is not None:
+                return sampled
             return _solve_enumerated_dist(request, irs, env, widths, stream, solve)
         supports.append((dist_expr.args[0], dist_expr.loc, nonzero))
 
@@ -1236,6 +1248,129 @@ def _solve_finite_dist(
             return result
         pick -= weight
     raise ConstraintBackendError("weighted finite dist selection lost its chosen model")
+
+
+def _has_conditional_dist(irs: list[ConstraintIR]) -> bool:
+    """Whether a dist statement is nested below a runtime conditional."""
+
+    def nested(statements: list[IRStmt]) -> bool:
+        for stmt in statements:
+            if stmt.kind == "if":
+                if _statements_contain_dist(stmt.then_body) or _statements_contain_dist(stmt.else_body):
+                    return True
+                if nested(stmt.then_body) or nested(stmt.else_body):
+                    return True
+        return False
+
+    return any(nested(ir.statements) for ir in irs)
+
+
+def _statements_contain_dist(statements: list[IRStmt]) -> bool:
+    return any(stmt.kind == "pred" and stmt.expr is not None and stmt.expr.op == "dist" for stmt in statements)
+
+
+def _solve_sampled_direct_dist(
+    request: Any,
+    dist_exprs: list[Expr],
+    env: dict[str, int],
+    widths: dict[str, tuple[int, bool]],
+    stream: BitStream,
+    solve: Any,
+) -> Any | None:
+    """Sample state-resolvable direct ``dist`` ranges without expanding them.
+
+    A large range must not collapse to the minimum SMT model merely because it
+    has more than the exact-enumeration limit of values.  Select one value from
+    every declaration according to its SV ``:=``/``:/`` item mass, then ask
+    the solver whether the resulting combination is feasible.  Repeating this
+    is ordinary rejection sampling, so accepted combinations retain their
+    declared relative distribution weight.
+
+    ``None`` means that an expression depends on a random leaf, has an invalid
+    runtime value, or the bounded rejection policy found no feasible draw; the
+    caller then uses the more general model-enumeration policy.
+    """
+
+    for _ in range(4096):
+        assumptions = _sample_direct_dist_assumptions(
+            dist_exprs, env, widths, set(request.random_paths), stream
+        )
+        if assumptions is None:
+            return None
+        result = solve(replace(request, assumptions=(*request.assumptions, *assumptions)))
+        if result.is_sat:
+            return result
+    return None
+
+
+def _sample_direct_dist_assumptions(
+    dist_exprs: list[Expr],
+    env: dict[str, int],
+    widths: dict[str, tuple[int, bool]],
+    random_paths: set[str],
+    stream: BitStream,
+) -> tuple[Expr, ...] | None:
+    """Draw one exact weighted value for each state-resolvable dist statement."""
+
+    assumptions: list[Expr] = []
+    for dist_expr in dist_exprs:
+        entries: list[tuple[int, int, int]] = []
+        total = 0
+        for item in dist_expr.args[1]:
+            if (
+                _expr_fields(item.low) & random_paths
+                or _expr_fields(item.weight) & random_paths
+                or (item.high is not None and _expr_fields(item.high) & random_paths)
+            ):
+                return None
+            low = eval_expr(item.low, env, widths)
+            high = eval_expr(item.high, env, widths) if item.high is not None else None
+            weight = eval_expr(item.weight, env, widths)
+            if low.undef or weight.undef or (high is not None and high.undef):
+                return None
+            raw_weight = _value_as_int(weight.bits, weight.ty.width, weight.ty.signed)
+            if raw_weight < 0:
+                return None
+            low_value = _value_as_int(low.bits, low.ty.width, low.ty.signed)
+            high_value = low_value if high is None else _value_as_int(
+                high.bits, high.ty.width, high.ty.signed
+            )
+            count = high_value - low_value + 1
+            if count <= 0 or raw_weight == 0:
+                continue
+            mass = raw_weight * count if item.each else raw_weight
+            entries.append((low_value, high_value, mass))
+            total += mass
+        if total <= 0:
+            return ()
+        pick = _draw_below(stream, total)
+        selected_low = selected_high = 0
+        for low_value, high_value, mass in entries:
+            if pick < mass:
+                selected_low, selected_high = low_value, high_value
+                break
+            pick -= mass
+        else:  # pragma: no cover - guarded by the exact total above
+            raise ConstraintBackendError("direct dist sampling lost its selected item")
+        value = selected_low + _draw_below(stream, selected_high - selected_low + 1)
+        assumptions.append(
+            Expr("eq", (dist_expr.args[0], c_int(value, dist_expr.loc)), BOOL, dist_expr.loc)
+        )
+    return tuple(assumptions)
+
+
+def _draw_below(stream: BitStream, count: int) -> int:
+    """Return a uniform integer in ``[0, count)`` without a word-size cap."""
+
+    if count < 1:
+        raise ConstraintBackendError("cannot draw from an empty distribution")
+    if count == 1:
+        return 0
+    width = count.bit_length()
+    while True:
+        value = stream.draw_bits(width)
+        if value < count:
+            return value
 
 
 def _solve_enumerated_dist(

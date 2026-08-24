@@ -139,6 +139,35 @@ def test_sparse_wide_range_dist_uses_total_range_weight_fallback():
     assert sum(counts[value] for value in range(0x10203040, 0x10203044)) < 90
 
 
+def test_large_direct_range_dist_is_sampled_without_support_expansion():
+    class LargeRange(SvObject):
+        choice = Bit(32)
+
+        @constraint
+        def legal(self):
+            self.choice @ dist[
+                (0x10200000, 0x10201000) / 1,
+                0x50607080 @ 3,
+            ]
+
+    singleton = 0
+    in_range = 0
+    packet = LargeRange()
+    with RandomContext(seed=306):
+        for _ in range(240):
+            assert packet.randomize()
+            if packet.choice.value == 0x50607080:
+                singleton += 1
+            else:
+                assert 0x10200000 <= packet.choice.value <= 0x10201000
+                in_range += 1
+    # The 4097-value :/ item has total mass one, while the singleton has mass
+    # three.  This exceeds the exact support-expansion cap, so it proves the
+    # direct range sampler rather than the finite enumerator is used.
+    assert singleton > 140
+    assert in_range < 100
+
+
 def test_interacting_direct_distributions_use_the_product_of_declared_weights():
     class Correlated(SvObject):
         first = Bit(1)
@@ -186,6 +215,36 @@ def test_conditional_dist_uses_branch_local_weight_normalization():
     # from either branch is common, not one branch being favored by its raw
     # total weight.
     assert abs(counts[1] - counts[2]) < 70
+
+
+def test_unconditional_and_conditional_dist_are_weighted_together():
+    class Mixed(SvObject):
+        gate = Bit(1)
+        direct = Bit(1)
+        branch = Bit(2)
+
+        @constraint
+        def legal(self):
+            self.direct @ dist[0 @ 1, 1 @ 3]
+            if self.gate == 0:
+                self.branch @ dist[0 @ 3, 1 @ 1]
+            else:
+                self.branch @ dist[2 @ 1, 3 @ 3]
+
+    direct = [0, 0]
+    branch = [0, 0, 0, 0]
+    packet = Mixed()
+    with RandomContext(seed=311):
+        for _ in range(400):
+            assert packet.randomize()
+            direct[packet.direct.value] += 1
+            branch[packet.branch.value] += 1
+            assert (packet.gate.value == 0 and packet.branch.value in {0, 1}) or (
+                packet.gate.value == 1 and packet.branch.value in {2, 3}
+            )
+    assert direct[1] > direct[0] * 2
+    assert branch[0] > branch[1] * 2
+    assert branch[3] > branch[2] * 2
 
 
 def test_dist_weight_can_depend_on_another_random_leaf():
