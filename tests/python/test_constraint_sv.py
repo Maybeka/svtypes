@@ -138,6 +138,33 @@ class UniquePacket(SvObject):
         unique(self.first, self.second, self.third)
 
 
+class UniqueArrayPacket(SvObject):
+    words = Array(Bit(8), 4, rand=True)
+
+    @constraint
+    def legal(self):
+        unique(self.words)
+
+
+class UniqueDynPacket(SvObject):
+    tag = Bit(8)
+    data = DynArray(Bit(8), rand=True, max_length=4)
+
+    @constraint
+    def legal(self):
+        self.data.size() == 3
+        unique(self.tag, self.data)
+
+
+class UniqueQueuePacket(SvObject):
+    data = Queue(Bit(8), rand=True, max_length=4)
+
+    @constraint
+    def legal(self):
+        self.data.size() == 2
+        unique(self.data)
+
+
 class SoftPacket(SvObject):
     choice = Bit(32)
 
@@ -959,6 +986,82 @@ endmodule
     print(log)
     assert result.returncode == 0, log
     assert "SVTYPES_UNIQUE_PASS" in log, log
+
+
+@pytest.mark.remote_target
+def test_remote_target_unique_collection_simulation():
+    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+    reachable = subprocess.run(
+        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
+        capture_output=True,
+        text=True,
+    )
+    if reachable.returncode != 0:
+        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+    out = Path(__file__).resolve().parents[2] / ".tmp" / "unique_collection_sv"
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "unique_collection_sv_test.sv").write_text(
+        "\n".join(
+            [
+                "package unique_collection_sv_test;",
+                "  import svtypes_pkg::*;",
+                UniqueArrayPacket.to_sv_obj(level=1),
+                UniqueDynPacket.to_sv_obj(level=1),
+                UniqueQueuePacket.to_sv_obj(level=1),
+                "endpackage",
+                "",
+            ]
+        )
+    )
+    (out / "tb.sv").write_text(
+        """`timescale 1ns/1ps
+module tb;
+  import svtypes_pkg::*;
+  import unique_collection_sv_test::*;
+  integer i, j, k;
+  initial begin
+    UniqueArrayPacket a;
+    UniqueDynPacket d;
+    UniqueQueuePacket q;
+    a = new();
+    d = new();
+    q = new();
+    for (i = 0; i < 32; i++) begin
+      if (!a.randomize()) $fatal(1, "unique array unsat");
+      for (j = 0; j < 4; j++)
+        for (k = j + 1; k < 4; k++)
+          if (a.words[j] == a.words[k]) $fatal(1, "unique array violation");
+      if (!d.randomize()) $fatal(1, "unique dynarray unsat");
+      if (d.data.size() != 3) $fatal(1, "unique dynarray size");
+      if (d.tag == d.data[0] || d.tag == d.data[1] || d.tag == d.data[2] ||
+          d.data[0] == d.data[1] || d.data[0] == d.data[2] || d.data[1] == d.data[2])
+        $fatal(1, "unique dynarray violation");
+      if (!q.randomize()) $fatal(1, "unique queue unsat");
+      if (q.data.size() != 2) $fatal(1, "unique queue size");
+      if (q.data[0] == q.data[1]) $fatal(1, "unique queue violation");
+    end
+    $display("SVTYPES_UNIQUE_COLLECTION_PASS");
+    $finish;
+  end
+endmodule
+"""
+    )
+    remote = (
+        "bash -ilc '"
+        "cd /path/to/svtypes/.tmp/unique_collection_sv && "
+        "rm -rf simv csrc simv.daidir && "
+        "target -full64 -sverilog -timescale=1ns/1ps "
+        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
+        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
+        "unique_collection_sv_test.sv tb.sv -o simv && ./simv'"
+    )
+    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    log = result.stdout + result.stderr
+    print(log)
+    assert result.returncode == 0, log
+    assert "SVTYPES_UNIQUE_COLLECTION_PASS" in log, log
 
 
 @pytest.mark.remote_target
