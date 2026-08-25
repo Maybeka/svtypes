@@ -45,6 +45,14 @@ class Packet(SvObject):
 SV 下标表达式。调用者必须以尺寸约束或已有元素保证该位置存在。可变索引仍只接受
 `range(collection.size())` 的循环变量，保证 Python 与 SV 的 `foreach` 语义一致。
 
+## unique 展开
+
+`unique(self.data)` 与 `unique(self.tag, self.data)` 对 unpacked `Array`、
+`DynArray` 和 `Queue` 合法。生成 SV 保持原生 `unique {data}`，不展开成两两
+`foreach` 比较。Python 在尺寸确定之后，把当前积分叶子填入同一个 `unique` 节点。
+`unique` 不约束 size；空容器或长度为 1 时恒真。关联数组、handle、unpacked struct
+以及嵌套动态容器在声明期拒绝。
+
 ## 关联数组
 
 `AssocArray` 也提供运行时 `.size()` 查询，与 SV 的容器 API 一致。但其键集合不是
@@ -101,6 +109,8 @@ class LayeredPacket(SvObject):
 ## 验证
 
 - Python：尺寸约束、动态数组和队列的 `foreach`、未约束尺寸保持、失败恢复、关联数组
-  拒绝路径，以及分层随机下既有元素的逐元素 mode 保存/恢复。
+  拒绝路径、unpacked `unique` 展开、父对象 `randomize()` 对子对象动态数组/队列 `unique`
+  的图随机化，以及分层随机下既有元素的逐元素 mode 保存/恢复。
 - SystemVerilog target：同一组 `size()` + `foreach` 源约束在动态数组与队列上各随机 32 次，并检查尺寸
-  与每个元素；分层随机回归还检查动态数组元素关闭、层内随机和恢复后的 mode。
+  与每个元素；`unique {array}`、`unique {tag, data}` 与 `unique {queue}` 检查互异；分层随机
+  回归还检查动态数组元素关闭、层内随机和恢复后的 mode。

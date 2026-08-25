@@ -158,11 +158,16 @@ def legal(self):
 ```
 
 It emits `unique {source, destination, reply};`.  It is a hard constraint:
-fewer than two arguments are rejected, and no satisfying solve can contain a
-duplicate scalar value.  The initial 1.4 implementation accepts scalar integral
-expressions; array flattening and collection forms belong with 1.5.  Python
-uses the same pairwise SV equality sizing rules as the SMT encoding, including
-mixed-width operands.
+a scalar-only form needs at least two arguments, and no satisfying solve can
+contain a duplicate value.  Unpacked `Array`, `DynArray`, and `Queue` arguments
+are part of the same construct: `unique(self.words)` and
+`unique(self.tag, self.data)` emit native `unique {words};` /
+`unique {tag, data};`.  Packed `Bit`/`Logic` remain one integral value.
+`unique` does not constrain collection size; empty or singleton collections are
+vacuously true.  Associative arrays, object handles, unpacked structs, and
+nested dynamic collections are rejected at declaration.  Python flattens
+current integral leaves after size is known and uses the same pairwise SV
+equality sizing rules as the SMT encoding, including mixed-width operands.
 
 ## `soft` interface and priority
 
@@ -236,8 +241,9 @@ declarations, and invalid combinations.  The matching SystemVerilog target regre
 `tests/python/test_constraint_sv.py::test_remote_target_randc_cycle_simulation`.
 
 `tests/python/test_constraint_unique.py` covers scalar and mixed-width Python
-semantics; `test_remote_target_unique_scalar_simulation` verifies the generated
-constraint with SystemVerilog target.
+semantics plus unpacked array/queue flattening; `test_remote_target_unique_scalar_simulation`
+and `test_remote_target_unique_collection_simulation` verify scalar, fixed-array,
+dynamic-array, and queue constraints with SystemVerilog target.
 
 `tests/python/test_constraint_soft.py` covers hard-over-soft behavior,
 same-block and inheritance priority, and conditional activation.  The SystemVerilog target soft
