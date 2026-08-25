@@ -15,7 +15,7 @@ dist = _DistSyntax
 
 
 class _UniqueSyntax:
-    """Source-only marker for scalar ``unique(...)`` constraints."""
+    """Source-only marker for ``unique(...)`` constraints."""
 
     def __call__(self, *_args, **_kwargs):  # pragma: no cover - parsed, not run
         raise TypeError("unique(...) is only valid inside an @constraint method")

@@ -7,13 +7,13 @@ from dataclasses import dataclass, replace
 from types import FunctionType
 from typing import Any, Callable
 
-from ..collection import AssocArray, DynArray, Queue
+from ..collection import Array, AssocArray, DynArray, Queue
 from ..errors import ConstraintBackendError, ConstraintError, DeclarationError
 from ..logic import Logic
 from .analyze import compile_block
 from .eval import eval_bool, eval_dist_weight, eval_expr
 from .frontend import parse_constraint_function
-from .ir import BOOL, ConstraintIR, Expr, IRStmt, VarDecl, bv, c_int
+from .ir import BOOL, ConstraintIR, Expr, IRStmt, VarDecl, bv, c_bool, c_field, c_int
 from .leaves import (
     iter_class_leaves,
     iter_object_leaves,
@@ -56,6 +56,19 @@ class _RandomGraph:
     def rand_mode(self, path: str) -> int:
         owner, local_path = self.owners[path]
         return _effective_rand_mode(owner, local_path)
+
+    def mode_for_path(self, path: str) -> int:
+        """Return the effective mode for a leaf or collection path in the graph."""
+
+        owner = self.owners.get(path)
+        if owner is not None:
+            return _effective_rand_mode(*owner)
+        for node in sorted(self.nodes, key=lambda item: len(item.path), reverse=True):
+            if not node.path:
+                continue
+            if path == node.path or path.startswith(f"{node.path}.") or path.startswith(f"{node.path}["):
+                return _effective_rand_mode(node.obj, path[len(node.path) + 1:])
+        return _effective_rand_mode(self.root, path)
 
 
 def _with_prefix(prefix: str, path: str) -> str:
@@ -232,7 +245,7 @@ def _collect_random_graph(root: Any, root_cls: type, extra: ConstraintIR | None)
     null_path = None
     for ir in remapped:
         for var in ir.vars:
-            if var.kind != "field":
+            if var.kind not in {"field", "unpacked"}:
                 continue
             null_path = _null_handle_path(root, var.path)
             if null_path is not None:
@@ -247,6 +260,20 @@ def _collect_random_graph(root: Any, root_cls: type, extra: ConstraintIR | None)
         owners=owners,
         null_path=null_path,
     )
+
+
+def _refresh_graph_leaves(graph: _RandomGraph) -> None:
+    """Refresh runtime-sized leaves after a graph collection changes size."""
+
+    leaves: list[tuple[str, Any, bool]] = []
+    owners: dict[str, tuple[Any, str]] = {}
+    for node in graph.nodes:
+        for local_path, desc, declared_rand in iter_object_leaves(node.obj, node.cls):
+            path = _with_prefix(node.path, local_path)
+            leaves.append((path, desc, declared_rand))
+            owners[path] = (node.obj, local_path)
+    graph.leaves = leaves
+    graph.owners = owners
 
 
 def _visit_rand_container_handles(
@@ -555,19 +582,30 @@ def _solve(
     if enabled_override is None and any(
         var.kind == "size" for ir in enabled for var in ir.vars
     ):
-        return _solve_dynamic_collections(obj, cls, stream, enabled)
+        return _solve_dynamic_collections(obj, cls, stream, enabled, graph=graph)
     if enabled_override is None and any(
         stmt.kind == "assoc_foreach" for ir in enabled for stmt in ir.statements
     ):
-        return _solve(obj, cls, stream, None, [_expand_dynamic_ir(obj, ir) for ir in enabled])
+        leaves = list(graph.leaves) if graph is not None else None
+        return _solve(
+            obj,
+            cls,
+            stream,
+            None,
+            [_expand_dynamic_ir(obj, ir, leaves=leaves) for ir in enabled],
+            graph=graph,
+        )
+    leaves = list(graph.leaves) if graph is not None else list(iter_object_leaves(obj, cls))
+    enabled = [_expand_unique_ir(obj, ir, leaves=leaves) for ir in enabled]
     mentioned: set[str] = set()
     var_index: dict[str, VarDecl] = {}
     for ir in enabled:
         for var in ir.vars:
+            if var.kind == "unpacked":
+                continue
             mentioned.add(var.path)
             var_index[var.path] = var
 
-    leaves = list(graph.leaves) if graph is not None else list(iter_object_leaves(obj, cls))
     unconstrained: list[tuple[str, Any]] = []
     constrained: list[tuple[str, Any]] = []
     state_paths: list[str] = []
@@ -726,6 +764,8 @@ def _solve_dynamic_collections(
     cls: type,
     stream: BitStream,
     enabled: list[ConstraintIR],
+    *,
+    graph: _RandomGraph | None = None,
 ) -> bool:
     """Solve dynamic sizes first, then solve the expanded element constraints.
 
@@ -737,7 +777,7 @@ def _solve_dynamic_collections(
     from .backend.model import SolveRequest
     from .backend.smt import solve
 
-    all_leaves = list(iter_class_leaves(cls))
+    all_leaves = list(graph.leaves) if graph is not None else list(iter_class_leaves(cls))
     all_vars = [
         var
         for ir in enabled
@@ -752,11 +792,12 @@ def _solve_dynamic_collections(
     var_index = {
         var.path: var
         for var in all_vars
-        if not any(var.path.startswith(f"{root}[") for root in dynamic_roots)
+        if var.kind != "unpacked"
+        and not any(var.path.startswith(f"{root}[") for root in dynamic_roots)
     }
     size_vars = {var.path: var for var in var_index.values() if var.kind == "size"}
     if not size_vars:
-        return _solve(obj, cls, stream, None, enabled)
+        return _solve(obj, cls, stream, None, enabled, graph=graph)
 
     static_snapshot = snapshot_leaves(obj, [path for path, _, _ in all_leaves])
     collection_snapshot = {
@@ -766,7 +807,8 @@ def _solve_dynamic_collections(
     try:
         state: dict[str, int] = {}
         for path, desc, declared_rand in all_leaves:
-            active = declared_rand and _effective_rand_mode(obj, path) == 1
+            mode = graph.mode_for_path(path) if graph is not None else _effective_rand_mode(obj, path)
+            active = declared_rand and mode == 1
             if not active:
                 value = leaf_unsigned(resolve_attr(obj, path), resolve_attr(obj, path).value)
                 state[path] = value
@@ -778,7 +820,11 @@ def _solve_dynamic_collections(
             if (
                 key in constrained_size_keys
                 and var.declared_rand
-                and _effective_rand_mode(obj, key.removeprefix("@size:")) == 1
+                and (
+                    graph.mode_for_path(key.removeprefix("@size:"))
+                    if graph is not None
+                    else _effective_rand_mode(obj, key.removeprefix("@size:"))
+                ) == 1
             ):
                 active_sizes.append((key, collection))
             else:
@@ -812,12 +858,17 @@ def _solve_dynamic_collections(
             chosen = candidates.pop(index)
             for path, collection in active_sizes:
                 collection._resize_for_randomize(chosen[path])
-            expanded = [_expand_dynamic_ir(obj, ir) for ir in enabled]
-            if _solve(obj, cls, stream, None, expanded):
+            if graph is not None:
+                _refresh_graph_leaves(graph)
+            leaves = list(graph.leaves) if graph is not None else None
+            expanded = [_expand_dynamic_ir(obj, ir, leaves=leaves) for ir in enabled]
+            if _solve(obj, cls, stream, None, expanded, graph=graph):
                 return True
             restore_leaves(obj, static_snapshot)
             for key, elements in collection_snapshot.items():
                 resolve_attr(obj, key.removeprefix("@size:"))._elements = copy.deepcopy(elements)
+            if graph is not None:
+                _refresh_graph_leaves(graph)
 
         # The last expanded element solve already recorded its active set.
         # If no candidate reached that solve, retain the outer constraint set.
@@ -828,6 +879,8 @@ def _solve_dynamic_collections(
         restore_leaves(obj, static_snapshot)
         for key, elements in collection_snapshot.items():
             resolve_attr(obj, key.removeprefix("@size:"))._elements = elements
+        if graph is not None:
+            _refresh_graph_leaves(graph)
         raise
 
 
@@ -884,7 +937,9 @@ def _dynamic_size_ir(ir: ConstraintIR) -> ConstraintIR:
         if value.kind in {"for", "assoc_foreach"}:
             return None
         if value.kind in {"pred", "soft"}:
-            return None if has_runtime_element(value.expr) else value
+            if has_runtime_element(value.expr) or _contains_unpacked_unique(value.expr):
+                return None
+            return value
         if value.kind == "solve_before":
             paths = (*((value.before or ())), *((value.after or ())))
             return None if any(is_runtime_element_path(path) for path in paths) else value
@@ -897,8 +952,16 @@ def _dynamic_size_ir(ir: ConstraintIR) -> ConstraintIR:
     statements = [item for stmt in ir.statements if (item := statement(stmt)) is not None]
     return ConstraintIR(
         name=ir.name,
-        predicates=[item for item in ir.predicates if not has_runtime_element(item)],
-        soft_predicates=[item for item in ir.soft_predicates if not has_runtime_element(item)],
+        predicates=[
+            item
+            for item in ir.predicates
+            if not has_runtime_element(item) and not _contains_unpacked_unique(item)
+        ],
+        soft_predicates=[
+            item
+            for item in ir.soft_predicates
+            if not has_runtime_element(item) and not _contains_unpacked_unique(item)
+        ],
         solve_before=[
             (before, after)
             for before, after in ir.solve_before
@@ -910,7 +973,12 @@ def _dynamic_size_ir(ir: ConstraintIR) -> ConstraintIR:
     )
 
 
-def _expand_dynamic_ir(obj: Any, ir: ConstraintIR) -> ConstraintIR:
+def _expand_dynamic_ir(
+    obj: Any,
+    ir: ConstraintIR,
+    *,
+    leaves: list[tuple[str, Any, bool]] | None = None,
+) -> ConstraintIR:
     """Expand dynamic foreach statements after their collection sizes are fixed."""
 
     from .analyze import _collect_solve_before, _flatten_hard_stmt, _flatten_soft_stmt
@@ -991,7 +1059,7 @@ def _expand_dynamic_ir(obj: Any, ir: ConstraintIR) -> ConstraintIR:
     statements = [item for stmt in ir.statements for item in statement(stmt)]
     dynamic_vars = {
         path: VarDecl(path, declared, desc.width, bool(desc.signed), None, None, desc)
-        for path, desc, declared in iter_object_leaves(obj)
+        for path, desc, declared in (iter_object_leaves(obj) if leaves is None else leaves)
     }
     vars = [var for var in ir.vars if var.kind == "field" and "[" not in var.path]
     vars.extend(var for path, var in dynamic_vars.items() if path not in {item.path for item in vars})
@@ -1004,6 +1072,137 @@ def _expand_dynamic_ir(obj: Any, ir: ConstraintIR) -> ConstraintIR:
         parameters=ir.parameters,
         statements=statements,
     )
+
+
+def _contains_unpacked_unique(expr: Expr | None) -> bool:
+    if expr is None:
+        return False
+    if expr.op == "unique":
+        return any(isinstance(arg, Expr) and arg.hint == "unpacked" for arg in expr.args)
+    return any(_contains_unpacked_unique(arg) for arg in expr.args if isinstance(arg, Expr))
+
+
+def _expand_unique_ir(
+    obj: Any,
+    ir: ConstraintIR,
+    *,
+    leaves: list[tuple[str, Any, bool]] | None = None,
+) -> ConstraintIR:
+    """Flatten unpacked unique operands after collection sizes are known.
+
+    Class IR keeps ``unique {data}`` so generated SV stays native. Python
+    solves the expanded scalar unique against the current elements.
+    """
+
+    predicates = [_expand_unique_expr(obj, pred) for pred in ir.predicates]
+    soft_predicates = [_expand_unique_expr(obj, pred) for pred in ir.soft_predicates]
+    leaf_map = {
+        path: (desc, declared)
+        for path, desc, declared in (
+            iter_object_leaves(obj) if leaves is None else leaves
+        )
+    }
+    vars = [var for var in ir.vars if var.kind != "unpacked"]
+    seen = {var.path for var in vars}
+    for pred in [*predicates, *soft_predicates]:
+        for path in _unique_field_paths(pred):
+            if path in seen or path not in leaf_map:
+                continue
+            desc, declared = leaf_map[path]
+            vars.append(_leaf_var_decl(path, desc, declared))
+            seen.add(path)
+    return ConstraintIR(
+        name=ir.name,
+        predicates=predicates,
+        vars=vars,
+        soft_predicates=soft_predicates,
+        solve_before=ir.solve_before,
+        parameters=ir.parameters,
+        statements=ir.statements,
+    )
+
+
+def _expand_unique_expr(obj: Any, expr: Expr) -> Expr:
+    if expr.op == "unique":
+        items: list[Expr] = []
+        for arg in expr.args:
+            if arg.op == "field" and arg.hint == "unpacked":
+                items.extend(_flatten_unpacked_unique_arg(obj, arg))
+            else:
+                items.append(_expand_unique_expr(obj, arg))
+        if len(items) < 2:
+            return c_bool(True, expr.loc)
+        return Expr("unique", tuple(items), BOOL, expr.loc, expr.undef, expr.hint)
+    args: list[Any] = []
+    changed = False
+    for arg in expr.args:
+        if isinstance(arg, Expr):
+            new = _expand_unique_expr(obj, arg)
+        elif isinstance(arg, tuple):
+            new = tuple(
+                replace(
+                    item,
+                    low=_expand_unique_expr(obj, item.low),
+                    high=_expand_unique_expr(obj, item.high) if item.high is not None else None,
+                    weight=_expand_unique_expr(obj, item.weight),
+                )
+                if hasattr(item, "low") and hasattr(item, "weight")
+                else item
+                for item in arg
+            )
+        else:
+            new = arg
+        args.append(new)
+        changed = changed or new is not arg
+    return Expr(expr.op, tuple(args), expr.ty, expr.loc, expr.undef, expr.hint) if changed else expr
+
+
+def _flatten_unpacked_unique_arg(obj: Any, arg: Expr) -> list[Expr]:
+    return _unique_fields_from_value(resolve_attr(obj, str(arg.args[0])), str(arg.args[0]), arg.loc)
+
+
+def _unique_fields_from_value(value: Any, path: str, loc: Any) -> list[Expr]:
+    if isinstance(value, (Array, DynArray, Queue)):
+        fields: list[Expr] = []
+        for index, element in enumerate(value._elements):
+            fields.extend(_unique_fields_from_value(element, f"{path}[{index}]", loc))
+        return fields
+    from ..bit import Bit
+    from ..enum import Enum
+    from .ir import enum_ty
+
+    if isinstance(value, Logic):
+        return [c_field(path, bv(value.width, bool(value.signed)), loc)]
+    if isinstance(value, Enum):
+        return [c_field(path, enum_ty(value.__class__), loc)]
+    if isinstance(value, Bit):
+        return [c_field(path, bv(value.width, bool(value.signed)), loc)]
+    return [c_field(path, bv(getattr(value, "width", 1), bool(getattr(value, "signed", False))), loc)]
+
+
+def _unique_field_paths(expr: Expr) -> set[str]:
+    if expr.op == "field":
+        return {str(expr.args[0])}
+    paths: set[str] = set()
+    for arg in expr.args:
+        if isinstance(arg, Expr):
+            paths.update(_unique_field_paths(arg))
+    return paths
+
+
+def _leaf_var_decl(path: str, desc: Any, declared_rand: bool) -> VarDecl:
+    from ..enum import Enum
+    from .ir import enum_ty
+    from ..schema import unified_type_name
+
+    if isinstance(desc, Logic):
+        return VarDecl(path, declared_rand, desc.width, bool(desc.signed), "logic", None, desc)
+    if isinstance(desc, Enum):
+        ty = enum_ty(desc.__class__)
+        return VarDecl(path, declared_rand, ty.width, ty.signed, None, unified_type_name(desc.__class__), desc)
+    width = int(getattr(desc, "width", 1))
+    signed = bool(getattr(desc, "signed", False))
+    return VarDecl(path, declared_rand, width, signed, None, None, desc)
 
 
 def _explicit_size_constraint_keys(irs: list[ConstraintIR]) -> set[str]:

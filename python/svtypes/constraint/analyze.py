@@ -277,8 +277,79 @@ class _Analyzer:
         return Expr("dist", (value, tuple(items)), BOOL, node.loc)
 
     def unique(self, node: UniqueExpr) -> Expr:
-        items = tuple(self.as_bv(self.expr(item)) for item in node.items)
+        items = tuple(self._unique_item(item) for item in node.items)
+        unpacked = any(item.hint == "unpacked" for item in items)
+        if not items or (len(items) < 2 and not unpacked):
+            raise ConstraintTypeError(
+                f"{node.loc.format()}: unique() requires at least two scalar "
+                "expressions or one unpacked collection"
+            )
         return Expr("unique", items, BOOL, node.loc)
+
+    def _unique_item(self, node: AstNode) -> Expr:
+        if isinstance(node, (FieldRef, MemberRef)):
+            parts, desc = self._ref_descriptor(node)
+            path = format_path(parts)
+            if isinstance(desc, AssocArray):
+                raise ConstraintTypeError(
+                    f"{node.loc.format()}: unique() does not accept associative arrays"
+                )
+            if isinstance(desc, ObjectDescriptor) or (
+                isinstance(desc, SvObject) and not isinstance(desc, SvStruct)
+            ):
+                raise ConstraintNameError(
+                    f"{node.loc.format()}: object handle {path} cannot appear in unique()"
+                )
+            if isinstance(desc, SvStruct):
+                raise ConstraintTypeError(
+                    f"{node.loc.format()}: unique() does not accept unpacked structs"
+                )
+            if isinstance(desc, (Array, DynArray, Queue)):
+                self._check_unique_collection(desc, path, node.loc)
+                self.vars.setdefault(
+                    path,
+                    VarDecl(
+                        path=path,
+                        declared_rand=self._declared_rand(path),
+                        width=1,
+                        signed=False,
+                        projected_from=None,
+                        enum_name=None,
+                        descriptor=desc,
+                        kind="unpacked",
+                    ),
+                )
+                return Expr("field", (path,), bv(1, False), node.loc, hint="unpacked")
+        return self.as_bv(self.expr(node))
+
+    def _check_unique_collection(
+        self, desc: Any, path: str, loc: SourceLoc, *, allow_dynamic: bool = True
+    ) -> None:
+        if isinstance(desc, AssocArray):
+            raise ConstraintTypeError(
+                f"{loc.format()}: unique() does not accept associative arrays"
+            )
+        if isinstance(desc, ObjectDescriptor) or (
+            isinstance(desc, SvObject) and not isinstance(desc, SvStruct)
+        ):
+            raise ConstraintNameError(
+                f"{loc.format()}: unique() does not flatten object handles in {path}"
+            )
+        if isinstance(desc, SvStruct):
+            raise ConstraintTypeError(
+                f"{loc.format()}: unique() does not accept unpacked structs"
+            )
+        if isinstance(desc, (DynArray, Queue)):
+            if not allow_dynamic:
+                raise ConstraintTypeError(
+                    f"{loc.format()}: unique() does not flatten nested dynamic collections"
+                )
+            self._check_unique_collection(desc._elem_template, path, loc, allow_dynamic=False)
+            return
+        if isinstance(desc, Array):
+            self._check_unique_collection(desc._elem_template, path, loc, allow_dynamic=False)
+            return
+        self.solver_type(desc, loc)
 
     def solve_before(self, node: SolveBeforeExpr) -> IRStmt:
         before = tuple(self._solve_before_path(item, node.loc) for item in node.before)

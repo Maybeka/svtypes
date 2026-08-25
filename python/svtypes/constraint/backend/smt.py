@@ -277,6 +277,9 @@ def _encode(z3: Any, expr: Expr, terms: dict[str, Any], widths: dict[str, int]) 
             value, undef = _encode(z3, item, terms, widths)
             values.append(value)
             undefs.append(undef)
+        if len(values) < 2:
+            combined_undef = z3.Or(undefs) if undefs else z3.BoolVal(False)
+            return (z3.BoolVal(True), combined_undef)
         width = max(_bv_size(value) for value in values)
         signed = all(item.ty.signed for item in expr.args)
         values = [_cast_bv(z3, value, _bv_size(value), width, signed) for value in values]

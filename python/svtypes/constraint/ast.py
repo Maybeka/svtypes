@@ -138,7 +138,7 @@ class DistExpr(AstNode):
 
 @dataclass
 class UniqueExpr(AstNode):
-    """Scalar `unique(...)` constraint declaration."""
+    """`unique(...)` constraint over scalars and unpacked collections."""
 
     items: list[AstNode]
 

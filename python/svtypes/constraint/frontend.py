@@ -371,8 +371,8 @@ class _Converter:
         loc = self.loc(node)
         if node.keywords or any(isinstance(arg, ast.Starred) for arg in node.args):
             raise _err(loc, "unique() does not accept keyword or starred arguments")
-        if len(node.args) < 2:
-            raise _err(loc, "unique() requires at least two scalar expressions")
+        if not node.args:
+            raise _err(loc, "unique() requires at least one expression")
         return UniqueExpr(loc=loc, items=[self.expr(arg) for arg in node.args])
 
     def _soft_expr(self, node: ast.Call) -> SoftExpr:
