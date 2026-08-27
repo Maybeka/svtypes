@@ -9,6 +9,18 @@ class DeclarationError(SvTypesError, ValueError):
     """A type or schema declaration is invalid."""
 
 
+class CoverageError(SvTypesError):
+    """Base class for functional-coverage declaration and runtime errors."""
+
+
+class CoverageDeclarationError(CoverageError, DeclarationError):
+    """A functional-coverage declaration is invalid."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(f"{code}: {message}")
+
+
 class UnsupportedTypeError(SvTypesError, TypeError):
     """A requested type/backend combination is unsupported."""
 
