@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from svtypes import Array, AssocArray, Bit, DynArray, Logic, Object, Queue, String, SvObject
+from svtypes import Array, AssocArray, Bit, DynArray, Enum, Logic, Object, Queue, String, SvObject
 from svtypes.coverage import AUTO_COVERGROUP_NAME, auto_coverage_ir
 from svtypes.errors import CoverageDeclarationError
 
@@ -64,6 +64,20 @@ def test_default_auto_coverage_tracks_handle_nullness_and_excludes_xz_from_two_s
     snapshot = packet.svtypes_auto_cov.instance.snapshot()
     assert snapshot["state"]["hits"] == {"auto[1]": 1}
     assert snapshot["child"]["hits"] == {"auto[0]": 1, "auto[1]": 1}
+
+
+def test_automatic_bins_create_one_named_bin_per_enum_value():
+    class Opcode(Enum, width=8, signed=False):
+        READ = 1
+        WRITE = 7
+
+    class Packet(SvObject):
+        opcode = Opcode()
+
+    packet = Packet()
+    packet.opcode.value = Opcode.WRITE
+    packet.svtypes_auto_cov.sample()
+    assert packet.svtypes_auto_cov.instance.snapshot()["opcode"]["hits"] == {"auto[7]": 1}
 
 
 def test_object_handles_keep_the_existing_nullness_auto_coverage_semantics():

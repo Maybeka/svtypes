@@ -156,3 +156,20 @@ def test_database_type_summary_supports_independent_and_merged_instance_scoring(
         packet.cg.sample()
         database.record(packet.cg.instance, logical_instance_key=key)
     assert database.type_summary(Merged.cg.freeze().covergroup_type_id)["coverage"] == 100.0
+
+
+def test_database_merge_unions_case_sources_without_changing_counts() -> None:
+    left = CoverageDatabase()
+    right = CoverageDatabase()
+    first = DatabasePacket()
+    first.code.value = 0
+    first.cg.sample(case_id="first")
+    left.record(first.cg.instance, logical_instance_key="dut.packet")
+    second = DatabasePacket()
+    second.code.value = 0
+    second.cg.sample(case_id="second")
+    right.record(second.cg.instance, logical_instance_key="dut.packet")
+    left.merge(right)
+    point = left.snapshot_document()["records"][0]["points"]["code_cp"]
+    assert point["hits"] == {"low": 2}
+    assert point["source_ids"] == {"low": ["first", "second"]}
