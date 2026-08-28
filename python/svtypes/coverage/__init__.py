@@ -22,6 +22,20 @@ from .declaration import (
     CoverRef,
     covergroup,
 )
+from .dsl import (
+    CovPoint,
+    CovPointArray,
+    CovPointOption,
+    CoverGroupOption,
+    CoverGroupTypeOption,
+    Cross,
+    CrossOption,
+    bins,
+    default_bins,
+    ignore_bins,
+    illegal_bins,
+    transition_bins,
+)
 from .identity import bin_id, point_id
 from .limits import (
     MAX_CROSS_MEMBERS,
@@ -36,8 +50,15 @@ __all__ = [
     "BoundCoverGroup",
     "CoverGroupDeclaration",
     "CoverGroupInstance",
+    "CoverGroupOption",
+    "CoverGroupTypeOption",
     "CoverInput",
     "CoverRef",
+    "CovPoint",
+    "CovPointArray",
+    "CovPointOption",
+    "Cross",
+    "CrossOption",
     "CoverageBinIR",
     "CoverageCrossIR",
     "CoverageIR",
@@ -51,5 +72,10 @@ __all__ = [
     "point_id",
     "validate_cross_normal_bin_count",
     "auto_coverage_ir",
+    "bins",
     "covergroup",
+    "default_bins",
+    "ignore_bins",
+    "illegal_bins",
+    "transition_bins",
 ]

@@ -66,7 +66,23 @@ from .constraint import (
     unique,
 )
 from .randomizable import is_randomizable
-from .coverage import CoverInput, CoverRef, covergroup
+from .coverage import (
+    CovPoint,
+    CovPointArray,
+    CovPointOption,
+    CoverGroupOption,
+    CoverGroupTypeOption,
+    CoverInput,
+    CoverRef,
+    Cross,
+    CrossOption,
+    bins,
+    covergroup,
+    default_bins,
+    ignore_bins,
+    illegal_bins,
+    transition_bins,
+)
 
 from .scope import Scope, Package, Namespace, get_package
 from .schema import (

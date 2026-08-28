@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Generic, TypeVar, overload
 
 from ..errors import CoverageError
+from .ir import CoverageIR
 
 
 T = TypeVar("T")
@@ -74,6 +75,7 @@ class BoundCoverGroup:
             raise CoverageError(
                 f"coverage group {self._declaration.qualified_name} is already instantiated"
             )
+        self._declaration.freeze()
         self._instance = CoverGroupInstance(
             declaration=self._declaration,
             host=self._host,
@@ -101,6 +103,7 @@ class CoverGroupDeclaration:
         self.name = function.__name__
         self.owner: type[Any] | None = None
         self._storage_key = f"_svtypes_coverage_{self.name}"
+        self._ir: CoverageIR | None = None
 
     def __set_name__(self, owner: type[Any], name: str) -> None:
         self.owner = owner
@@ -111,6 +114,19 @@ class CoverGroupDeclaration:
     def qualified_name(self) -> str:
         owner_name = self.owner.__name__ if self.owner is not None else "<unbound>"
         return f"{owner_name}.{self.name}"
+
+    @property
+    def ir(self) -> CoverageIR:
+        if self._ir is None:
+            raise CoverageError(f"coverage declaration {self.qualified_name} is not frozen")
+        return self._ir
+
+    def freeze(self) -> CoverageIR:
+        if self._ir is None:
+            from .frontend import compile_declaration
+
+            self._ir = compile_declaration(self)
+        return self._ir
 
     @overload
     def __get__(self, host: None, owner: type[Any] | None = None) -> "CoverGroupDeclaration": ...
