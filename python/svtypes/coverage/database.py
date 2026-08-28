@@ -116,6 +116,14 @@ def _merge_record_documents(left: dict[str, Any], right: dict[str, Any]) -> dict
             for bin_name, count in right_counter.get(field, {}).items():
                 merged[bin_name] = merged.get(bin_name, 0) + count
             left_counter[field] = dict(sorted(merged.items()))
+        for field in ("source_ids", "illegal_source_ids"):
+            merged_sources = {name: list(ids) for name, ids in left_counter.get(field, {}).items()}
+            for bin_name, source_ids in right_counter.get(field, {}).items():
+                target = merged_sources.setdefault(bin_name, [])
+                for source_id in source_ids:
+                    if source_id not in target and len(target) < 3:
+                        target.append(source_id)
+            left_counter[field] = dict(sorted(merged_sources.items()))
         left_counter["samples"] = left_counter.get("samples", 0) + right_counter.get("samples", 0)
     return result
 

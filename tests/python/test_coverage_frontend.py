@@ -234,6 +234,33 @@ def test_repeat_is_rejected_outside_transition_bins():
         Packet.cg.freeze()
 
 
+def test_coverage_sample_retains_at_most_three_case_sources_for_normal_and_illegal_bins():
+    class Packet(SvObject):
+        opcode = Bit(2)
+
+        @covergroup
+        def cg(self):
+            class opcode_cp(CovPoint, source=self.opcode):
+                zero = bins[0]
+                reserved = illegal_bins[3]
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    packet = Packet()
+    for case_id in ("a", "b", "c", "d", "a"):
+        packet.opcode.value = 0
+        packet.cg.sample(case_id=case_id)
+    for case_id in ("x", "y", "z", "overflow"):
+        packet.opcode.value = 3
+        packet.cg.sample(case_id=case_id)
+    result = packet.cg.instance.snapshot()["opcode_cp"]
+    assert result["hits"] == {"zero": 5}
+    assert result["source_ids"] == {"zero": ["a", "b", "c"]}
+    assert result["illegal_source_ids"] == {"reserved": ["x", "y", "z"]}
+
+
 def test_array_points_freeze_to_fixed_slots_and_skip_missing_dynamic_elements():
     class Packet(SvObject):
         values = DynArray(Bit(8))

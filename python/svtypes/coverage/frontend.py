@@ -384,6 +384,8 @@ def compile_declaration(declaration: Any) -> CoverageIR:
         if sample.body and any(not isinstance(item, ast.ClassDef) for item in sample.body):
             raise _error(f"coverage sample {declaration.qualified_name}.sample has unsupported body statement")
         point_nodes = [item for item in sample.body if isinstance(item, ast.ClassDef)]
+        if any(argument.arg == "case_id" for argument in sample.args.args):
+            raise _error(f"coverage sample {declaration.qualified_name}.sample reserves case_id")
         sample_parameters = tuple(SampleParameterIR(argument.arg, _annotation(argument)) for argument in sample.args.args)
     points = tuple(point for node in point_nodes for point in _point_class(declaration.owner, node))
     sample_type = getattr(declaration.owner, "_svtypes_unified_type_name", declaration.owner.__name__)

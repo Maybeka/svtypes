@@ -102,6 +102,8 @@ def _matches_selector(value: Any, selector: Any, context: dict[str, Any]) -> boo
 class PointCounters:
     hits: Counter[str] = field(default_factory=Counter)
     illegal_hits: Counter[str] = field(default_factory=Counter)
+    source_ids: dict[str, list[str]] = field(default_factory=dict)
+    illegal_source_ids: dict[str, list[str]] = field(default_factory=dict)
     samples: int = 0
 
 
@@ -113,16 +115,17 @@ class CoverageRuntime:
     counters: dict[str, PointCounters] = field(init=False)
     histories: dict[str, list[Any]] = field(init=False)
     enabled: bool = field(init=False, default=True)
+    source_limit: int = 3
 
     def __post_init__(self) -> None:
         self.counters = {point.name: PointCounters() for point in self.ir.points}
         self.histories = {point.name: [] for point in self.ir.points}
 
-    def sample(self, context: dict[str, Any]) -> None:
+    def sample(self, context: dict[str, Any], *, case_id: str | None = None) -> None:
         if not self.enabled:
             return
         for point in self.ir.points:
-            self._sample_point(point, context)
+            self._sample_point(point, context, case_id)
 
     def start(self) -> None:
         self.enabled = True
@@ -130,7 +133,7 @@ class CoverageRuntime:
     def stop(self) -> None:
         self.enabled = False
 
-    def _sample_point(self, point: CoveragePointIR, context: dict[str, Any]) -> None:
+    def _sample_point(self, point: CoveragePointIR, context: dict[str, Any], case_id: str | None) -> None:
         counters = self.counters[point.name]
         if point.iff is not None and not bool(eval_expr(point.iff, context)):
             return
@@ -140,11 +143,11 @@ class CoverageRuntime:
             return
         if dict(point.options).get("container_value_domain"):
             for value in values:
-                self._classify_value(point, counters, _value(value), context)
+                self._classify_value(point, counters, _value(value), context, case_id)
             return
-        self._classify_value(point, counters, values, context)
+        self._classify_value(point, counters, values, context, case_id)
 
-    def _classify_value(self, point: CoveragePointIR, counters: PointCounters, value: Any, context: dict[str, Any]) -> None:
+    def _classify_value(self, point: CoveragePointIR, counters: PointCounters, value: Any, context: dict[str, Any], case_id: str | None) -> None:
         counters.samples += 1
         transitions = [bin_ for bin_ in point.bins if bin_.kind == "transition"]
         if transitions:
@@ -155,6 +158,7 @@ class CoverageRuntime:
                 sequences = _transition_sequences(bin_.selector, context)
                 if any(len(history) >= len(sequence) and history[-len(sequence):] == sequence for sequence in sequences):
                     counters.hits[bin_.name] += 1
+                    _record_source(counters.source_ids, bin_.name, case_id, self.source_limit)
             return
         ignored = [bin_ for bin_ in point.bins if bin_.kind == "ignore" and _matches_selector(value, bin_.selector, context)]
         if ignored:
@@ -163,23 +167,22 @@ class CoverageRuntime:
         if illegal:
             for bin_ in illegal:
                 counters.illegal_hits[bin_.name] += 1
+                _record_source(counters.illegal_source_ids, bin_.name, case_id, self.source_limit)
             return
         normal = [bin_ for bin_ in point.bins if bin_.kind == "normal" and _matches_selector(value, bin_.selector, context)]
         if normal:
             for bin_ in normal:
                 counters.hits[bin_.name] += 1
+                _record_source(counters.source_ids, bin_.name, case_id, self.source_limit)
             return
         defaults = [bin_ for bin_ in point.bins if bin_.kind == "default"]
         if defaults:
             counters.hits[defaults[0].name] += 1
+            _record_source(counters.source_ids, defaults[0].name, case_id, self.source_limit)
 
     def snapshot(self) -> dict[str, Any]:
         return {
-            name: {
-                "hits": dict(sorted(counter.hits.items())),
-                "illegal_hits": dict(sorted(counter.illegal_hits.items())),
-                "samples": counter.samples,
-            }
+            name: _counter_snapshot(counter)
             for name, counter in sorted(self.counters.items())
         }
 
@@ -228,3 +231,24 @@ def _transition_sequences(selector: Any, context: dict[str, Any]) -> list[list[A
             expansions = [[eval_expr(item, context)]]
         sequences = [prefix + suffix for prefix in sequences for suffix in expansions]
     return sequences
+
+
+def _record_source(target: dict[str, list[str]], bin_name: str, case_id: str | None, limit: int) -> None:
+    if case_id is None:
+        return
+    sources = target.setdefault(bin_name, [])
+    if case_id not in sources and len(sources) < limit:
+        sources.append(case_id)
+
+
+def _counter_snapshot(counter: PointCounters) -> dict[str, Any]:
+    result = {
+        "hits": dict(sorted(counter.hits.items())),
+        "illegal_hits": dict(sorted(counter.illegal_hits.items())),
+        "samples": counter.samples,
+    }
+    if counter.source_ids:
+        result["source_ids"] = {name: list(ids) for name, ids in sorted(counter.source_ids.items())}
+    if counter.illegal_source_ids:
+        result["illegal_source_ids"] = {name: list(ids) for name, ids in sorted(counter.illegal_source_ids.items())}
+    return result

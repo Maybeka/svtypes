@@ -85,6 +85,9 @@ class CoverGroupInstance:
         self.option = CoverageInstanceOption(self.declaration.ir.options)
 
     def sample(self, *args: Any, **kwargs: Any) -> None:
+        case_id = kwargs.pop("case_id", None)
+        if case_id is not None and (not isinstance(case_id, str) or not case_id):
+            raise CoverageError("coverage case_id must be a non-empty string or None")
         formals = self.declaration.ir.sample_parameters
         if len(args) > len(formals):
             raise CoverageError(f"coverage sample {self.declaration.qualified_name} has too many positional arguments")
@@ -106,7 +109,7 @@ class CoverGroupInstance:
             raise CoverageError(f"coverage sample {self.declaration.qualified_name} is missing {missing[0]!r}")
         values["self"] = self.host
         values["item"] = self.host
-        self.runtime.sample(values)
+        self.runtime.sample(values, case_id=case_id)
 
     @property
     def instance_layout_digest(self) -> str:
