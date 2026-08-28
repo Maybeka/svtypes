@@ -289,6 +289,12 @@ def compile_declaration(declaration: Any) -> CoverageIR:
     if sample is not None:
         if point_nodes:
             raise _error(f"coverage declaration {declaration.qualified_name} mixes outer and sample point declarations")
+        if sample.decorator_list or sample.args.defaults or sample.args.kw_defaults or sample.args.vararg or sample.args.kwarg or sample.args.kwonlyargs:
+            raise _error(f"coverage sample {declaration.qualified_name}.sample has unsupported signature")
+        if sample.returns is not None and not (
+            isinstance(sample.returns, ast.Constant) and sample.returns.value is None
+        ):
+            raise _error(f"coverage sample {declaration.qualified_name}.sample must return None")
         if sample.body and any(not isinstance(item, ast.ClassDef) for item in sample.body):
             raise _error(f"coverage sample {declaration.qualified_name}.sample has unsupported body statement")
         point_nodes = [item for item in sample.body if isinstance(item, ast.ClassDef)]

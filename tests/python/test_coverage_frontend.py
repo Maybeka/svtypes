@@ -157,6 +157,26 @@ def test_automatic_bins_honor_point_limit_and_assign_remainder_to_final_bin():
     ]
 
 
+def test_nested_sample_formals_are_bound_at_each_sample_without_executing_function():
+    class Packet(SvObject):
+        @covergroup
+        def cg(self):
+            def sample(opcode: Bit) -> None:
+                class opcode_cp(CovPoint, source=opcode):
+                    zero = bins[0]
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    packet = Packet()
+    packet.cg.sample(Bit(1, value=0))
+    packet.cg.sample(opcode=Bit(1, value=1))
+    assert packet.cg.instance.snapshot()["opcode_cp"] == {
+        "hits": {"zero": 1}, "illegal_hits": {}, "samples": 2,
+    }
+
+
 def test_array_points_freeze_to_fixed_slots_and_skip_missing_dynamic_elements():
     class Packet(SvObject):
         values = DynArray(Bit(8))
