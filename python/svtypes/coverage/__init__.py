@@ -1,7 +1,9 @@
 """Private functional-coverage implementation package.
 
-Only the frozen semantic IR is exposed here during the 1.7 implementation
-phase.  The public coverage DSL is introduced by a later milestone.
+The package exposes the 1.8 Python coverage core: frozen declaration IR,
+source-only DSL compilation, embedded runtime instances, evaluation, and the
+in-memory database.  SystemVerilog rendering and simulator parity follow in
+the 1.9 milestone.
 """
 
 from .ir import (
