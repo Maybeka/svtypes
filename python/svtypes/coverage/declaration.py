@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from typing import Any, Callable, Generic, TypeVar, overload
 
 from ..errors import CoverageError
 from .canonical import semantic_digest
-from .ir import CoverageIR
+from .ir import CoverageBinIR, CoverageIR, CoveragePointIR
 
 
 T = TypeVar("T")
@@ -75,13 +75,18 @@ class CoverGroupInstance:
     constructor_actuals: tuple[Any, ...]
     constructor_named_actuals: tuple[tuple[str, Any], ...]
     runtime: Any = None
+    instance_ir: CoverageIR | None = None
     option: CoverageInstanceOption | None = None
     logical_instance_key: str | None = None
 
     def __post_init__(self) -> None:
         from .evaluator import CoverageRuntime
 
-        self.runtime = CoverageRuntime(self.declaration.ir)
+        bindings = {name: value for name, value in self.constructor_named_actuals}
+        for formal, value in zip(self.declaration.ir.constructor_parameters, self.constructor_actuals):
+            bindings.setdefault(formal.name, value)
+        self.instance_ir = _materialize_ir(self.declaration.ir, bindings)
+        self.runtime = CoverageRuntime(self.instance_ir)
         self.option = CoverageInstanceOption(self.declaration.ir.options)
 
     def sample(self, *args: Any, **kwargs: Any) -> None:
@@ -149,7 +154,8 @@ class CoverGroupInstance:
 
     def snapshot_document(self) -> dict[str, Any]:
         point_definitions = {}
-        for point in self.declaration.ir.points:
+        assert self.instance_ir is not None
+        for point in self.instance_ir.points:
             options = dict(point.options)
             point_definitions[point.name] = {
                 "at_least": int(options.get("at_least", 1)),
@@ -370,3 +376,29 @@ def _layout_value(value: Any) -> Any:
     if isinstance(value, tuple):
         return [_layout_value(item) for item in value]
     raise CoverageError(f"coverage constructor binding {type(value).__name__} cannot form a stable instance layout")
+
+
+def _materialize_value(value: Any, bindings: dict[str, Any]) -> Any:
+    if isinstance(value, dict):
+        if value.get("kind") == "name" and value.get("name") in bindings:
+            return {"kind": "constant", "value": _layout_value(bindings[value["name"]])}
+        return {key: _materialize_value(item, bindings) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_materialize_value(item, bindings) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_materialize_value(item, bindings) for item in value)
+    return value
+
+
+def _materialize_ir(template: CoverageIR, bindings: dict[str, Any]) -> CoverageIR:
+    """Freeze constructor actuals into the per-instance evaluator template."""
+    points = tuple(
+        replace(
+            point,
+            expression=_materialize_value(point.expression, bindings),
+            iff=_materialize_value(point.iff, bindings),
+            bins=tuple(replace(bin_, selector=_materialize_value(bin_.selector, bindings)) for bin_ in point.bins),
+        )
+        for point in template.points
+    )
+    return replace(template, points=points)

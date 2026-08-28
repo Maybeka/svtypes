@@ -261,6 +261,30 @@ def test_coverage_sample_retains_at_most_three_case_sources_for_normal_and_illeg
     assert result["illegal_source_ids"] == {"reserved": ["x", "y", "z"]}
 
 
+def test_cover_input_materializes_instance_bin_selectors_without_changing_declaration_digest():
+    class Packet(SvObject):
+        opcode = Bit(3)
+
+        @covergroup
+        def cg(self, limit: CoverInput[int]):
+            class opcode_cp(CovPoint, source=self.opcode):
+                limited = bins[0:limit]
+
+        def __init__(self, limit: int):
+            super().__init__()
+            self.cg.instantiate(limit)
+
+    narrow = Packet(1)
+    wide = Packet(3)
+    narrow.opcode.value = wide.opcode.value = 2
+    narrow.cg.sample()
+    wide.cg.sample()
+    assert narrow.cg.instance.snapshot()["opcode_cp"]["hits"] == {}
+    assert wide.cg.instance.snapshot()["opcode_cp"]["hits"] == {"limited": 1}
+    assert narrow.cg.instance.declaration.ir.declaration_semantic_digest == wide.cg.instance.declaration.ir.declaration_semantic_digest
+    assert narrow.cg.instance.instance_layout_digest != wide.cg.instance.instance_layout_digest
+
+
 def test_array_points_freeze_to_fixed_slots_and_skip_missing_dynamic_elements():
     class Packet(SvObject):
         values = DynArray(Bit(8))
