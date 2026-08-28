@@ -3,7 +3,7 @@ from copy import deepcopy
 import pytest
 
 from svtypes import Bit, CoverageDatabase, CoverageError, CoverGroupOption, CoverGroupTypeOption, CoverInput, SvObject, covergroup
-from svtypes.coverage import CovPoint, bins
+from svtypes.coverage import CovPoint, bins, illegal_bins
 
 
 class DatabasePacket(SvObject):
@@ -173,3 +173,32 @@ def test_database_merge_unions_case_sources_without_changing_counts() -> None:
     point = left.snapshot_document()["records"][0]["points"]["code_cp"]
     assert point["hits"] == {"low": 2}
     assert point["source_ids"] == {"low": ["first", "second"]}
+
+
+def test_per_instance_illegal_hits_remain_separate_by_logical_key() -> None:
+    class Packet(SvObject):
+        code = Bit(2)
+
+        @covergroup
+        def cg(self):
+            class option(CoverGroupOption):
+                per_instance = 1
+
+            class code_cp(CovPoint, source=self.code):
+                reserved = illegal_bins[3]
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    database = CoverageDatabase()
+    for key, samples in (("dut.a", 1), ("dut.b", 2)):
+        packet = Packet()
+        packet.cg.bind_logical_instance(key)
+        packet.code.value = 3
+        for _ in range(samples):
+            packet.cg.sample()
+        database.record(packet.cg.instance)
+    records = {record["logical_instance_key"]: record for record in database.snapshot_document()["records"]}
+    assert records["dut.a"]["points"]["code_cp"]["illegal_hits"] == {"reserved": 1}
+    assert records["dut.b"]["points"]["code_cp"]["illegal_hits"] == {"reserved": 2}
