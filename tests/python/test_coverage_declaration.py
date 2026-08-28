@@ -103,3 +103,17 @@ def test_coverinput_builtin_type_mismatch_is_rejected_at_instantiate():
 
     with pytest.raises(CoverageError, match="expects int"):
         Packet()
+
+
+def test_coverinput_resolved_svtype_class_mismatch_is_rejected_at_instantiate():
+    class Packet(SvObject):
+        @covergroup
+        def cg(self, limit: CoverInput[Bit]):
+            pass
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate(1)
+
+    with pytest.raises(CoverageError, match="expects Bit"):
+        Packet()

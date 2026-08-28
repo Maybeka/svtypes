@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import json
-from typing import Any, Callable, Generic, TypeVar, overload
+from typing import Any, Callable, Generic, TypeVar, get_args, get_type_hints, overload
 
 from ..errors import CoverageError
 from .canonical import semantic_digest
@@ -291,7 +291,7 @@ class BoundCoverGroup:
             for index, formal in enumerate(formals)
         }
         for formal in formals:
-            _validate_cover_input_actual(formal.name, formal.type_name, resolved_actuals[formal.name])
+            _validate_cover_input_actual(self._declaration, formal.name, formal.type_name, resolved_actuals[formal.name])
         self._instance = CoverGroupInstance(
             declaration=self._declaration,
             host=self._host,
@@ -437,12 +437,21 @@ def _layout_value(value: Any) -> Any:
     raise CoverageError(f"coverage constructor binding {type(value).__name__} cannot form a stable instance layout")
 
 
-def _validate_cover_input_actual(name: str, type_name: str, value: Any) -> None:
+def _validate_cover_input_actual(declaration: Any, name: str, type_name: str, value: Any) -> None:
     """Validate the builtin type forms that have stable Python counterparts."""
     if not type_name.startswith("CoverInput[") or not type_name.endswith("]"):
         return
     target = type_name[len("CoverInput["):-1].strip()
     expected = {"int": int, "str": str, "bool": bool, "float": float}.get(target)
+    if expected is None:
+        try:
+            annotation = get_type_hints(declaration.function).get(name)
+            resolved = get_args(annotation)
+            candidate = resolved[0] if len(resolved) == 1 else None
+            if isinstance(candidate, type):
+                expected = candidate
+        except (NameError, TypeError):
+            pass
     if expected is None:
         return
     valid = isinstance(value, expected) and not (expected is int and isinstance(value, bool))
