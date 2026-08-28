@@ -21,6 +21,7 @@ def test_multifile_generator_writes_and_checks_deterministic_artifacts(tmp_path)
 
     assert set(first.written) == {
         "generation_test.hpp",
+        "generation_test.coverage-manifest.json",
         "generation_test.schema.json",
         "generation_test.sv",
         "svtypes-manifest.json",
@@ -38,6 +39,7 @@ def test_multifile_generator_writes_and_checks_deterministic_artifacts(tmp_path)
     assert manifest["encoding_fingerprints"]
     assert {entry["path"] for entry in manifest["artifacts"]} == {
         "generation_test.hpp",
+        "generation_test.coverage-manifest.json",
         "generation_test.schema.json",
         "generation_test.sv",
     }

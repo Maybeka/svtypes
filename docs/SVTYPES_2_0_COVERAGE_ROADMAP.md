@@ -62,7 +62,7 @@ Python coverage declaration
        │      └──► UCIS XML adapter ────┘
        ▼
  deterministic semantic conformance vectors
- codec-synced dual-sample runs (Python DB ↔ SystemVerilog target named bins)
+ codec-synced dual-sample runs (Python DB ↔ target named bins)
 ```
 
 `CoverageIR` 是唯一的声明语义来源。**覆盖组类型 ID**（`covergroup_type_id`）是 canonical
@@ -105,7 +105,7 @@ concrete tuple queue 只属于实例 bin 布局，绝不进入声明语义摘要
    累积结果，provenance 和 renderer/报告标签只服务诊断与观测，不改变声明兼容性。
 5. **遵循 SV 的计算边界。** 类型覆盖率（type coverage）与实例覆盖率（instance coverage）、`merge_instances` 与
    `per_instance` 分别按 SV 语义处理；只有已明确记录的 SvTypes 取舍（例如
-   `cross_retain_auto_bins=0`）可以偏离，且必须由 Python/SystemVerilog target 对拍证明。
+   `cross_retain_auto_bins=0`）可以偏离，且必须由 Python/target 对拍证明。
 
 语义部分进入独立、可序列化的 **coverage declaration document**；它以覆盖组类型 ID
 和 canonical `sample_type` 引用对象类型，但不是该类型的对象 source schema，也不参与对象的
@@ -145,9 +145,9 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
 
 ## 5. DSL 与数据库设计约束
 
-本节定义实现与验证的约束。原标为“1.7 冻结”的条目现已在本节冻结；其 SystemVerilog target 微型 fixture
+本节定义实现与验证的约束。原标为“1.7 冻结”的条目现已在本节冻结；其 target 微型 fixture
 是实现发布门槛，必须逐项证明下述已定语义，不得再把 fixture 结果用来改变公开语义。仅
-§5.12 的 transition 历史推进保留为 1.8 的 SystemVerilog target 对照与文档更新事项，不是 1.7 冻结门槛。
+§5.12 的 transition 历史推进保留为 1.8 的 target 对照与文档更新事项，不是 1.7 冻结门槛。
 
 1. **声明载体（1.7 已冻结）**：覆盖率只可声明在 `SvObject` 子类内部。`@covergroup`
    修饰一个实例函数；函数名是覆盖组的稳定声明名及同名 embedded 成员名。编译器只解析该函数的受限 declaration AST，
@@ -285,13 +285,13 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
    - `illegal_bins_error` 及其他 simulator 私有 option：illegal hit 一律作为可报告数据库事实，
      失败策略由 SvTypes test/report policy 决定，不绑定某一仿真器的 fatal/warning 开关。
    - **泛化过程式 option 设置：**不支持。IEEE 1800 允许一部分实例/类型 option 在运行期赋值，
-     但这会要求为不同的 option 维持不同的重算与数据库保留策略；并且 SystemVerilog target 已验证为
+     但这会要求为不同的 option 维持不同的重算与数据库保留策略；配置 target 的观测为
      `at_least` 接受实例化后赋值却不使其生效、且不支持 `type_option` 的 scope-resolution
      访问。2.0 只保留上文定义的 `name`、`comment`、`set_inst_name()` 报告元数据更新；其他
      实例化后赋值一律报 `SVT-COV-OPTION-FROZEN`，不得静默接受。
 
    所有未列出的字段同样不是 2.0 DSL。字段的默认值、合法声明层级和覆盖率公式在实现前由
-   Python/SystemVerilog target fixture 锁定；未知字段必须在 freeze 失败，不能静默忽略。`CoverGroupOption.auto_bin_max` 是 group 的缺省值，
+   Python/target fixture 锁定；未知字段必须在 freeze 失败，不能静默忽略。`CoverGroupOption.auto_bin_max` 是 group 的缺省值，
    `CovPointOption.auto_bin_max` 可逐 point 覆盖；有效值为正的声明期整数，未写时为 SV 的 `64`，
    只在 point 未声明 normal/default/transition bins 时生效。freeze 按 LRM 计算
    automatic bins：enum 每个枚举值一个；其他 integral point 创建
@@ -342,7 +342,13 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
    tuple 个数计入独立的实例化资源预算；它不按 tuple 数消耗 §5.5 的 normal cross-bin
    限额。声明 IR 只保存函数 AST/调用形，实例 bin 布局保存已产生的 concrete tuple queue 与其 bin 名；SV renderer 发射同形的
    `function CrossQueueType ...` 和 `bins name = function(...);` / `ignore_bins name = function(...);`，
-   并以 SystemVerilog target fixture 验证 Python 与 SV 对同一 binding 的 bin 内容和 coverage 相等。
+   并以 target conformance fixture 验证 Python 与 SV 对同一 binding 的 bin 内容和 coverage 相等。
+
+   **当前目标能力门：** 配置的 SystemVerilog conformance target 不能识别 `CrossQueueType`，因而
+   不能接受 IEEE 1800-2023 的上述函数形式。Python runtime 仍执行受限解释器；请求该 target 时
+   必须以 `SVT-COV-SV-BACKEND` 在生成期失败，绝不能发射无效或退化的 SV。待配置支持此 LRM 构造的
+   target 后，再解除该 gate 并完成本段规定的 Python/SV queue 对拍；
+   这不改变 Python DSL、IR 或实例布局语义。
 
    在 declaration AST 中，`CovPointArray[index]` 只接受一个非负的 Python `int`，并规范化为
    不可执行的 `SlotRef`；它只能出现在 `Cross.members`，其 index 必须小于该 array 的 `length`。
@@ -413,7 +419,7 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
    **65,536** 个 normal cross bin；同一 covergroup type 最多 **1,048,576** 个 normal cross bin。
    freeze 先以成员可计分 bin（normal 加 `default`）的有限笛卡尔积建立候选 tuple，再应用以下规则。
    三项上限均在 Python 与 SV renderer 前检查，超限必须以 `SVT-COV-CROSS-LIMIT` 失败；不得静默
-   截断、删减或改变 bin 集合。该资源保护边界不是 SV 语义上限：SystemVerilog target 已验证可生成并报告
+   截断、删减或改变 bin 集合。该资源保护边界不是 SV 语义上限：target 已验证可生成并报告
    1,048,576 个自动 cross bin，但 SvTypes 仍须为 Python core、数据库与生成后端提供确定的预算。
 
    - 没有 cross 内的 `bins[...]` 时，完整候选积为自动 normal bins；`CrossOption.cross_retain_auto_bins` 不改变此
@@ -428,26 +434,26 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
    `CrossQueueType` 返回的 queue 不等同于成员 bin 名的笛卡尔候选。每个以 queue 声明的具名
    `bins[...]` 或 `ignore_bins[...]` 是**一个** cross bin；queue 中的每个 concrete value tuple 只是
    该 bin 的成员资格，不会各自创造 cross bin。其长度受
-   实例化资源预算限制，超出即在实例化失败。该预算的缺省上限、可否声明更低上限及超限诊断必须在
-   1.9 的 `CrossQueueType` 公开语义冻结时确定，不能由环境或实现悄悄改变。完成成员 point 的 `iff`、ignore/illegal
+   实例化资源预算限制：每个 queue 至多 **65,536** 个 tuple，超出以
+   `SVT-COV-CROSS-QUEUE-LIMIT` 失败；该固定上限不允许环境覆盖或静默截断。完成成员 point 的 `iff`、ignore/illegal
    分类后，queue normal bin 按归一化 sample 值判断命中，并可与普通 normal tuple bin 重叠而全部命中；
    queue ignore bin 优先，命中时按 §5.9 跳过所有 normal cross bin。queue bin 的名字、函数调用形和
    实例化后 tuple 内容分别进入声明模板或实例 bin 布局；后者不进入声明语义摘要。
 
    自动 bin 的 semantic ID 由覆盖组类型 ID、cross 显式名称和有序 `(member_point_id,
-   member_bin_id)` tuple 规范化导出；其 SV/coverage reporter 可见名称由 observation manifest 映射，不是用户
+   member_bin_id)` tuple 规范化导出；其 SV/observation 可见名称由 manifest 映射，不是用户
    API 或 merge 键。重复 selector、同名 cross bin、同一 tuple 被多个具名 normal cross bin
    选中，或 normal/ignore selector 的成员、顺序、arity 不匹配，均为 freeze 错误。正常 cross bin 的
    重叠不因其来源是静态 selector 还是 `CrossQueueType` 而改变：均按 SV 的正常 bin 规则分别命中并
    分别计数。生成 SV 时，
    renderer 必须显式实现上述 `cross_retain_auto_bins` 语义：目标 SystemVerilog 支持该 option 时
    发射对应 option；否则以确定性显式 `ignore_bins`/normal-bin 展开得到相同的存活集合。任一策略
-   不能由目标 SystemVerilog target 等价表达时，freeze 失败，不得回退为 SystemVerilog target 的默认自动保留行为。
+   不能由目标等价表达时，freeze 失败，不得回退为目标的默认自动保留行为。
    完成筛选后每一个存活 tuple 都是一个具名或 manifest 映射的确定性 cross bin，集合、成员顺序、
    `cross_retain_auto_bins` 和 selector 结果进入声明语义摘要；用户必须以 cross 内 `bins[...]` 和
    `cross_retain_auto_bins` 明确控制集合，不能依赖运行时未命中绕过限额。
 6. **非法/豁免语义**：illegal hit 是数据库事实；waiver/exclusion 是单独、可审计的元数据，
-   不能删除原始 hit。illegal 对 coverage 分子/分母的影响完全遵循 §5.14 的 LRM/SystemVerilog target 对照结果。
+   不能删除原始 hit。illegal 对 coverage 分子/分母的影响完全遵循 §5.14 的 LRM/target 对照结果。
 7. **数组式覆盖率**：覆盖率形状一律定长。动态数组/队列只提供采样存在性：采不到的下标
    跳过，不扩展覆盖率数组。`class cov_a(CovPointArray, source=self.a, length=4):` 在 freeze 时
    展开为四个独立、可报告的 canonical point node：`cov_a[0]`、`cov_a[1]`、`cov_a[2]` 和
@@ -474,7 +480,7 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
    不含 `CrossQueueType` 的存活集合在 declaration freeze 时固定；含 `CrossQueueType` 时，静态部分在
    freeze 时固定，queue bin 及其成员资格在该覆盖组实例 `.instantiate(...)` 后固定，二者共同构成该
    覆盖组实例的 cross 分母宇宙。被 `select` 排除、`ignore` 排除、成员非法或未采样导致不可达的
-   tuple 都不在分母。cross 的 `at_least`、weight、goal 按 §5.14 应用于这些 bin。SystemVerilog target fixture 必须最少覆盖：成员 iff false、cross iff false、
+   tuple 都不在分母。cross 的 `at_least`、weight、goal 按 §5.14 应用于这些 bin。target fixture 必须最少覆盖：成员 iff false、cross iff false、
    ignore、illegal、default、两个重叠 normal bin、`select`、`ignore` 和多成员组合，并以
    §5.15 的具名 hit/百分比断言此顺序。
 10. **transition 长度 K**：见 §4。默认 K=8，硬上限 16；声明超过上限必须报错。CoverageIR
@@ -482,13 +488,13 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
     声明语义摘要。仅改默认/限额而既有声明的实际展开结果不变时，该覆盖组类型仍可 merge。
 11. **一次 sample 的容器/槽位计数**：选择 A。一次用户 `sample()` 使 group/instance
     `sample_count` +1；每个有效元素/槽仅按命中情况增加 bin hit。槽位 `i >= size()` 或 `iff`
-    为假时不加 hit、不加该槽 sample、不创新 bin。SystemVerilog target 对拍使用测试专用的用户 sample 调用
+    为假时不加 hit、不加该槽 sample、不创新 bin。target 对拍使用测试专用的用户 sample 调用
     计数器，不把循环 `cg.sample()` 次数作为公开 `sample_count`。
 12. **transition 历史推进（1.8 更新项）**：按 SystemVerilog LRM 的已定义语义实现。LRM 对
     transition bin 与 bin 级 `iff` 的交互未给出足以消除实现差异的完整规则；1.8 必须以项目目标
-    版本 SystemVerilog target 的微型对照测试补全本项，并同步更新本文，使其成为 Python evaluator 与生成 SV 的
+    target 的微型对照测试补全本项，并同步更新本文，使其成为 Python evaluator 与生成 SV 的
     共同规范。首次 sample 不得命中长度 ≥2 的 transition；每种 `iff`、default、ignore、illegal
-    与 X/Z 情形均必须有 SystemVerilog target 对照用例。它不阻塞 1.7 的声明语法冻结，但在该 1.8 证据完成前不得
+    与 X/Z 情形均必须有 target 对照用例。它不阻塞 1.7 的声明语法冻结，但在该 1.8 证据完成前不得
     作为已完成的公开 transition 行为承诺。
 13. **bin 值比较与规范化（1.7 已冻结）**：freeze 从 point 的静态结果类型取得唯一比较域：
     2-state integral 为 `(width, signedness)`，4-state packed 为 `(width, four_state)`，enum
@@ -504,15 +510,15 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
     这也适用于由 `Color.R` 和同型 `0` 定义的不同具名 bin，不采用 SV `unique` 或 first-match
     规则。ignore/illegal 内部或彼此重叠不改变其优先级；同一分类的多个 illegal bin 各自记录
     hit。每 point 至多一个 default bin，且 default 不携带 values。IR 按比较域和规范化值而非
-    Python repr/enum member 名编码；transition 的每一项复用完全相同的比较与分类规则。SystemVerilog target
+    Python repr/enum member 名编码；transition 的每一项复用完全相同的比较与分类规则。target
     fixture 必须覆盖 enum/同型整数重叠、normal range/set 重叠、ignore-vs-illegal、default
     residual、X/Z singleton 与 X/Z range 不命中。
-14. **point/group 覆盖率公式**：按 SystemVerilog LRM §19.11 实现，并用目标版本 SystemVerilog target 对照。
+14. **point/group 覆盖率公式**：按 SystemVerilog LRM §19.11 实现，并用 target 对照。
     必须覆盖 point、cross、instance、type 的分子/分母、`at_least`、weight、goal、
     ignore/illegal/default、零分母与 `merge_instances`；保存原始 bin hit count。累计 bin 的
-    covered 判定采用参与累计实例的最大 `at_least` 值。**LRM 条文与目标版本 SystemVerilog target 冲突时，
-    以该 SystemVerilog target 对照结果为 2.0 公开语义，并在规格中记录偏差**；不得同时声称「完全按 LRM」
-    和「以 SystemVerilog target 为准」而不列出差异。
+    covered 判定采用参与累计实例的最大 `at_least` 值。**LRM 条文与 target 观测冲突时，
+    以 LRM 为公开语义，并把 target 的能力或行为差异记录为 capability gate**；不得把 target
+    差异反向写成 SvTypes 语义。
     **`CoverGroupOption.per_instance` 缺省为 0（LRM）。** `merge_instances=0`（缺省）时类型
     覆盖率是各实例覆盖率的加权平均，类型层没有统一的 point/cross bin 表；`merge_instances=1` 时
     类型覆盖率才是按 bin 名合并的实例 bin 宇宙。`per_instance=1` 额外保存并报告各实例覆盖率；
@@ -520,20 +526,24 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
     必须依此区分类型级百分比与类型级 bin hit，不能在加权平均情形伪造统一 type-bin count。renderer 显式发射相关 option，不依赖
     仿真器缺省或全局覆盖。
 15. **SV 侧对拍观测协议**（协议已定）：
-    1.9 的 SystemVerilog target 对拍以 SystemVerilog target coverage database 经 `coverage_reporter -format text` 生成的报告为观测输入。
-    coverage reporter parser 仅是锁定 SystemVerilog target 版本和报告 fixture 的测试基础设施，不是 SvTypes 公开 API、
-    运行时数据库格式或 UCIS 替代品；1.10 不得用它代替 UCIS XML interchange。
+    1.9 的 target 对拍只消费由外部 target adapter 产生的**规范化 observation JSON**。adapter
+    不属于 SvTypes 公开 API、运行时数据库格式或 UCIS 替代品；它的具体启动、数据库读取和报告解析
+    均不进入本仓库。1.10 不得以该测试观测接口代替 UCIS XML interchange。
+    observation JSON 的稳定测试形状为 `{"items": {label: {"hits": {bin: count},
+    "illegal_hits": {bin: count}}}}`；`ignore` 不在其中。生成期 manifest 提供每个 `label`
+    的语义映射；per-instance 用例另提供 `logical_instance_key`、实例布局摘要和由 harness 显式给出的
+    `target_label`，不得从 handle、对象编号或报告名称推导。
     - **按汇总方式选择对拍证据。** `merge_instances=0`（缺省）时，类型覆盖率是实例覆盖率的
       加权平均，类型层没有统一 bin 表；对拍该百分比与非法命中，并以单实例 fixture 的具名 bin hit
       证明分类规则。`merge_instances=1` 时，类型覆盖率按 bin 名并集汇总；对拍类型层具名 bin
-      hit、非法命中和 §5.14 覆盖率。两种方式都不要求 coverage reporter 把类型覆盖率拆成实例覆盖率。
+      hit、非法命中和 §5.14 覆盖率。两种方式都不要求 target 把类型覆盖率拆成实例覆盖率。
     - **`CoverGroupOption.per_instance = 1` 的用例按实例覆盖率对拍。** 仅这些用例打开该选项。
-      Python 解析后的逻辑实例键与 coverage reporter instance 标签经 observation manifest 一一对应，
+      Python 解析后的逻辑实例键与 target observation instance 标签经 observation manifest 一一对应，
       不要求字符串逐字相同。key 缺失、重复注册、一个 key 对应多个 SV 覆盖组实例，或一侧有
       键而另一侧没有，均为测试/绑定失败，不能改用类型覆盖率、SV handle 文本或对象
       编号凑合。
     - **运行时实例绑定（仅 instance coverage 用例）。** manifest 只定义生成单元内
-      「逻辑实例键 ↔ SV 发射/coverage reporter 标签」的规则。每个覆盖组实例在**首次 sample
+      「逻辑实例键 ↔ SV 发射/observation 标签」的规则。每个覆盖组实例在**首次 sample
       之前**必须由测试 harness 用独立于对象 codec 的运行时元数据，把同一逻辑
       实例键注册到 Python DB 与 SV 覆盖组实例的创建/命名路径；之后该实例上的多次
       `sample()` 复用这次绑定，不必每个对象再绑一次。
@@ -542,29 +552,29 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
         CoverageIR 声明语义摘要。
       - pack/unpack 同步的是 sample 的对象值，不是 coverage instance。transition 历史、
         `sample_count` 和 bin hit 挂在已绑定的覆盖组实例上，不随每个被同步对象新建实例。
-      - 一次 SystemVerilog target run 可以包含多个覆盖组实例；coverage reporter 报告按 manifest 分到各逻辑实例键，
+      - 一次 target run 可以包含多个覆盖组实例；observation JSON 按 manifest 分到各逻辑实例键，
         不得把不同键的实例覆盖率合并比较。
     - **Bin/instance 观测键由 codegen manifest 关联，不要求三套字符串逐字相同。**
-      用户名称、编码后的 SV identifier 与 coverage reporter 展示文本（如 cross 的 `bin_a,bin_b`）可以
+      用户名称、编码后的 SV identifier 与 adapter observation 标签（如 cross 的 `bin_a,bin_b`）可以
       不同。CoverageIR 与 SV renderer 必须在生成 SV 的同时确定性写出一份 observation
       manifest（与生成代码同产物、同一次生成，禁止另行手维护或跨版本沿用）。manifest
-      把 Python semantic ID、SV 发射名称、预期 coverage reporter instance/coverpoint/bin/cross 标签
-      做成生成单元内的一一对应；coverage reporter parser 只消费这份随代码产生的 manifest。
-      - 任一侧出现歧义或碰撞（同一 semantic ID 对应多个 coverage reporter 标签、或反之）为生成期错误。
-      - coverage reporter 中出现的具名 instance/bin（ignore 除外）若不在 manifest 中，或 manifest 中的
-        可比对项在 coverage reporter 中缺失，测试失败（生成/观测不完整），不得跳过或猜测。
-      - manifest 引用 CoverageIR 声明语义摘要，但其 renderer/coverage reporter 格式字段**不**参与
-        声明身份或 merge。coverage reporter 标签钉在锁定的 SystemVerilog target/`coverage_reporter` 版本上；报告格式变化是
-        测试基础设施更新，不是 CoverageIR 变更。
+      把 Python semantic ID、SV 发射名称、预期 observation instance/coverpoint/bin/cross 标签
+      做成生成单元内的一一对应；adapter 只消费这份随代码产生的 manifest。
+      - 任一侧出现歧义或碰撞（同一 semantic ID 对应多个 observation 标签、或反之）为生成期错误。
+      - observation 中出现的具名 instance/bin（ignore 除外）若不在 manifest 中，或 manifest 中的
+        可比对项在 observation 中缺失，测试失败（生成/观测不完整），不得跳过或猜测。
+      - manifest 引用 CoverageIR 声明语义摘要，但其 renderer/adapter 字段**不**参与
+        声明身份或 merge。adapter 标签是测试观测协议字段；adapter 变化是测试基础设施更新，
+        不是 CoverageIR 变更。
       - `default` bin 与过滤后仍存在的具名 cross bin 必须出现在 manifest 的可比对集合中。
     - **Hit 是主证据。** 具名 bin hit 与 illegal count 必须与 Python DB 精确相等。覆盖率
-      百分比用已冻结的 §5.14 在 Python 侧重算，再与 coverage reporter 百分比做固定小数位交叉校验；
+      百分比用已冻结的 §5.14 在 Python 侧重算，再与 target 百分比做固定小数位交叉校验；
       百分比不得代替 hit 计数作为唯一判据。
-    - **Ignore 不向 coverage reporter 要 hit。** coverage reporter 通常不报告 ignore 命中。ignore 只验证：未进入任何
-      具名 bin hit、未进入覆盖率分母；illegal/named hit 仍与 coverage reporter 精确比较。
+    - **Ignore 不向 target observation 要 hit。** ignore 不要求独立命中记录。它只验证：未进入任何
+      具名 bin hit、未进入覆盖率分母；illegal/named hit 仍与 target 精确比较。
     - **`sample_count`：** §5.11 选择 A，生成 SV 必须另行记录测试专用的「用户 sample 调用数」
       并纳入观测输出；该计数器不是 CoverageDatabase 字段，也不是公开 API。
-    - **`case_id` 与有限来源表**仍只由 Python DB 维护，不从 SystemVerilog target 报告恢复。
+    - **`case_id` 与有限来源表**仍只由 Python DB 维护，不从 target observation 恢复。
 
 ## 6. CoverageDatabase 与文件格式
 
@@ -647,10 +657,10 @@ UCIS 1.0 定义覆盖数据库抽象、API 和 XML interchange；SvTypes 不在 
    保留覆盖组类型、scope、coverpoint、bin、weight、goal 与 count。
 3. UCIS XML → SvTypes database 的受控导入；不能表示的属性保存在 extension/loss report，
    不伪造等价。
-4. SystemVerilog target 等仿真器的 UCIS/coverage export 作为集成验证输入；其私有数据库仍由仿真器拥有。
+4. 外部 SystemVerilog target 的 UCIS/coverage export 可作为集成验证输入；其私有数据库仍由 target 拥有。
 
-1.9 为 Python/SV parity 读取 SystemVerilog target 的 coverage reporter 文本报告；这只是测试观测通道。1.10 的 UCIS XML
-import/export 才是 SvTypes 对外的覆盖率 interchange 能力，不能以 coverage reporter 报告 parser 取代。
+1.9 为 Python/SV parity 读取外部 adapter 的规范化 observation JSON；这只是测试观测通道。1.10 的 UCIS XML
+import/export 才是 SvTypes 对外的覆盖率 interchange 能力，不能以 adapter 取代。
 
 UCIS 的 XML interchange 与 API 是标准提供的互操作路径，且标准支持跨 run 合并；这正是
 SvTypes 采用独立核心 DB 加适配层、而非直接定义为某个 simulator DB 的原因。
@@ -659,32 +669,32 @@ SvTypes 采用独立核心 DB 加适配层、而非直接定义为某个 simulat
 
 | 里程碑 | 交付 | 完成门槛 |
 |---|---|---|
-| 1.7 设计冻结 | coverage DSL、CoverageIR、bin ID/实例身份、数据库和 UCIS 映射规格；完成 §2 的 `cov` 自动声明迁移边界，并冻结 §5.1、§5.2、§5.5、§5.9、§5.13；交付不可变 IR、自动 `cov` 编译和静态 cross 限额基础 | 冻结条款均有对应的 Python/SystemVerilog target fixture 计划；fixture 在承载其运行时或 renderer 能力的后续里程碑成为交付门槛。未冻结构造不实现公开 DSL |
+| 1.7 设计冻结 | coverage DSL、CoverageIR、bin ID/实例身份、数据库和 UCIS 映射规格；完成 §2 的 `cov` 自动声明迁移边界，并冻结 §5.1、§5.2、§5.5、§5.9、§5.13；交付不可变 IR、自动 `cov` 编译和静态 cross 限额基础 | 冻结条款均有对应的 Python/target fixture 计划；fixture 在承载其运行时或 renderer 能力的后续里程碑成为交付门槛。未冻结构造不实现公开 DSL |
 | 1.8 Python core | CoverageIR、表达式 evaluator、embedded covergroup/point/bins/iff、automatic/array bins、宿主 `__init__` 内的 embedded `.instantiate(...)` `CoverInput` 实例化、静态成员 `CoverRef` binding、定长覆盖率数组与值域 point、有界 transition（非数组式）、内存 DB、有限用例来源、确定性 JSON test snapshot 与可选 sample 日志 | 单元测试覆盖命中、未命中、automatic bins 的 enum/整除/余数/XZ、array bins 的 `split()` / `split(count)` / empty bin、`CoverInput` snapshot 与不同 actual 的实例 bin 布局、`CoverInput` 不改变声明语义摘要、`CoverRef` 当前值读取、embedded covergroup 可不实例化，或仅在宿主 `__init__` 中以 `.instantiate(...)` 构造一次、未实例化成员方法调用失败、覆盖组内置方法、illegal、ignore、goal、数组槽跳过、定长 transition 与 `[*m:n]` 的命中/未命中、数组式声明带 transition 的声明期失败、来源额满、声明语义摘要相同而 provenance 不同的 merge、加权类型汇总与按 bin 名合并的类型结果、`CoverGroupOption.per_instance = 1` 时 illegal 按覆盖组实例分开、实例覆盖率用例下逻辑实例键缺失/重复注册失败、同一逻辑实例键而实例布局摘要不同的 merge 拒绝 |
-| 1.9 cross 与 SV parity | cross、`CrossQueueType` 函数、实例策略、SV renderer、生成覆盖组、observation manifest、Python/SV conformance vectors、编解码同步双侧采样 | 固定 sample 向量下按 manifest 将 coverage reporter 具名 bin/illegal 与 Python DB 精确对拍，coverage 百分比按 §5.14 交叉校验；`CrossQueueType` 的实例化后 concrete tuple queue、bin 名和 coverage 必须与生成 SV 相等；再用 SvTypes pack/unpack 把同一批对象同步到两侧，两边同时 `sample()`，大量样本后同样对拍（ignore 只验证未进 named hit/分母）；按 §5.15 的汇总方式选择 type 或 instance 覆盖率对拍；manifest 缺项或 coverage reporter 多出未映射具名 bin 为失败；生成期拒绝不支持语义 |
-| 1.10 UCIS bridge | 公开二进制 coverage database chunk/schema/version、UCIS XML export/import 子集、loss report、SystemVerilog target 导出集成验证 | 二进制库 round-trip 与版本兼容策略、UCIS round-trip、跨 run merge、外部 UCIS 样本导入和不兼容诊断 |
-| 2.0 RC | 性能基准、API/schema 冻结、文档/examples、全量 Python/SystemVerilog target 回归 | 无未规划的 2.0 承诺；所有受支持语义有 Python 和 SystemVerilog target 证据 |
+| 1.9 cross 与 SV parity | cross、`CrossQueueType` 函数、实例策略、SV renderer、生成覆盖组、observation manifest、Python/SV conformance vectors、编解码同步双侧采样 | 固定 sample 向量下按 manifest 将 target 可观测的具名 bin/illegal 与 Python DB 精确对拍，coverage 百分比按 §5.14 交叉校验；`CrossQueueType` 的实例化后 concrete tuple queue、bin 名和 coverage 必须与生成 SV 相等；再用 SvTypes pack/unpack 把同一批对象同步到两侧，两边同时 `sample()`，大量样本后同样对拍（ignore 只验证未进 named hit/分母）；按 §5.15 的汇总方式选择 type 或 instance 覆盖率对拍；manifest 缺项或 target 多出未映射具名 bin 为失败；生成期拒绝不支持语义。**若 LRM 明确允许而当前 target 不能生成或观测某构造，路线图必须逐项记录 capability gate；Python 语义可交付，但该构造不得宣称 target parity 已完成。** |
+| 1.10 UCIS bridge | 公开二进制 coverage database chunk/schema/version、UCIS XML export/import 子集、loss report、target 导出集成验证 | 二进制库 round-trip 与版本兼容策略、UCIS round-trip、跨 run merge、外部 UCIS 样本导入和不兼容诊断 |
+| 2.0 RC | 性能基准、API/schema 冻结、文档/examples、全量 Python/target 回归 | 无未规划的 2.0 承诺；所有受支持语义有 Python 和 target 证据 |
 | 2.0.0 | 随机与功能覆盖率终版 | 仅后续 bug fix，不再扩张功能覆盖率契约 |
 
 ## 9. 验证策略
 
 每个 coverage 构造必须有同一批显式 sample vector：Python evaluator 产生期望的 per-bin hit
-count 与 coverage；生成 SV 在 SystemVerilog target 采样同一 vector，检查 named point/cross 的 hit/coverage。
+count 与 coverage；生成 SV 在 target 采样同一 vector，检查 named point/cross 的 hit/coverage。
 UCIS bridge 另检查覆盖组类型 ID/bin ID、count、weight、goal、逻辑实例键和 merge 结果。
 
 除此以外，1.9 必须有**编解码同步双侧采样**：用 SvTypes 已有的 Python↔SV 字节布局，把
-同一批随机或录制对象同步到两侧，Python evaluator 与 SystemVerilog target covergroup **对同一对象序列**
-各自 `sample()`，再比较结果。SystemVerilog target 侧以 §5.15 规定的 coverage reporter 文本报告读取统计；这不是两份
+同一批随机或录制对象同步到两侧，Python evaluator 与 target covergroup **对同一对象序列**
+各自 `sample()`，再比较结果。target 侧以 §5.15 规定的 observation JSON 读取统计；这不是两份
 手写向量各自重放，而是一份刺激、一次同步、两边同时统计。至少覆盖：标量 point、定长槽位
 数组（含 `i >= size()` 跳过）、容器值域 point、有界 transition、`iff`、
 ignore/illegal/`default`、以及 1.9 的 cross。比较以具名 bin hit 和 illegal count 精确
-相等为主；coverage 百分比按 §5.14 在 Python 侧重算后与 coverage reporter 做固定小数位交叉校验；
-`sample_count` 遵循已冻结的 §5.11 与 §5.15 的观测通道；ignore 不要求 coverage reporter 给出 hit，
+相等为主；coverage 百分比按 §5.14 在 Python 侧重算后与 target 做固定小数位交叉校验；
+`sample_count` 遵循已冻结的 §5.11 与 §5.15 的观测通道；ignore 不要求 target 给出 hit，
 只验证未进入具名 bin hit 且未进入覆盖率分母。按 §5.15 的汇总方式比较类型覆盖率；
 `CoverGroupOption.per_instance = 1` 的用例比较实例覆盖率，并在首次 sample 前绑定同一逻辑实例键。对象编解码
 不同步 instance。
-任一侧独有的 named/illegal 命中视为失败。coverage reporter 具名项不在 manifest 中、或 manifest
-可比对项在 coverage reporter 中缺失，同样失败，不得猜测映射。规模上须明显大于手写向量（建议每构造
+任一侧独有的 named/illegal 命中视为失败。target 具名项不在 manifest 中、或 manifest
+可比对项在 target 中缺失，同样失败，不得猜测映射。规模上须明显大于手写向量（建议每构造
 不少于 10⁴ 次 sample，或等价的随机种子批），用于暴露槽位跳过、transition 历史和混宽
 比较等手写向量不容易穷举的路径。同步失败（pack/unpack 不一致）不算 coverage 失败，
 应先报编解码错误。
@@ -701,7 +711,7 @@ ignore/illegal/`default`、以及 1.9 的 cross。比较以具名 bin hit 和 il
 ## 10. 后续验证计划
 
 1.7 的规格门槛已写入 §2、§5.1、§5.2、§5.5、§5.9 与 §5.13。后续实现必须将它们
-各自落实为 CoverageIR / CoverageDatabase 原型测试和以下不可替代的 SystemVerilog target 微型 fixture；每项 fixture
+各自落实为 CoverageIR / CoverageDatabase 原型测试和以下不可替代的 target 微型 fixture；每项 fixture
 在其对应的 1.8 或 1.9 公开能力交付前通过：
 
 - §5.1–§5.2：同一已冻结 declaration 的 Python evaluator 与 SV renderer 使用同一 typed expression
@@ -722,16 +732,16 @@ ignore/illegal/`default`、以及 1.9 的 cross。比较以具名 bin hit 和 il
   value-domain 均形成同一 `svtypes_auto_cov` CoverageIR；`cov=False` 字段不进入默认组。生成 SV 时
   该默认组取代 1.x legacy nested collector，并与显式 `@covergroup` 一同产生 coverage DB/声明语义摘要。
 
-这些 fixture 不得改写已冻结语义；若目标 SystemVerilog target 不能表达或观测该语义，生成器必须在相应公开能力的
+这些 fixture 不得改写已冻结语义；若目标不能表达或观测该语义，生成器必须在相应公开能力的
 交付期拒绝该声明，并将该能力留在未支持集合。`CrossQueueType` 的实例化后 queue、资源预算、bin
-membership 与 SystemVerilog target 对拍属于 §8 的 1.9 cross 交付，不是 1.8 的门槛。1.9 的全面对拍继续按
+membership 与 target 对拍属于 §8 的 1.9 cross 交付，不是 1.8 的门槛。1.9 的全面对拍继续按
 §5.11、§5.14、§5.15 执行。
 
 ## 11. 1.7 实施详细设计
 
 本节把已冻结的 1.7 规格落实为实现工作分解，供进入开发流程使用。它规定模块边界、编译阶段和
 验收顺序，**不新增公开 DSL，也不替代 §3–§6 的语义契约**。实现过程中出现歧义时，依次以本文
-已记录的设计倾向、SV LRM、锁定 SystemVerilog target 版本的最小实测为准；实测只确认观测，不得反向改写已冻结的
+已记录的设计倾向、SV LRM、配置 target 的最小实测为准；实测只确认观测，不得反向改写已冻结的
 身份、merge 或 Python/SV 一致性边界。
 
 ### 11.1 范围、切换与交付切片
@@ -749,7 +759,7 @@ membership 与 SystemVerilog target 对拍属于 §8 的 1.9 cross 交付，不�
    renderer 直接重读 Python 函数体。
 3. **语义原型。** 从同一 CoverageIR 构造 Python evaluator、最小内存数据库视图、SV renderer 和
    declaration document。先完成 §10 所列的 1.7 fixture；未能形成共同 IR 的构造不得进入任一后端。
-4. **1.8/1.9 延后部分。** 完整 runtime API、持久化数据库、cross queue、UCIS 和全面 SystemVerilog target parity
+4. **1.8/1.9 延后部分。** 完整 runtime API、持久化数据库、cross queue、UCIS 和全面 target parity
    仍按 §8 的里程碑实施。1.7 原型可使用测试私有的内存/JSON 载体，但不得把该载体承诺为 1.10 前的
    物理格式。
 
@@ -797,7 +807,7 @@ membership 与 SystemVerilog target 对拍属于 §8 的 1.9 cross 交付，不�
    得到 `declaration_semantic_digest`；同时生成可回读的 definition snapshot。digest 是兼容性索引，
    snapshot 才是报告、diff 和后端重建的依据。
 6. 为每个 point/bin/cross 生成由 type ID、稳定声明路径与 canonical 定义派生的 semantic ID。用户的
-   SV 名称、编码后的 identifier 和 coverage reporter 文本在 renderer 阶段另行映射，不能反向成为 IR ID。
+   SV 名称、编码后的 identifier 和 observation 标签在 renderer 阶段另行映射，不能反向成为 IR ID。
 
 前端应把「语法不在子集」「名称/作用域不合法」「类型不匹配」「资源超过上限」分为不同诊断类别，
 并总是携带 declaration name 和可用的 source span。诊断 code 的精确分配可在实现前登记；已冻结的
@@ -838,7 +848,7 @@ evaluator 的输入必须是「冻结 template IR + instance layout + 一次 sam
 
 SV renderer 消费同一 template IR 和与实例化策略相符的 binding 信息，生成 embedded declaration、
 SV `new(...)` 路径及采样调用。它同时输出 observation manifest，其中记录 Python semantic ID 到 SV
-emitted name 与锁定 coverage reporter 标签的映射。manifest 是 generated artifact：必须与 SV 文本一同重生、同一
+emitted name 与 observation 标签的映射。manifest 是 generated artifact：必须与 SV 文本一同重生、同一
 generation transaction 成功才发布；不得手写、缓存跨版本复用，或作为 declaration digest 的输入。
 
 1.7 原型至少提供可排序的 JSON snapshot，字段顺序和整数/logic 值编码固定，供单元测试比较；该
@@ -879,12 +889,12 @@ canonical SHA-256 serializer，并以单元测试确认 type ID 与声明摘要�
    最小 evaluator/database；用同一 template 验证不同 actual 产生不同布局但相同 declaration digest。
 5. 实现 bins、automatic/array 展开、`iff`、分类优先级和有界 transition，先完成 §5.13 与 §10
    所列 Python oracle；cross 的 1.7 边界只实现静态 IR/limit 检查，完整 `CrossQueueType` 留给 1.9。
-6. 从 IR 实现 SV renderer、declaration document 与 manifest，编写 §10 的最小 SystemVerilog target fixture。每项 fixture
+6. 从 IR 实现 SV renderer、declaration document 与 manifest，编写 §10 的最小 target fixture。每项 fixture
    必须同时断言生成失败路径或 named hit/illegal 观测，不能只以编译通过作为证据。
 7. 最后接入严格/master merge、per-instance layout 校验及确定性 JSON snapshot；这些是 1.8 runtime
    原型及后续公开能力的验收项，不倒灌为 1.7 设计冻结的完成条件。
 
 每一步至少包含：IR/diagnostic 单元测试、Python 行为测试、相关生成文本断言；涉及可生成 SV 的冻结
-语义再加 SystemVerilog target fixture。SystemVerilog target 结果需同时确认进程退出码、仿真通过标记及 coverage reporter/manifest 可观测项。任一
+语义再加 target fixture。target 结果需同时确认进程退出码、仿真通过标记及 observation/manifest 可观测项。任一
 LRM 行为与现有路线图预期不符时，先写独立最小 fixture 固化事实，再在讨论中提出只影响未冻结实现
 选择的修订；不得用实现便利性改变已冻结 DSL 或跨库兼容规则。

@@ -1620,46 +1620,8 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                     lines.extend(cls._sv_unpack_lines(name, desc, ind_str + cls.IND + cls.IND))
         lines.append(f"{ind_str}{cls.IND}endfunction")
 
-        from .collection import AssocArray, DynArray, Queue
-        coverage_fields = []
-        for name, desc in cls.__svtypes_members:
-            enabled = desc.cov if isinstance(desc, TypeBase) else isinstance(desc, ObjectDescriptor)
-            if not enabled:
-                continue
-            if isinstance(desc, (Bit, Logic, Enum)):
-                expression = f"item.{name}"
-            elif isinstance(desc, (DynArray, Queue)):
-                expression = f"item.{name}.size()"
-            elif isinstance(desc, AssocArray):
-                expression = f"item.{name}.num()"
-            elif isinstance(desc, ObjectDescriptor) or (
-                isinstance(desc, SvObject) and not isinstance(desc, SvStruct)
-            ):
-                expression = f"(item.{name} == null)"
-            else:
-                continue
-            coverage_fields.append((name, expression))
-        if coverage_fields:
-            # The coverage collector is emitted as a nested class of the
-            # generated class, so it can reference the enclosing class
-            # parameters and coverpoints always sample the enclosing type.
-            sample_type = cls._sv_coverage_sample_type()
-            lines.append("")
-            lines.append(f"{ind_str}{cls.IND}class {cls.__name__}__svtypes_coverage;")
-            lines.append(f"{ind_str}{cls.IND * 2}covergroup cg with function sample({sample_type} item);")
-            lines.append(f"{ind_str}{cls.IND * 3}option.per_instance = 1;")
-            for name, expression in coverage_fields:
-                lines.append(f"{ind_str}{cls.IND * 3}{name}_cp: coverpoint {expression};")
-            lines.append(f"{ind_str}{cls.IND * 2}endgroup")
-            lines.append("")
-            lines.append(f"{ind_str}{cls.IND * 2}function new();")
-            lines.append(f"{ind_str}{cls.IND * 3}cg = new();")
-            lines.append(f"{ind_str}{cls.IND * 2}endfunction")
-            lines.append("")
-            lines.append(f"{ind_str}{cls.IND * 2}function void sample({sample_type} item);")
-            lines.append(f"{ind_str}{cls.IND * 3}cg.sample(item);")
-            lines.append(f"{ind_str}{cls.IND * 2}endfunction")
-            lines.append(f"{ind_str}{cls.IND}endclass")
+        from .coverage.sv import render_type_coverage
+        lines.extend(render_type_coverage(cls, ind_str, cls.IND))
 
         lines.append(f"{ind_str}endclass")
         return "\n".join(lines)

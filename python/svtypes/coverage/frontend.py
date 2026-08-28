@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import inspect
 import textwrap
+from itertools import product
 from typing import Any
 
 from ..bit import Bit
@@ -13,7 +14,15 @@ from ..enum import Enum
 from ..errors import CoverageDeclarationError
 from ..logic import Logic
 from ..base import TypeBase
-from .ir import CoverageBinIR, CoverageIR, CoveragePointIR, SampleParameterIR
+from .ir import (
+    CoverageBinIR,
+    CoverageCrossIR,
+    CoverageIR,
+    CoveragePointIR,
+    CrossQueueFunctionIR,
+    SampleParameterIR,
+)
+from .limits import MAX_CROSS_MEMBERS, validate_cross_normal_bin_count
 
 
 _BIN_BASES = {
@@ -23,9 +32,11 @@ _BIN_BASES = {
     "transition_bins": "transition",
 }
 _POINT_BASES = {"CovPoint", "CovPointArray"}
+_CROSS_BASE = "Cross"
 _GROUP_OPTIONS = {"name", "comment", "per_instance", "get_inst_coverage", "weight", "goal", "at_least", "auto_bin_max", "detect_overlap", "cross_num_print_missing"}
 _TYPE_OPTIONS = {"comment", "weight", "goal", "merge_instances"}
 _POINT_OPTIONS = {"comment", "weight", "goal", "at_least", "auto_bin_max", "detect_overlap"}
+_CROSS_OPTIONS = {"comment", "weight", "goal", "at_least", "cross_num_print_missing", "cross_retain_auto_bins"}
 
 
 def _error(message: str) -> CoverageDeclarationError:
@@ -219,7 +230,7 @@ def _option_values(node: ast.ClassDef, owner: str, base: str, allowed: set[str])
             raise _error(f"coverage {owner} has unsupported option {name!r}")
         if name in {"weight", "goal", "at_least", "auto_bin_max", "cross_num_print_missing"} and (not isinstance(value, int) or isinstance(value, bool) or value <= 0):
             raise _error(f"coverage {owner} option {name!r} must be a positive integer")
-        if name in {"per_instance", "get_inst_coverage", "detect_overlap", "merge_instances"} and value not in {0, 1, False, True}:
+        if name in {"per_instance", "get_inst_coverage", "detect_overlap", "merge_instances", "cross_retain_auto_bins"} and value not in {0, 1, False, True}:
             raise _error(f"coverage {owner} option {name!r} must be 0 or 1")
         values.append((name, value))
     return tuple(values)
@@ -358,6 +369,261 @@ def _point_class(owner: type[Any], node: ast.ClassDef, allowed_names: set[str]) 
     ),)
 
 
+def _cross_member_reference(node: ast.AST, point_groups: dict[str, tuple[str, ...]]) -> str:
+    """Resolve one source-only ``Cross.members`` point reference."""
+    if isinstance(node, ast.Name):
+        names = point_groups.get(node.id)
+        if names is None:
+            raise _error(f"coverage cross member references unknown point {node.id!r}")
+        if len(names) != 1:
+            raise _error(f"coverage cross member {node.id!r} is an array base; select one slot")
+        return names[0]
+    if (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and isinstance(node.slice, ast.Constant)
+        and isinstance(node.slice.value, int)
+        and not isinstance(node.slice.value, bool)
+    ):
+        names = point_groups.get(node.value.id)
+        index = node.slice.value
+        if names is None:
+            raise _error(f"coverage cross member references unknown point {node.value.id!r}")
+        if index < 0 or index >= len(names):
+            raise _error(f"coverage cross member {node.value.id!r}[{index}] is outside its declared slots")
+        if len(names) == 1:
+            raise _error(f"coverage cross member {node.value.id!r} is not an array point")
+        return names[index]
+    raise _error("coverage cross members must be point names or fixed array-point slots")
+
+
+def _cross_bin_reference(node: ast.AST, members: tuple[str, ...], point_groups: dict[str, tuple[str, ...]]) -> dict[str, str]:
+    """Resolve ``point.bin`` (or ``array[index].bin``) inside a cross bin."""
+    if not isinstance(node, ast.Attribute):
+        raise _error("coverage cross bin selector must use member_point.member_bin")
+    point = _cross_member_reference(node.value, point_groups)
+    if point not in members:
+        raise _error(f"coverage cross bin selector {point!r} is not in members order")
+    return {"point": point, "bin": node.attr}
+
+
+def _queue_statement_list(
+    statements: list[ast.stmt], allowed_names: set[str], locals_: set[str], queues: set[str]
+) -> tuple[dict[str, Any], ...]:
+    result: list[dict[str, Any]] = []
+    for statement in statements:
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1 and isinstance(statement.targets[0], ast.Name):
+            target = statement.targets[0].id
+            if isinstance(statement.value, ast.Call) and isinstance(statement.value.func, ast.Name) and statement.value.func.id == "CrossQueueType" and not statement.value.args and not statement.value.keywords:
+                result.append({"kind": "queue_new", "target": target})
+                queues.add(target)
+            else:
+                queues.discard(target)
+                value = _expr(statement.value)
+                _validate_expression_names(value, allowed_names | locals_, "cross queue function")
+                result.append({"kind": "assign", "target": target, "value": value})
+            locals_.add(target)
+            continue
+        if (
+            isinstance(statement, ast.Expr)
+            and isinstance(statement.value, ast.Call)
+            and isinstance(statement.value.func, ast.Attribute)
+            and statement.value.func.attr == "push_back"
+            and isinstance(statement.value.func.value, ast.Name)
+            and len(statement.value.args) == 1
+            and not statement.value.keywords
+            and isinstance(statement.value.args[0], ast.Tuple)
+        ):
+            target = statement.value.func.value.id
+            if target not in queues:
+                raise _error(f"cross queue function pushes to unknown queue {target!r}")
+            items = [_expr(value) for value in statement.value.args[0].elts]
+            for item in items:
+                _validate_expression_names(item, allowed_names | locals_, "cross queue function")
+            result.append({"kind": "push", "target": target, "items": items})
+            continue
+        if isinstance(statement, ast.For) and isinstance(statement.target, ast.Name) and isinstance(statement.iter, ast.Call) and isinstance(statement.iter.func, ast.Name) and statement.iter.func.id == "range" and not statement.iter.keywords and 1 <= len(statement.iter.args) <= 3:
+            terms = [_expr(value) for value in statement.iter.args]
+            for term in terms:
+                _validate_expression_names(term, allowed_names | locals_, "cross queue function range")
+            target = statement.target.id
+            nested_locals = set(locals_)
+            nested_locals.add(target)
+            body = _queue_statement_list(statement.body, allowed_names, nested_locals, set(queues))
+            result.append({"kind": "for", "target": target, "range": terms, "body": list(body)})
+            continue
+        if isinstance(statement, ast.If):
+            condition = _expr(statement.test)
+            _validate_expression_names(condition, allowed_names | locals_, "cross queue function condition")
+            then = _queue_statement_list(statement.body, allowed_names, set(locals_), set(queues))
+            otherwise = _queue_statement_list(statement.orelse, allowed_names, set(locals_), set(queues))
+            result.append({"kind": "if", "condition": condition, "then": list(then), "else": list(otherwise)})
+            continue
+        if isinstance(statement, ast.Return) and isinstance(statement.value, ast.Name) and statement.value.id in queues:
+            result.append({"kind": "return", "value": statement.value.id})
+            continue
+        raise _error("cross queue function has an unsupported statement")
+    return tuple(result)
+
+
+def _cross_queue_function(node: ast.FunctionDef, allowed_names: set[str]) -> CrossQueueFunctionIR:
+    if node.decorator_list or node.args.defaults or node.args.kw_defaults or node.args.vararg or node.args.kwarg or node.args.kwonlyargs:
+        raise _error(f"cross queue function {node.name!r} has unsupported signature")
+    if not isinstance(node.returns, ast.Name) or node.returns.id != "CrossQueueType":
+        raise _error(f"cross queue function {node.name!r} must return CrossQueueType")
+    if any(argument.arg == "self" for argument in node.args.args):
+        raise _error(f"cross queue function {node.name!r} cannot declare self")
+    parameters = tuple(SampleParameterIR(argument.arg, _annotation(argument)) for argument in node.args.args)
+    names = {parameter.name for parameter in parameters}
+    body = _queue_statement_list(node.body, allowed_names | names, set(names), set())
+    if not body or body[-1].get("kind") != "return":
+        raise _error(f"cross queue function {node.name!r} must end with return result")
+    return CrossQueueFunctionIR(node.name, parameters, body)
+
+
+def _cross_selector(
+    node: ast.AST,
+    members: tuple[str, ...],
+    point_groups: dict[str, tuple[str, ...]],
+    queue_functions: dict[str, CrossQueueFunctionIR],
+    allowed_names: set[str],
+) -> dict[str, Any]:
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in queue_functions:
+        function = queue_functions[node.func.id]
+        if node.keywords or len(node.args) != len(function.parameters):
+            raise _error(f"cross queue function {function.name!r} has invalid arguments")
+        args = [_expr(value) for value in node.args]
+        for argument in args:
+            _validate_expression_names(argument, allowed_names, f"cross queue function {function.name!r} arguments")
+        return {"kind": "cross_queue_call", "function": function.name, "args": args}
+    values = node.elts if isinstance(node, ast.Tuple) else (node,)
+    if len(values) != len(members):
+        raise _error(f"coverage cross selector has {len(values)} members; expected {len(members)}")
+    refs = tuple(_cross_bin_reference(value, members, point_groups) for value in values)
+    if tuple(reference["point"] for reference in refs) != members:
+        raise _error("coverage cross bin selector must follow the declared members order")
+    return {"kind": "cross_bin_refs", "items": list(refs)}
+
+
+def _cross_candidate_bins(point: CoveragePointIR) -> tuple[CoverageBinIR, ...]:
+    return tuple(item for item in point.bins if item.kind in {"normal", "default"})
+
+
+def _cross_class(
+    node: ast.ClassDef,
+    points_by_name: dict[str, CoveragePointIR],
+    point_groups: dict[str, tuple[str, ...]],
+    *,
+    allowed_names: set[str],
+    existing_normal_bins: int,
+) -> tuple[CoverageCrossIR, int]:
+    if len(node.bases) != 1 or _name(node.bases[0]) != _CROSS_BASE:
+        raise _error(f"coverage declaration class {node.name!r} must inherit Cross")
+    keywords = {keyword.arg: keyword.value for keyword in node.keywords if keyword.arg is not None}
+    if set(keywords).difference({"members", "iff"}) or "members" not in keywords:
+        raise _error(f"coverage cross {node.name!r} requires members= and supports only iff=")
+    if not isinstance(keywords["members"], (ast.Tuple, ast.List)):
+        raise _error(f"coverage cross {node.name!r} members must be a declaration-time tuple")
+    members = tuple(_cross_member_reference(value, point_groups) for value in keywords["members"].elts)
+    if not members:
+        raise _error(f"coverage cross {node.name!r} must have at least one member")
+    if len(members) > MAX_CROSS_MEMBERS:
+        raise CoverageDeclarationError(
+            "SVT-COV-CROSS-LIMIT",
+            f"cross {node.name!r} has {len(members)} members; limit is {MAX_CROSS_MEMBERS}",
+        )
+    if len(set(members)) != len(members):
+        raise _error(f"coverage cross {node.name!r} has duplicate members")
+    iff_expression = _expr(keywords["iff"]) if "iff" in keywords else None
+    if iff_expression is not None:
+        _validate_expression_names(iff_expression, allowed_names, f"cross {node.name!r} iff")
+    options: list[tuple[str, Any]] = []
+    declared: list[CoverageBinIR] = []
+    function_nodes: list[ast.FunctionDef] = []
+    assignment_nodes: list[ast.Assign] = []
+    for statement in node.body:
+        if isinstance(statement, ast.Pass):
+            continue
+        if isinstance(statement, ast.ClassDef) and statement.name == "option":
+            options.extend(_option_values(statement, f"cross {node.name!r}", "CrossOption", _CROSS_OPTIONS))
+            continue
+        if isinstance(statement, ast.FunctionDef):
+            function_nodes.append(statement)
+            continue
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1 or not isinstance(statement.targets[0], ast.Name):
+            raise _error(f"coverage cross {node.name!r} has unsupported body statement")
+        assignment_nodes.append(statement)
+    queue_functions = tuple(_cross_queue_function(function, allowed_names - {"self"}) for function in function_nodes)
+    queue_function_map = {function.name: function for function in queue_functions}
+    if len(queue_function_map) != len(queue_functions):
+        raise _error(f"coverage cross {node.name!r} has duplicate queue function names")
+    for statement in assignment_nodes:
+        bin_name = statement.targets[0].id
+        if not isinstance(statement.value, ast.Subscript) or not isinstance(statement.value.value, ast.Name):
+            raise _error(f"coverage cross {node.name!r}.{bin_name} must use bins or ignore_bins")
+        kind = _BIN_BASES.get(statement.value.value.id)
+        if kind not in {"normal", "ignore"}:
+            raise _error(f"coverage cross {node.name!r}.{bin_name} supports only bins or ignore_bins")
+        declared.append(CoverageBinIR(bin_name, kind, _cross_selector(
+            statement.value.slice, members, point_groups, queue_function_map, allowed_names
+        )))
+
+    member_points = tuple(points_by_name[member] for member in members)
+    for point in member_points:
+        if dict(point.options).get("container_value_domain"):
+            raise _error(f"coverage cross {node.name!r} cannot use container value-domain point {point.name!r}")
+        if any(bin_.kind == "transition" for bin_ in point.bins):
+            raise _error(f"coverage cross {node.name!r} cannot use transition point {point.name!r}")
+        if not _cross_candidate_bins(point):
+            raise _error(f"coverage cross {node.name!r} member {point.name!r} has no normal or default bins")
+    for bin_ in declared:
+        if bin_.selector["kind"] == "cross_queue_call":
+            continue
+        for reference in bin_.selector["items"]:
+            point = points_by_name[reference["point"]]
+            matched = next((item for item in point.bins if item.name == reference["bin"]), None)
+            if matched is None:
+                raise _error(f"coverage cross {node.name!r} references unknown bin {reference['point']}.{reference['bin']}")
+            if matched.kind not in {"normal", "default"}:
+                raise _error(f"coverage cross {node.name!r} may reference only normal or default point bins")
+
+    normal_declared = [item for item in declared if item.kind == "normal"]
+    ignore_declared = [item for item in declared if item.kind == "ignore"]
+    static_declared = [item for item in declared if item.selector["kind"] == "cross_bin_refs"]
+    if len({tuple((ref["point"], ref["bin"]) for ref in item.selector["items"]) for item in static_declared}) != len(static_declared):
+        raise _error(f"coverage cross {node.name!r} has duplicate bin selectors")
+    candidate_refs = list(product(*[_cross_candidate_bins(point) for point in member_points]))
+    candidate_selectors = {
+        tuple((member, bin_.name) for member, bin_ in zip(members, candidate))
+        for candidate in candidate_refs
+    }
+    declared_selectors = {
+        tuple((ref["point"], ref["bin"]) for ref in item.selector["items"])
+        for item in static_declared
+    }
+    if not declared_selectors.issubset(candidate_selectors):
+        raise _error(f"coverage cross {node.name!r} selector is outside its member bin universe")
+    ignored_selectors = {
+        tuple((ref["point"], ref["bin"]) for ref in item.selector["items"])
+        for item in ignore_declared if item.selector["kind"] == "cross_bin_refs"
+    }
+    normal_selectors = {
+        tuple((ref["point"], ref["bin"]) for ref in item.selector["items"])
+        for item in normal_declared if item.selector["kind"] == "cross_bin_refs"
+    }
+    retain_auto = int(dict(options).get("cross_retain_auto_bins", 0))
+    effective = list(normal_declared)
+    if not normal_declared or retain_auto:
+        for selector in sorted(candidate_selectors - normal_selectors - ignored_selectors):
+            name = "auto[" + ",".join(f"{point}.{bin_name}" for point, bin_name in selector) + "]"
+            effective.append(CoverageBinIR(name, "normal", {"kind": "cross_bin_refs", "items": [{"point": point, "bin": bin_name} for point, bin_name in selector]}))
+    # Ignore selectors remain in the IR so runtime classification can skip
+    # normal tuples before incrementing any cross bin.
+    effective.extend(ignore_declared)
+    total = validate_cross_normal_bin_count(node.name, len([item for item in effective if item.kind == "normal"]), existing_covergroup_normal_bins=existing_normal_bins)
+    return CoverageCrossIR(node.name, members, tuple(effective), iff_expression, tuple(options), queue_functions), total
+
+
 def _function_node(function: Any) -> ast.FunctionDef:
     try:
         source = textwrap.dedent(inspect.getsource(function))
@@ -393,7 +659,7 @@ def compile_declaration(declaration: Any) -> CoverageIR:
     sample: ast.FunctionDef | None = None
     group_options: tuple[tuple[str, Any], ...] = ()
     type_options: tuple[tuple[str, Any], ...] = ()
-    point_nodes: list[ast.ClassDef] = []
+    declaration_nodes: list[ast.ClassDef] = []
     for statement in function.body:
         if isinstance(statement, ast.Pass):
             continue
@@ -409,12 +675,12 @@ def compile_declaration(declaration: Any) -> CoverageIR:
             type_options = _option_values(statement, f"covergroup type {declaration.qualified_name}", "CoverGroupTypeOption", _TYPE_OPTIONS)
             continue
         if isinstance(statement, ast.ClassDef):
-            point_nodes.append(statement)
+            declaration_nodes.append(statement)
             continue
         raise _error(f"coverage declaration {declaration.qualified_name} has unsupported body statement")
     sample_parameters: tuple[SampleParameterIR, ...] = ()
     if sample is not None:
-        if point_nodes:
+        if declaration_nodes:
             raise _error(f"coverage declaration {declaration.qualified_name} mixes outer and sample point declarations")
         if sample.decorator_list or sample.args.defaults or sample.args.kw_defaults or sample.args.vararg or sample.args.kwarg or sample.args.kwonlyargs:
             raise _error(f"coverage sample {declaration.qualified_name}.sample has unsupported signature")
@@ -424,7 +690,7 @@ def compile_declaration(declaration: Any) -> CoverageIR:
             raise _error(f"coverage sample {declaration.qualified_name}.sample must return None")
         if sample.body and any(not isinstance(item, ast.ClassDef) for item in sample.body):
             raise _error(f"coverage sample {declaration.qualified_name}.sample has unsupported body statement")
-        point_nodes = [item for item in sample.body if isinstance(item, ast.ClassDef)]
+        declaration_nodes = [item for item in sample.body if isinstance(item, ast.ClassDef)]
         if any(argument.arg == "case_id" for argument in sample.args.args):
             raise _error(f"coverage sample {declaration.qualified_name}.sample reserves case_id")
         sample_parameters = tuple(SampleParameterIR(argument.arg, _annotation(argument)) for argument in sample.args.args)
@@ -432,7 +698,30 @@ def compile_declaration(declaration: Any) -> CoverageIR:
     allowed_names.update(item.name for item in constructor_parameters)
     allowed_names.update(item.name for item in references)
     allowed_names.update(item.name for item in sample_parameters)
-    points = tuple(point for node in point_nodes for point in _point_class(declaration.owner, node, allowed_names))
+    point_nodes = [node for node in declaration_nodes if _name(node.bases[0]) in _POINT_BASES] if all(node.bases for node in declaration_nodes) else []
+    if len(point_nodes) + sum(_name(node.bases[0]) == _CROSS_BASE for node in declaration_nodes if node.bases) != len(declaration_nodes):
+        invalid = next(node for node in declaration_nodes if len(node.bases) != 1 or _name(node.bases[0]) not in _POINT_BASES | {_CROSS_BASE})
+        raise _error(f"coverage declaration class {invalid.name!r} must inherit CovPoint, CovPointArray, or Cross")
+    grouped_points = {
+        node.name: _point_class(declaration.owner, node, allowed_names)
+        for node in point_nodes
+    }
+    points = tuple(point for group in grouped_points.values() for point in group)
+    points_by_name = {point.name: point for point in points}
+    point_groups = {name: tuple(point.name for point in group) for name, group in grouped_points.items()}
+    normal_cross_bins = 0
+    crosses: list[CoverageCrossIR] = []
+    for node in declaration_nodes:
+        if _name(node.bases[0]) != _CROSS_BASE:
+            continue
+        cross, normal_cross_bins = _cross_class(
+            node,
+            points_by_name,
+            point_groups,
+            allowed_names=allowed_names,
+            existing_normal_bins=normal_cross_bins,
+        )
+        crosses.append(cross)
     sample_type = getattr(declaration.owner, "_svtypes_unified_type_name", declaration.owner.__name__)
     return CoverageIR(
         sample_type=sample_type,
@@ -441,6 +730,7 @@ def compile_declaration(declaration: Any) -> CoverageIR:
         reference_parameters=tuple(references),
         sample_parameters=sample_parameters,
         points=points,
+        crosses=tuple(crosses),
         options=group_options,
         type_options=type_options,
     )

@@ -117,9 +117,11 @@ def test_generated_coverage_collector_is_nested_and_explicitly_sampled():
     # reference the enclosing type and its parameters.
     assert "class Covered__svtypes_coverage;" in code
     assert "covergroup cg with function sample(Covered item);" in code
-    assert "scalar_cp: coverpoint item.scalar;" in code
-    assert "values_cp: coverpoint item.values.size();" in code
-    assert "ignored_cp" not in code
+    assert "scalar: coverpoint item.scalar {" in code
+    assert "covergroup cg_values with function sample(int value);" in code
+    assert "values: coverpoint value {" in code
+    assert "foreach (item.values[__svtypes_cov_index_values]) begin" in code
+    assert "ignored: coverpoint" not in code
     assert "function void sample(Covered item);" in code
     assert code.index("class Covered__svtypes_coverage;") < code.index("endclass")
 
@@ -132,7 +134,7 @@ def test_template_coverage_collector_references_enclosing_parameters():
     code = Templated.to_sv_obj()
     assert "class Templated__svtypes_coverage;" in code
     assert "covergroup cg with function sample(Templated#(.WIDTH(WIDTH)) item);" in code
-    assert "data_cp: coverpoint item.data;" in code
+    assert "data: coverpoint item.data {" in code
     assert "function void sample(Templated#(.WIDTH(WIDTH)) item);" in code
     assert code.index("class Templated__svtypes_coverage;") < code.index("endclass")
 
@@ -162,10 +164,10 @@ def test_coverage_field_type_expressions():
         child = Child(cov=True)
 
     code = CoverageKinds.to_sv_obj()
-    assert "tone_cp: coverpoint item.tone;" in code
-    assert "lookup_cp: coverpoint item.lookup.num();" in code
-    assert "items_cp: coverpoint item.items.size();" in code
-    assert "child_cp: coverpoint (item.child == null);" in code
+    assert "tone: coverpoint item.tone {" in code
+    assert "covergroup cg_lookup with function sample(bit [7:0] value);" in code
+    assert "covergroup cg_items with function sample(int value);" in code
+    assert "child: coverpoint (item.child == null) {" in code
     assert "class CoverageKinds__svtypes_coverage;" in code
 
 

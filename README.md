@@ -32,14 +32,19 @@ python3 -m venv .venv
 .venv/bin/python -m pytest -q
 ```
 
-The command above permits remote SystemVerilog target tests to skip when no SystemVerilog target host is
+The command above permits remote SystemVerilog conformance tests to skip when no target host is
 available. Release validation must require that host instead:
 
 ```sh
-.venv/bin/python -m pytest -q --require-target
+.venv/bin/python -m pytest -q --require-remote-sv
 ```
 
-Set `SVTYPES_target_HOST` to use a host other than the project default.
+Set `SVTYPES_REMOTE_SV_HOST` to use a host other than the project default.
+The target host must provide `svtypes_remote_sv_runner`: its `compile` command
+accepts the generated source files in the current directory, and its `run`
+command executes the compiled fixture. Coverage fixtures additionally write
+the manifest-normalized `coverage-observation.json`; adapter implementation and
+target-private database handling stay outside this repository.
 
 SVX should depend on a versioned SvTypes release and discover support files
 through the public `svtypes` package helpers.

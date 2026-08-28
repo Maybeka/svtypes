@@ -404,6 +404,9 @@ class AssocArray(CollectionBase, Generic[K, V]):
 
     @property
     def value(self) -> dict[Any, Any]:
+        from .object import ObjectDescriptor
+        if isinstance(self._val_template, ObjectDescriptor):
+            return dict(self._elements)
         return {k: e.value for k, e in self._elements.items()}
 
     @value.setter

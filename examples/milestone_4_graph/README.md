@@ -20,7 +20,7 @@ from the repository root:
 ```
 
 See the [local milestone guide](../../docs/local_milestones.md) for setup and
-the SVX/SystemVerilog target integration boundary.
+the remote-target integration boundary.
 
 The test covers:
 

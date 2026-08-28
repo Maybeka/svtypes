@@ -141,7 +141,7 @@ Regardless of that spelling, the semantic contract is fixed as follows:
 
 Python verification will use finite small domains to prove no repetition,
 reset, constraint exhaustion, failure non-consumption, and mode pause/resume.
-SystemVerilog target verification will generate the same `randc` declarations and assert the
+Target verification will generate the same `randc` declarations and assert the
 same observable cycle invariants; it will not assert identical random-number
 streams across the two implementations.
 
@@ -191,7 +191,7 @@ the SMT backend apply soft expressions greedily in this order:
 2. derived-class constraint blocks before base-class blocks;
 3. later soft statements before earlier statements in one block.
 
-This order is validated against SystemVerilog target.  A `soft` statement inside a constraint
+This order is validated against the configured target.  A `soft` statement inside a constraint
 `if` is active only in the selected branch.  Python candidate sampling never
 commits a merely best-effort candidate when a soft clause was missed; it uses
 the incremental SMT policy to distinguish a real conflict from an unlucky
@@ -231,24 +231,24 @@ selection order, not a probability contract.
 
 `tests/python/test_constraint_dist.py` covers source parsing, expression
 positions, stable hard membership, `:=` versus `:/` sampling, and invalid
-source.  `tests/python/test_constraint_sv.py::test_remote_target_dist_expression_simulation`
-generates the same IR to SV, compiles it with SystemVerilog target, and checks the resulting
+source.  `tests/python/test_constraint_sv.py::test_remote_sv_dist_expression_simulation`
+generates the same IR to SV, compiles it on the target, and checks the resulting
 support set over repeated target-language randomizations.
 
 `tests/python/test_constraint_randc.py` covers Python cycle uniqueness, mode
 pause/resume, constrained-cycle reset, failed-call non-consumption, generated
-declarations, and invalid combinations.  The matching SystemVerilog target regression is
-`tests/python/test_constraint_sv.py::test_remote_target_randc_cycle_simulation`.
+declarations, and invalid combinations.  The matching target regression is
+`tests/python/test_constraint_sv.py::test_remote_sv_randc_cycle_simulation`.
 
 `tests/python/test_constraint_unique.py` covers scalar and mixed-width Python
-semantics plus unpacked array/queue flattening; `test_remote_target_unique_scalar_simulation`
-and `test_remote_target_unique_collection_simulation` verify scalar, fixed-array,
-dynamic-array, and queue constraints with SystemVerilog target.
+semantics plus unpacked array/queue flattening; `test_remote_sv_unique_scalar_simulation`
+and `test_remote_sv_unique_collection_simulation` verify scalar, fixed-array,
+dynamic-array, and queue constraints with the target.
 
 `tests/python/test_constraint_soft.py` covers hard-over-soft behavior,
-same-block and inheritance priority, and conditional activation.  The SystemVerilog target soft
+same-block and inheritance priority, and conditional activation.  The target soft
 regression verifies all of those ordering cases in generated SystemVerilog.
 
 `tests/python/test_constraint_solve_before.py` covers groups, rendering, and
-invalid operands/cycles.  The matching SystemVerilog target regression compiles and executes
+invalid operands/cycles.  The matching target regression compiles and executes
 the generated `solve ... before ...` declaration.

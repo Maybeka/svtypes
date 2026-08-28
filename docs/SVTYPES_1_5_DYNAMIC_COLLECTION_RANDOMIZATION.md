@@ -75,7 +75,7 @@ class Lookup(SvObject):
 
 ## rand_mode 与分层随机
 
-SystemVerilog target 确认动态数组和队列支持设置形式的 `rand_mode(0)` / `rand_mode(1)`；但它们是
+目标端确认动态数组和队列支持设置形式的 `rand_mode(0)` / `rand_mode(1)`；但它们是
 non-singular 容器，不能使用无参查询形式 `rand_mode()`。现存的标量元素可以查询和设置，
 例如 `data[0].rand_mode()`。
 
@@ -104,13 +104,13 @@ class LayeredPacket(SvObject):
 
 队列的逐元素 mode 以**当前数值下标**为单位，而不随 value 在 `pop_front()` 后左移：若
 `queue[1].rand_mode(0)` 后弹出 `queue[0]`，新的 `queue[0]` 仍是默认开启；以后再次填充
-`queue[1]` 时，该下标的显式关闭 mode 仍生效。该规则已经与 SystemVerilog target 对照验证。
+`queue[1]` 时，该下标的显式关闭 mode 仍生效。该规则已经与目标端对照验证。
 
 ## 验证
 
 - Python：尺寸约束、动态数组和队列的 `foreach`、未约束尺寸保持、失败恢复、关联数组
   拒绝路径、unpacked `unique` 展开、父对象 `randomize()` 对子对象动态数组/队列 `unique`
   的图随机化，以及分层随机下既有元素的逐元素 mode 保存/恢复。
-- SystemVerilog target：同一组 `size()` + `foreach` 源约束在动态数组与队列上各随机 32 次，并检查尺寸
+- target：同一组 `size()` + `foreach` 源约束在动态数组与队列上各随机 32 次，并检查尺寸
   与每个元素；`unique {array}`、`unique {tag, data}` 与 `unique {queue}` 检查互异；分层随机
   回归还检查动态数组元素关闭、层内随机和恢复后的 mode。

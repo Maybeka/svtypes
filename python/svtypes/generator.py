@@ -75,12 +75,15 @@ def _render_outputs(registry_or_schema: Any, targets: set[str], layout: str) -> 
     outputs: dict[str, bytes] = {}
 
     if "sv" in targets:
+        from .coverage.sv import observation_manifest
+
         renderer = getattr(registry_or_schema, "to_sv_pkg", None)
         if renderer is None:
             body = "\n\n".join(value.to_sv_obj() for value in types)
         else:
             body = renderer()
         outputs[f"{stem}.sv"] = (body.rstrip() + "\n").encode("utf-8")
+        outputs[f"{stem}.coverage-manifest.json"] = _json_bytes(observation_manifest(types))
     if "cpp" in targets:
         renderer = getattr(registry_or_schema, "to_cpp_pkg", None)
         if renderer is None:

@@ -9,6 +9,9 @@ from svtypes import (
     CoverInput,
     CoverRef,
     CoverGroupOption,
+    Cross,
+    CrossOption,
+    CrossQueueType,
     SvObject,
     DynArray,
     bins,
@@ -60,6 +63,174 @@ def test_freeze_rejects_statements_outside_the_source_only_declaration_subset():
 
     with pytest.raises(CoverageDeclarationError, match="SVT-COV-SYNTAX"):
         Packet.cg.freeze()
+
+
+def test_static_cross_compiles_explicit_and_automatic_tuples_and_classifies_them():
+    class Packet(SvObject):
+        opcode = Bit(2)
+        mode = Bit(1)
+
+        @covergroup
+        def cg(self):
+            class opcode_cp(CovPoint, source=self.opcode):
+                low = bins[0]
+                high = bins[1]
+
+            class mode_cp(CovPoint, source=self.mode):
+                read = bins[0]
+                write = bins[1]
+
+            class opcode_mode(Cross, members=(opcode_cp, mode_cp)):
+                class option(CrossOption):
+                    cross_retain_auto_bins = 1
+
+                low_read = bins[opcode_cp.low, mode_cp.read]
+                high_write = ignore_bins[opcode_cp.high, mode_cp.write]
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    ir = Packet.cg.freeze()
+    cross = ir.crosses[0]
+    assert cross.members == ("opcode_cp", "mode_cp")
+    assert {bin_.name for bin_ in cross.bins} == {
+        "low_read", "high_write", "auto[opcode_cp.high,mode_cp.read]",
+        "auto[opcode_cp.low,mode_cp.write]",
+    }
+
+    packet = Packet()
+    packet.opcode.value, packet.mode.value = 0, 0
+    packet.cg.sample()
+    packet.opcode.value, packet.mode.value = 1, 0
+    packet.cg.sample()
+    packet.opcode.value, packet.mode.value = 1, 1
+    packet.cg.sample()
+    assert packet.cg.instance.snapshot()["opcode_mode"] == {
+        "hits": {
+            "auto[opcode_cp.high,mode_cp.read]": 1,
+            "low_read": 1,
+        },
+        "illegal_hits": {},
+        "samples": 3,
+    }
+    assert packet.cg.get_coverage() == pytest.approx(88.88888888888889)
+
+
+def test_cross_default_policy_drops_automatic_tuples_when_explicit_bins_exist():
+    class Packet(SvObject):
+        opcode = Bit(1)
+        mode = Bit(1)
+
+        @covergroup
+        def cg(self):
+            class opcode_cp(CovPoint, source=self.opcode):
+                zero = bins[0]
+                one = bins[1]
+
+            class mode_cp(CovPoint, source=self.mode):
+                zero = bins[0]
+                one = bins[1]
+
+            class cross(Cross, members=(opcode_cp, mode_cp)):
+                selected = bins[opcode_cp.zero, mode_cp.zero]
+
+    assert [bin_.name for bin_ in Packet.cg.freeze().crosses[0].bins] == ["selected"]
+
+
+def test_cross_queue_function_materializes_per_instance_and_classifies_values():
+    class Packet(SvObject):
+        opcode = Bit(2)
+        mode = Bit(2)
+
+        @covergroup
+        def cg(self, limit: CoverInput[int]):
+            class opcode_cp(CovPoint, source=self.opcode):
+                value = bins[0:3]
+
+            class mode_cp(CovPoint, source=self.mode):
+                value = bins[0:3]
+
+            class matching(Cross, members=(opcode_cp, mode_cp)):
+                def diagonal(count: int) -> CrossQueueType:
+                    result = CrossQueueType()
+                    for index in range(count):
+                        result.push_back((index, index))
+                    return result
+
+                pairs = bins[diagonal(limit)]
+
+        def __init__(self, limit: int):
+            super().__init__()
+            self.cg.instantiate(limit)
+
+    packet = Packet(2)
+    cross = packet.cg.instance.instance_ir.crosses[0]
+    assert cross.bins[0].selector == {
+        "kind": "cross_queue_values", "items": [[0, 0], [1, 1]],
+    }
+    assert packet.cg.instance.instance_layout_digest != Packet(3).cg.instance.instance_layout_digest
+    for opcode, mode in ((0, 0), (0, 1), (1, 1)):
+        packet.opcode.value, packet.mode.value = opcode, mode
+        packet.cg.sample()
+    assert packet.cg.instance.snapshot()["matching"] == {
+        "hits": {"pairs": 2}, "illegal_hits": {}, "samples": 3,
+    }
+
+
+def test_cross_queue_function_rejects_zero_runtime_range_step():
+    class Packet(SvObject):
+        opcode = Bit(1)
+
+        @covergroup
+        def cg(self, step: CoverInput[int]):
+            class point(CovPoint, source=self.opcode):
+                zero = bins[0]
+
+            class cross(Cross, members=(point,)):
+                def values(increment: int) -> CrossQueueType:
+                    result = CrossQueueType()
+                    for value in range(0, 1, increment):
+                        result.push_back((value,))
+                    return result
+
+                selected = bins[values(step)]
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate(0)
+
+    with pytest.raises(CoverageError, match="range step cannot be zero"):
+        Packet()
+
+
+def test_cross_queue_does_not_hit_when_a_member_value_has_no_point_bin():
+    class Packet(SvObject):
+        opcode = Bit(2)
+
+        @covergroup
+        def cg(self):
+            class point(CovPoint, source=self.opcode):
+                zero = bins[0]
+
+            class cross(Cross, members=(point,)):
+                def values() -> CrossQueueType:
+                    result = CrossQueueType()
+                    result.push_back((1,))
+                    return result
+
+                selected = bins[values()]
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    packet = Packet()
+    packet.opcode.value = 1
+    packet.cg.sample()
+    assert packet.cg.instance.snapshot()["cross"] == {
+        "hits": {}, "illegal_hits": {}, "samples": 0,
+    }
 
 
 def test_python_runtime_classifies_iff_ignore_illegal_overlapping_normal_and_default_bins():

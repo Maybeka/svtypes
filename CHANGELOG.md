@@ -10,7 +10,7 @@
 - `Array` 从工厂函数改为公开运行时类；元组 shape 继续递归构造嵌套数组，并提供多维静态类型推断。
 - 源 schema 为实际类增加 `constraints` / `ir_digest`；编码描述与生成的编码 API 不含该键。
 - 运行时宣称 `svtypes.constraint-ir.v1` 与 `svtypes.constraint-sample.v1`。
-- 增加不依赖 SVX 的远程 SystemVerilog target 全量仿真：生成类型的 pack/unpack 字节对等、对象图身份、字段策略、plusarg、覆盖率采样，以及截断流失败。
+- 增加不依赖集成层的远程 SystemVerilog conformance：生成类型的 pack/unpack 字节对等、对象图身份、字段策略、plusarg、覆盖率采样，以及截断流失败。
 - 参数化模板：`Parameter` 支持类型声明——值参数用 svtypes 标量类型（`Parameter(Int)` / `Parameter(LongInt)` / `Parameter(String)` / `Parameter(Real)` / `Parameter(ShortReal)`），类型参数用 `Parameter(type)`；未绑定即类型已知、值未定，`Parameter()` 绑定值（如 `Parameter()(5)`）仍从值推断。含未绑定 `Parameter` 的类视为参数化模板，不可实例化；其参数化定义可直接生成（SV `class X #(parameter int W)`、C++ `template <int32_t W> struct X`；类型参数为 `parameter type T` / `template <typename T>`）。`specialize()` 只做 Python 侧绑定（实例化、schema、`randomize` 折叠 IR），**不生成目标语言类**——目标语言一律用参数类实例 `X#(.W(4))` / `X<4>`，`specialize()` 产物调用 `to_sv_obj()`/`to_cpp_obj()` 报错。子类继承参数类用 `Base.specialize(A=ParamRef())` / `ParamRef("W")` 转发本类参数并压平到原始模板（`class Child #(...) extends Base#(.A(A))`）；未特化模板与 ParamRef 中间类不可作父类/不可实例化；`specialize()` 产物不可再 `specialize()`。`str`/`float` 参数不是合法的 C++ 非类型模板参数，生成 C++ 时明确报错（SV 侧支持）。
 - 约束语法：`range()` 循环上下界为常量时在 Python 侧展开供 `randomize()` 求解；上下界为未绑定参数（符号循环）时保留循环，SV 端以 `foreach` + 边界条件渲染（SV 约束无 `for` 语句）。约束块只生成在声明它的参数类上，子类靠 `extends Tpl#(...)` 继承模板约束（不再有包装类）。
 

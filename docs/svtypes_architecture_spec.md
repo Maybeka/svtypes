@@ -30,7 +30,7 @@ SVX (SystemVerilog eXtensions) is a framework that brings Python into the System
 └──────────────────────────────────────────────────────────┘
                     ↓ runs on top of ↓
 ┌──────────────────────────────────────────────────────────┐
-│  SystemVerilog Simulator (SystemVerilog target, target provider, target provider)           │
+│  SystemVerilog conformance target                          │
 └──────────────────────────────────────────────────────────┘
 ```
 

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..errors import CoverageError
+from .persistence import decode_database, encode_database, read_database, write_database
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +77,39 @@ class CoverageDatabase:
                 _merge_record_documents(current.document, record.document),
             )
 
+    def apply_baseline(self, instance: Any, *, logical_instance_key: str | None = None) -> None:
+        """Seed a newly created runtime instance from one persisted record.
+
+        The operation restores only accumulated counters and finite source
+        evidence.  It intentionally does not reconstruct the old instance,
+        constructor actuals, transition history, sample log, or registration.
+        """
+        bound_key = getattr(instance, "logical_instance_key", None)
+        if logical_instance_key is not None and bound_key is not None and logical_instance_key != bound_key:
+            raise CoverageError("coverage baseline logical instance key disagrees with instance binding")
+        logical_instance_key = bound_key if bound_key is not None else logical_instance_key
+        current = instance.snapshot_document()
+        type_id = current["covergroup_type_id"]
+        candidates = [
+            record for (candidate_type, _), record in self._records.items()
+            if candidate_type == type_id and record.logical_instance_key == logical_instance_key
+        ]
+        if not candidates:
+            raise CoverageError(f"coverage baseline record not found for {type_id}")
+        if len(candidates) != 1:
+            raise CoverageError(f"coverage baseline record is ambiguous for {type_id}")
+        baseline = candidates[0].document
+        for field, message in (
+            ("declaration_semantic_digest", "declaration mismatch"),
+            ("definition", "definition mismatch"),
+            ("instance_layout_digest", "instance layout mismatch"),
+        ):
+            if current.get(field) != baseline.get(field):
+                raise CoverageError(f"coverage baseline {message} for {type_id}")
+        if int(current.get("source_limit", 3)) != int(baseline.get("source_limit", 3)):
+            raise CoverageError(f"coverage baseline source limit mismatch for {type_id}")
+        instance.runtime.restore_counter_snapshot(deepcopy(baseline["points"]))
+
     def snapshot_document(self) -> dict[str, Any]:
         return {
             "records": [
@@ -88,6 +122,37 @@ class CoverageDatabase:
 
     def snapshot_json(self) -> str:
         return json.dumps(self.snapshot_document(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    def to_bytes(self) -> bytes:
+        """Export portable aggregate coverage counters for cross-run merge."""
+        return encode_database(self.snapshot_document())
+
+    @classmethod
+    def from_bytes(cls, data: bytes) -> "CoverageDatabase":
+        database = cls()
+        database._load_document(decode_database(data))
+        return database
+
+    def write(self, path: str) -> None:
+        write_database(path, self.snapshot_document())
+
+    @classmethod
+    def read(cls, path: str) -> "CoverageDatabase":
+        database = cls()
+        database._load_document(read_database(path))
+        return database
+
+    def _load_document(self, document: dict[str, Any]) -> None:
+        for item in document["records"]:
+            if not isinstance(item, dict) or "logical_instance_key" not in item:
+                raise CoverageError("coverage database record is invalid")
+            record_document = {key: deepcopy(value) for key, value in item.items() if key != "logical_instance_key"}
+            type_id = record_document.get("covergroup_type_id")
+            key = item["logical_instance_key"]
+            if not isinstance(type_id, str) or not (key is None or isinstance(key, str)):
+                raise CoverageError("coverage database record identity is invalid")
+            storage_key = key if key is not None else f"__imported__{len(self._records)}"
+            self._records[(type_id, storage_key)] = CoverageRecord(key, record_document)
 
     def type_summary(self, covergroup_type_id: str) -> dict[str, Any]:
         """Return the LRM-shaped type result for one declaration slot.
@@ -153,7 +218,11 @@ def _merge_record_documents(left: dict[str, Any], right: dict[str, Any]) -> dict
 
 def _record_coverage(document: dict[str, Any]) -> float:
     weighted: list[tuple[float, int]] = []
-    for name, definition in document.get("point_definitions", {}).items():
+    definitions = {
+        **document.get("point_definitions", {}),
+        **document.get("cross_definitions", {}),
+    }
+    for name, definition in definitions.items():
         normal = definition["normal_bins"]
         if not normal:
             value = 100.0

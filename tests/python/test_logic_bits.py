@@ -100,5 +100,5 @@ def test_generated_logic_field_supports_rand_plusarg_and_coverage():
     code = LogicPayload.to_sv_obj()
     assert "rand logic [1:0] [3:0] data;" in code
     assert '"data=%h"' in code
-    assert "data_cp: coverpoint item.data;" in code
+    assert "data: coverpoint item.data {" in code
     assert "logic_packer#(logic [1:0] [3:0])::pack(data, bytes);" in code

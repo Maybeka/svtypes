@@ -131,6 +131,27 @@ class CoveragePointIR:
 
 
 @dataclass(frozen=True, slots=True)
+class CrossQueueFunctionIR:
+    """Restricted source representation of one ``CrossQueueType`` function."""
+
+    name: str
+    parameters: tuple[SampleParameterIR, ...]
+    body: tuple[Any, ...]
+
+    def __post_init__(self) -> None:
+        _require_name("cross queue function", self.name)
+        _validate_parameter_names(f"cross queue function {self.name!r}", self.parameters)
+        canonical_value(self.body)
+
+    def stable_dict(self) -> dict[str, Any]:
+        return {
+            "body": canonical_value(self.body),
+            "name": self.name,
+            "parameters": [parameter.stable_dict() for parameter in self.parameters],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class CoverageCrossIR:
     """One cross template; queue results remain instance-layout data."""
 
@@ -139,6 +160,7 @@ class CoverageCrossIR:
     bins: tuple[CoverageBinIR, ...] = ()
     iff: Any = None
     options: tuple[tuple[str, Any], ...] = ()
+    queue_functions: tuple[CrossQueueFunctionIR, ...] = ()
 
     def __post_init__(self) -> None:
         _require_name("cross", self.name)
@@ -151,6 +173,7 @@ class CoverageCrossIR:
         canonical_value(self.iff)
         object.__setattr__(self, "bins", _canonical_named_items("bin", self.bins))
         object.__setattr__(self, "options", _canonical_options(f"cross {self.name!r}", self.options))
+        object.__setattr__(self, "queue_functions", _canonical_named_items("cross queue function", self.queue_functions))
 
     def stable_dict(self) -> dict[str, Any]:
         return {
@@ -159,6 +182,7 @@ class CoverageCrossIR:
             "members": list(self.members),
             "name": self.name,
             "options": {key: canonical_value(value) for key, value in sorted(self.options)},
+            "queue_functions": [item.stable_dict() for item in self.queue_functions],
         }
 
 

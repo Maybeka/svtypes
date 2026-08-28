@@ -57,5 +57,5 @@ path 为前缀；父对象约束中对 handle 成员的引用也解析到同一�
 
 ## 验证
 
-Python 与 SystemVerilog target 必须覆盖：父子交叉约束、child 自身约束、null handle、共享 child、
+Python 与目标端必须覆盖：父子交叉约束、child 自身约束、null handle、共享 child、
 环、约束/mode 关闭、失败恢复和 hooks。测试比较约束满足性与对象身份，不比较随机序列。

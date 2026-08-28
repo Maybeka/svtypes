@@ -25,6 +25,14 @@ class Cross:
         super().__init_subclass__()
 
 
+class CrossQueueType:
+    """Type marker for source-only cross-bin queue functions.
+
+    The declaration compiler reads annotated function bodies; neither the
+    marker nor a user function is executed as part of declaration handling.
+    """
+
+
 class CoverGroupOption: pass
 class CoverGroupTypeOption: pass
 class CovPointOption: pass

@@ -39,5 +39,5 @@ svtypes = ["py.typed", "*.pyi"]
 pythonpath = ["python", "."]
 testpaths = ["tests"]
 markers = [
-    "remote_target: SSH to the configured SystemVerilog target host and run generated SystemVerilog",
+    "remote_sv: SSH to the configured SystemVerilog conformance target",
 ]

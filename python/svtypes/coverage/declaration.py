@@ -9,7 +9,8 @@ from typing import Any, Callable, Generic, TypeVar, get_args, get_type_hints, ov
 from ..errors import CoverageError
 from .canonical import semantic_digest
 from .context import coverage_case_name
-from .ir import CoverageBinIR, CoverageIR, CoveragePointIR
+from .ir import CoverageBinIR, CoverageCrossIR, CoverageIR, CoveragePointIR, CrossQueueFunctionIR
+from .limits import MAX_CROSS_QUEUE_TUPLES
 
 
 T = TypeVar("T")
@@ -165,7 +166,17 @@ class CoverGroupInstance:
         values = {name: _layout_value(value) for name, value in self.constructor_named_actuals}
         for formal, value in zip(self.declaration.ir.constructor_parameters, self.constructor_actuals):
             values.setdefault(formal.name, _layout_value(value))
-        return semantic_digest({"constructor_actuals": values})
+        cross_queues = {}
+        if self.instance_ir is not None:
+            for cross in self.instance_ir.crosses:
+                queues = {
+                    bin_.name: bin_.selector.get("items", [])
+                    for bin_ in cross.bins
+                    if isinstance(bin_.selector, dict) and bin_.selector.get("kind") == "cross_queue_values"
+                }
+                if queues:
+                    cross_queues[cross.name] = queues
+        return semantic_digest({"constructor_actuals": values, "cross_queue_bins": cross_queues})
 
     def bind_logical_instance(self, key: str) -> None:
         if not isinstance(key, str) or not key:
@@ -210,6 +221,15 @@ class CoverGroupInstance:
                     and not (isinstance(bin_.selector, dict) and bin_.selector.get("kind") == "values" and not bin_.selector.get("items"))
                 ],
             }
+        cross_definitions = {}
+        for cross in self.instance_ir.crosses:
+            options = dict(cross.options)
+            cross_definitions[cross.name] = {
+                "at_least": int(options.get("at_least", 1)),
+                "goal": int(options.get("goal", 100)),
+                "weight": int(options.get("weight", 1)),
+                "normal_bins": [bin_.name for bin_ in cross.bins if bin_.kind == "normal"],
+            }
         return {
             "covergroup_type_id": self.declaration.ir.covergroup_type_id,
             "declaration_semantic_digest": self.declaration.ir.declaration_semantic_digest,
@@ -221,6 +241,7 @@ class CoverGroupInstance:
             "type_options": dict(self.declaration.ir.type_options),
             "source_limit": self.runtime.source_limit,
             "point_definitions": point_definitions,
+            "cross_definitions": cross_definitions,
             "points": self.snapshot(),
         }
 
@@ -485,4 +506,85 @@ def _materialize_ir(template: CoverageIR, bindings: dict[str, Any]) -> CoverageI
         )
         for point in template.points
     )
-    return replace(template, points=points)
+    crosses = tuple(_materialize_cross(cross, bindings) for cross in template.crosses)
+    return replace(template, points=points, crosses=crosses)
+
+
+def _materialize_cross(cross: CoverageCrossIR, bindings: dict[str, Any]) -> CoverageCrossIR:
+    functions = {function.name: function for function in cross.queue_functions}
+    bins: list[CoverageBinIR] = []
+    for bin_ in cross.bins:
+        selector = _materialize_value(bin_.selector, bindings)
+        if isinstance(selector, dict) and selector.get("kind") == "cross_queue_call":
+            function = functions.get(selector["function"])
+            if function is None:
+                raise CoverageError(f"coverage cross {cross.name!r} references unknown queue function {selector['function']!r}")
+            values = _execute_cross_queue_function(function, selector["args"], bindings, len(cross.members))
+            selector = {"kind": "cross_queue_values", "items": [list(value) for value in values]}
+        bins.append(replace(bin_, selector=selector))
+    return replace(cross, iff=_materialize_value(cross.iff, bindings), bins=tuple(bins))
+
+
+def _execute_cross_queue_function(
+    function: CrossQueueFunctionIR,
+    arguments: list[Any],
+    bindings: dict[str, Any],
+    arity: int,
+) -> tuple[tuple[Any, ...], ...]:
+    """Interpret the finite frozen queue-function subset at instantiation."""
+    from .evaluator import eval_expr
+
+    if len(arguments) != len(function.parameters):
+        raise CoverageError(f"cross queue function {function.name!r} has invalid argument count")
+    values = dict(bindings)
+    for parameter, argument in zip(function.parameters, arguments):
+        values[parameter.name] = eval_expr(argument, values)
+    queues: dict[str, list[tuple[Any, ...]]] = {}
+
+    def run(statements: tuple[Any, ...] | list[Any]) -> str | None:
+        for statement in statements:
+            kind = statement["kind"]
+            if kind == "queue_new":
+                queues[statement["target"]] = []
+            elif kind == "assign":
+                values[statement["target"]] = eval_expr(statement["value"], values)
+            elif kind == "push":
+                queue = queues.get(statement["target"])
+                if queue is None:
+                    raise CoverageError(f"cross queue function {function.name!r} pushes to a non-queue")
+                item = tuple(eval_expr(value, values) for value in statement["items"])
+                if len(item) != arity:
+                    raise CoverageError(f"cross queue function {function.name!r} emits a tuple with {len(item)} members; expected {arity}")
+                if len(queue) >= MAX_CROSS_QUEUE_TUPLES:
+                    raise CoverageError(
+                        f"SVT-COV-CROSS-QUEUE-LIMIT: cross queue function {function.name!r} "
+                        f"exceeds {MAX_CROSS_QUEUE_TUPLES} tuples"
+                    )
+                queue.append(item)
+            elif kind == "for":
+                bounds = [eval_expr(value, values) for value in statement["range"]]
+                if not all(isinstance(value, int) and not isinstance(value, bool) for value in bounds):
+                    raise CoverageError(f"cross queue function {function.name!r} range bounds must be integers")
+                if len(bounds) == 3 and bounds[2] == 0:
+                    raise CoverageError(f"cross queue function {function.name!r} range step cannot be zero")
+                for index in range(*bounds):
+                    values[statement["target"]] = index
+                    returned = run(statement["body"])
+                    if returned is not None:
+                        return returned
+            elif kind == "if":
+                branch = statement["then"] if bool(eval_expr(statement["condition"], values)) else statement["else"]
+                returned = run(branch)
+                if returned is not None:
+                    return returned
+            elif kind == "return":
+                return statement["value"]
+            else:
+                raise CoverageError(f"cross queue function {function.name!r} has invalid frozen statement")
+        return None
+
+    result_name = run(function.body)
+    result = queues.get(result_name or "")
+    if result is None:
+        raise CoverageError(f"cross queue function {function.name!r} must return CrossQueueType")
+    return tuple(result)

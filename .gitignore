@@ -5,6 +5,7 @@
 .agents/
 AGENTS.md
 .omo
+.svtypes-local/
 
 # OS and editor noise
 .DS_Store

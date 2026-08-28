@@ -99,6 +99,35 @@ def test_object_handles_keep_the_existing_nullness_auto_coverage_semantics():
     assert auto_coverage_ir(ByValueDisabled) is None
 
 
+def test_object_container_auto_coverage_tracks_element_nullness():
+    class Child(SvObject):
+        value = Bit(8)
+
+    class Packet(SvObject):
+        fixed = Array(Object("Child"), 2, cov=True)
+        dynamic = DynArray(Object("Child"), cov=True)
+        queue = Queue(Object("Child"), cov=True)
+        lookup = AssocArray(Bit(8), Object("Child"), cov=True)
+
+    coverage = auto_coverage_ir(Packet)
+    assert coverage is not None
+    points = {point.name: point.expression for point in coverage.points}
+    assert points["fixed[0]"]["kind"] == "slot_is_null"
+    assert points["dynamic"]["kind"] == "container_nullness"
+    assert points["queue"]["kind"] == "container_nullness"
+    assert points["lookup"]["kind"] == "assoc_nullness"
+
+    packet = Packet()
+    packet.dynamic.value = [None]
+    packet.queue.value = [None]
+    packet.lookup.value = {3: None}
+    packet.svtypes_auto_cov.sample()
+    snapshot = packet.svtypes_auto_cov.instance.snapshot()
+    assert snapshot["dynamic"]["hits"] == {"auto[1]": 1}
+    assert snapshot["queue"]["hits"] == {"auto[1]": 1}
+    assert snapshot["lookup"]["hits"] == {"auto[1]": 1}
+
+
 def test_cov_slots_is_restricted_to_dynamic_array_and_queue_fields():
     with pytest.raises(ValueError, match="cov_slots is only supported"):
         class Invalid(SvObject):

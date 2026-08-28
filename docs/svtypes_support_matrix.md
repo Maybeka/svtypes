@@ -2,11 +2,11 @@
 
 This matrix tracks the production-readiness status for SvTypes serialization
 after M4. Python and C++ coverage runs locally; SystemVerilog typed-channel
-coverage is an optional SVX/SystemVerilog target integration check.
+coverage is an optional remote-target integration check.
 
 Status legend:
 
-- `covered`: covered by the current Python/SystemVerilog target parity examples
+- `covered`: covered by the current Python/target parity examples
 - `partial`: some implementation or tests exist, but the feature is not
   complete in the listed language/backend
 - `deferred`: deliberately postponed to a later milestone

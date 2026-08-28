@@ -1,8 +1,8 @@
-"""Standalone SystemVerilog target coverage for generated SvTypes codecs (no SVX).
+"""Standalone target coverage for generated SvTypes codecs (no SVX).
 
 Existing remote tests in ``test_constraint_sv.py`` cover constrained-random,
 templates, and layered randomization. M3/M4 example benches require SVX
-channels. This module compiles generated SystemVerilog on the shared SystemVerilog target host
+channels. This module compiles generated SystemVerilog on the shared target host
 and checks pack/unpack byte parity, object-graph identity, field policies,
 plusargs, coverage sampling, and truncated-stream failure.
 """
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -56,9 +57,9 @@ from svtypes import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-REMOTE_ROOT = "/path/to/svtypes"
+REMOTE_ROOT = os.environ.get("SVTYPES_REMOTE_SV_ROOT", "")
 WORKDIR_NAME = "target_core"
-DEFAULT_HOST = "remote-target"
+REMOTE_RUNNER = os.environ.get("SVTYPES_REMOTE_SV_RUNNER", "svtypes_remote_sv_runner")
 
 
 class SignedTone(Enum, width=8, signed=True):
@@ -621,19 +622,23 @@ endmodule
 
 
 def _host_or_skip() -> str:
-    host = os.environ.get("SVTYPES_target_HOST", DEFAULT_HOST)
+    host = os.environ["SVTYPES_REMOTE_SV_HOST"]
     reachable = subprocess.run(
         ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
         capture_output=True,
         text=True,
     )
     if reachable.returncode != 0:
-        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+        pytest.skip(f"remote target host {host} is not reachable")
     return host
 
 
 def _ssh(host: str, command: str) -> subprocess.CompletedProcess[str]:
-    remote = f"bash -ilc {command!r}"
+    prefix = (
+        f"export SVTYPES_REMOTE_SV_ROOT={shlex.quote(REMOTE_ROOT)}; "
+        f"export SVTYPES_REMOTE_SV_RUNNER={shlex.quote(REMOTE_RUNNER)}; "
+    )
+    remote = prefix + f"bash -ilc {command!r}"
     return subprocess.run(["ssh", host, remote], capture_output=True, text=True)
 
 
@@ -699,7 +704,7 @@ def test_target_core_generated_sv_contains_feature_markers():
     assert "handle = new(\"acme.Device\")" in text
     assert "int skipped;" in text
     assert "int_packer::pack(skipped" not in text
-    assert "signed_tone_cp: coverpoint item.signed_tone;" in text
+    assert "signed_tone: coverpoint item.signed_tone {" in text
     assert "constraint legal {" in text
     assert "class ParamTx #(" in text
     assert "ParamTx#(.MODE(32'd5)) param_item;" in text
@@ -721,12 +726,9 @@ def target_core_sim():
     result = _ssh(
         host,
         "cd "
-        f"{REMOTE_ROOT}/.tmp/{WORKDIR_NAME} && "
-        "rm -rf simv csrc simv.daidir && "
-        "target -full64 -sverilog -timescale=1ns/1ps "
-        f"+incdir+{REMOTE_ROOT}/svtypes_runtime/sv "
-        f"{REMOTE_ROOT}/svtypes_runtime/sv/svtypes_pkg.sv "
-        "target_core_test.sv tb.sv -o simv",
+        f"$SVTYPES_REMOTE_SV_ROOT/.tmp/{WORKDIR_NAME} && "
+        "$SVTYPES_REMOTE_SV_RUNNER compile "
+        "target_core_test.sv tb.sv",
     )
     log = result.stdout + result.stderr
     print(log)
@@ -734,10 +736,10 @@ def target_core_sim():
     return host, out
 
 
-@pytest.mark.remote_target
-def test_remote_target_core_types_graph_and_policies(target_core_sim):
+@pytest.mark.remote_sv
+def test_remote_sv_core_types_graph_and_policies(target_core_sim):
     host, out = target_core_sim
-    result = _ssh(host, f"cd {REMOTE_ROOT}/.tmp/{WORKDIR_NAME} && ./simv +SVTYPES_CASE=core")
+    result = _ssh(host, f"cd $SVTYPES_REMOTE_SV_ROOT/.tmp/{WORKDIR_NAME} && $SVTYPES_REMOTE_SV_RUNNER run +SVTYPES_CASE=core")
     log = result.stdout + result.stderr
     print(log)
     assert result.returncode == 0, log
@@ -847,12 +849,12 @@ def test_remote_target_core_types_graph_and_policies(target_core_sim):
     assert valq.nodes[0].data.value == 66
 
 
-@pytest.mark.remote_target
-def test_remote_target_plusarg_overrides_scalar(target_core_sim):
+@pytest.mark.remote_sv
+def test_remote_sv_plusarg_overrides_scalar(target_core_sim):
     host, _out = target_core_sim
     result = _ssh(
         host,
-        f"cd {REMOTE_ROOT}/.tmp/{WORKDIR_NAME} && ./simv +SVTYPES_CASE=plusarg +count=99",
+        f"cd $SVTYPES_REMOTE_SV_ROOT/.tmp/{WORKDIR_NAME} && $SVTYPES_REMOTE_SV_RUNNER run +SVTYPES_CASE=plusarg +count=99",
     )
     log = result.stdout + result.stderr
     print(log)
@@ -860,14 +862,14 @@ def test_remote_target_plusarg_overrides_scalar(target_core_sim):
     assert "SVTYPES_PLUSARG_PASS" in log, log
 
 
-@pytest.mark.remote_target
-def test_remote_target_truncated_unpack_fails(target_core_sim):
+@pytest.mark.remote_sv
+def test_remote_sv_truncated_unpack_fails(target_core_sim):
     host, _out = target_core_sim
-    result = _ssh(host, f"cd {REMOTE_ROOT}/.tmp/{WORKDIR_NAME} && ./simv +SVTYPES_CASE=trunc")
+    result = _ssh(host, f"cd $SVTYPES_REMOTE_SV_ROOT/.tmp/{WORKDIR_NAME} && $SVTYPES_REMOTE_SV_RUNNER run +SVTYPES_CASE=trunc")
     log = result.stdout + result.stderr
     print(log)
-    # SystemVerilog target `$fatal` terminates the simulation but leaves the simv process exit
-    # code at 0, so the failure evidence is the underflow fatal message, not
+    # Some targets leave the process exit code at 0 after `$fatal`, so the
+    # failure evidence is the underflow fatal message, not
     # the return code.
     assert "SVTYPES_CORE_PASS" not in log, log
     assert "unpack underflow" in log, log

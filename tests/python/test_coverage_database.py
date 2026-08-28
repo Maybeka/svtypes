@@ -2,8 +2,9 @@ from copy import deepcopy
 
 import pytest
 
-from svtypes import Bit, CoverageDatabase, CoverageError, CoverGroupOption, CoverGroupTypeOption, CoverInput, SvObject, covergroup
-from svtypes.coverage import CovPoint, bins, illegal_bins, set_coverage_case_name
+from svtypes import Bit, CoverageDatabase, CoverageError, CoverGroupOption, CoverGroupTypeOption, CoverInput, Cross, SvObject, covergroup
+from svtypes.coverage import CovPoint, bins, default_bins, illegal_bins, set_coverage_case_name
+from svtypes.coverage import export_ucis, export_ucis_file, import_ucis, import_ucis_file
 from svtypes.coverage.context import _reset_coverage_case_name_for_testing
 
 
@@ -69,6 +70,126 @@ def test_database_record_refresh_does_not_double_count() -> None:
     database.record(packet.cg.instance, logical_instance_key="dut.pkt")
     database.record(packet.cg.instance, logical_instance_key="dut.pkt")
     assert database.snapshot_document()["records"][0]["points"]["code_cp"]["hits"] == {"low": 1}
+
+
+def test_database_baseline_seeds_new_instance_and_continues_sampling() -> None:
+    database = CoverageDatabase()
+    prior = _sample(0)
+    database.record(prior.cg.instance, logical_instance_key="dut.pkt")
+
+    resumed = DatabasePacket()
+    resumed.cg.bind_logical_instance("dut.pkt")
+    database.apply_baseline(resumed.cg.instance)
+    resumed.code.value = 1
+    resumed.cg.sample()
+
+    assert resumed.cg.instance.snapshot()["code_cp"]["hits"] == {"high": 1, "low": 1}
+
+
+def test_database_baseline_rejects_incompatible_instance() -> None:
+    database = CoverageDatabase()
+    database.record(_sample(0).cg.instance, logical_instance_key="dut.pkt")
+    other = DatabasePacket()
+    other.cg.bind_logical_instance("dut.pkt")
+    document = other.cg.instance.snapshot_document()
+    document["declaration_semantic_digest"] = "other"
+    class Incompatible:
+        logical_instance_key = "dut.pkt"
+        def snapshot_document(self):
+            return document
+    with pytest.raises(CoverageError, match="declaration mismatch"):
+        database.apply_baseline(Incompatible())
+
+
+def test_database_binary_round_trip_merge_and_baseline(tmp_path) -> None:
+    first = CoverageDatabase()
+    first.record(_sample(0).cg.instance, logical_instance_key="dut.pkt")
+    path = tmp_path / "first.svtcov"
+    first.write(str(path))
+    restored = CoverageDatabase.read(str(path))
+    assert restored.snapshot_document() == first.snapshot_document()
+
+    resumed = DatabasePacket()
+    resumed.cg.bind_logical_instance("dut.pkt")
+    restored.apply_baseline(resumed.cg.instance)
+    resumed.code.value = 1
+    resumed.cg.sample()
+    next_run = CoverageDatabase()
+    next_run.record(resumed.cg.instance)
+    assert next_run.snapshot_document()["records"][0]["points"]["code_cp"]["hits"] == {"high": 1, "low": 1}
+
+
+def test_database_binary_rejects_corruption_and_unknown_version() -> None:
+    database = CoverageDatabase()
+    database.record(_sample(0).cg.instance)
+    data = database.to_bytes()
+    with pytest.raises(CoverageError, match="checksum"):
+        CoverageDatabase.from_bytes(data[:-1] + bytes([data[-1] ^ 1]))
+    incompatible = bytearray(data)
+    incompatible[8:10] = (2).to_bytes(2, "little")
+    with pytest.raises(CoverageError, match="format version"):
+        CoverageDatabase.from_bytes(bytes(incompatible))
+
+
+def test_ucis_export_contains_functional_coverage_and_loss_report() -> None:
+    database = CoverageDatabase()
+    database.record(_sample(0).cg.instance, logical_instance_key="dut.pkt")
+    xml, report = export_ucis(database)
+    assert '<UCIS ' in xml
+    assert '<covergroupCoverage' in xml
+    assert 'coverpointBin' in xml
+    assert 'coverageCount="1"' in xml
+    assert report["format"] == "svtypes.ucis.loss-report"
+    assert report["losses"] == []
+    imported, import_report = import_ucis(xml, defaults={"svtypes_default": "on"})
+    assert imported[0]["points"]["code_cp"]["low"] == 1
+    assert imported[0]["options"]["svtypes_default"] == "on"
+    assert import_report["losses"]
+
+
+def test_ucis_export_has_required_covergroup_structure_and_file_import_defaults(tmp_path) -> None:
+    database = CoverageDatabase()
+    database.record(_sample(0).cg.instance, logical_instance_key="dut.pkt")
+    path = tmp_path / "coverage.ucis.xml"
+    assert export_ucis_file(path, database)["losses"] == []
+    root = __import__("xml.etree.ElementTree", fromlist=["ElementTree"]).fromstring(path.read_text())
+    cg = root.find(".//cgInstance")
+    assert cg is not None
+    assert cg.find("cgId/cginstSourceId") is not None
+    assert cg.find("cgId/cgSourceId") is not None
+    assert all(bin_.find("range/contents") is not None for bin_ in cg.findall(".//coverpointBin"))
+    config = tmp_path / "ucis-defaults.json"
+    config.write_text('{"cross_retain_auto_bins": 0}', encoding="utf-8")
+    imported, report = import_ucis_file(path, config_path=config)
+    assert imported[0]["options"]["cross_retain_auto_bins"] == 0
+    assert report["losses"]
+
+
+def test_ucis_export_omits_unrepresentable_default_bin_without_invalid_xml() -> None:
+    class Packet(SvObject):
+        code = Bit(1)
+
+        @covergroup
+        def cg(self):
+            class code_cp(CovPoint, source=self.code):
+                fallback = default_bins
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    packet = Packet()
+    packet.code.value = 0
+    packet.cg.sample()
+    database = CoverageDatabase()
+    database.record(packet.cg.instance)
+    xml, report = export_ucis(database)
+    root = __import__("xml.etree.ElementTree", fromlist=["ElementTree"]).fromstring(xml)
+    assert root.findall(".//cgInstance") == []
+    assert report["losses"] == [{
+        "record": "1", "item": Packet.cg.freeze().covergroup_type_id,
+        "reason": "covergroup omitted: UCIS requires an exported coverpoint",
+    }]
 
 
 def test_database_snapshot_is_not_a_mutable_view_of_internal_records() -> None:
@@ -261,3 +382,40 @@ def test_database_aggregate_coverage_honors_covergroup_weight() -> None:
     high.cg.sample()
     database.record(high.cg.instance)
     assert database.coverage() == 25.0
+
+
+def test_database_merges_cross_counters_with_merge_instances() -> None:
+    class Packet(SvObject):
+        code = Bit(1)
+        kind = Bit(1)
+
+        @covergroup
+        def cg(self):
+            class type_option(CoverGroupTypeOption):
+                merge_instances = 1
+
+            class code_cp(CovPoint, source=self.code):
+                zero = bins[0]
+                one = bins[1]
+
+            class kind_cp(CovPoint, source=self.kind):
+                zero = bins[0]
+                one = bins[1]
+
+            class combined(Cross, members=(code_cp, kind_cp)):
+                low = bins[code_cp.zero, kind_cp.zero]
+                high = bins[code_cp.one, kind_cp.one]
+
+        def __init__(self, code: int, kind: int):
+            super().__init__()
+            self.cg.instantiate()
+            self.code.value, self.kind.value = code, kind
+            self.cg.sample()
+
+    left, right = CoverageDatabase(), CoverageDatabase()
+    left.record(Packet(0, 0).cg.instance)
+    right.record(Packet(1, 1).cg.instance)
+    left.merge(right)
+    summary = left.type_summary(Packet.cg.freeze().covergroup_type_id)
+    assert summary["coverage"] == 100.0
+    assert summary["points"]["combined"]["hits"] == {"high": 1, "low": 1}

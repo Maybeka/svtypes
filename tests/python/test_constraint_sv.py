@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -38,10 +39,21 @@ from svtypes.constraint.leaves import iter_class_leaves, leaf_unsigned, resolve_
 
 
 target_handle_pkg = get_package("target_handle_randomization")
+REMOTE_ROOT = os.environ.get("SVTYPES_REMOTE_SV_ROOT", "")
+REMOTE_RUNNER = os.environ.get("SVTYPES_REMOTE_SV_RUNNER", "svtypes_remote_sv_runner")
+
+
+def _run_remote(host: str, command: str) -> subprocess.CompletedProcess[str]:
+    """Run a target command using caller-supplied, non-public configuration."""
+    prefix = (
+        f"export SVTYPES_REMOTE_SV_ROOT={shlex.quote(REMOTE_ROOT)}; "
+        f"export SVTYPES_REMOTE_SV_RUNNER={shlex.quote(REMOTE_RUNNER)}; "
+    )
+    return subprocess.run(["ssh", host, prefix + command], capture_output=True, text=True)
 
 
 @svobj(registry=target_handle_pkg)
-class targetHandleChild(SvObject):
+class TargetHandleChild(SvObject):
     data = Bit(8)
 
     @constraint
@@ -50,8 +62,8 @@ class targetHandleChild(SvObject):
 
 
 @svobj(registry=target_handle_pkg)
-class targetHandleParent(SvObject):
-    child = Object("targetHandleChild", registry=target_handle_pkg, rand=True)
+class TargetHandleParent(SvObject):
+    child = Object("TargetHandleChild", registry=target_handle_pkg, rand=True)
     other = Bit(8)
 
     @constraint
@@ -60,11 +72,11 @@ class targetHandleParent(SvObject):
 
 
 @svobj(registry=target_handle_pkg)
-class targetContainerHandleParent(SvObject):
-    fixed = Array(Object("targetHandleChild", registry=target_handle_pkg, rand=True), 1)
-    dynamic = DynArray(Object("targetHandleChild", registry=target_handle_pkg, rand=True))
-    queue = Queue(Object("targetHandleChild", registry=target_handle_pkg, rand=True))
-    table = AssocArray(Bit(8), Object("targetHandleChild", registry=target_handle_pkg, rand=True))
+class TargetContainerHandleParent(SvObject):
+    fixed = Array(Object("TargetHandleChild", registry=target_handle_pkg, rand=True), 1)
+    dynamic = DynArray(Object("TargetHandleChild", registry=target_handle_pkg, rand=True))
+    queue = Queue(Object("TargetHandleChild", registry=target_handle_pkg, rand=True))
+    table = AssocArray(Bit(8), Object("TargetHandleChild", registry=target_handle_pkg, rand=True))
     target = Bit(8)
 
     @constraint
@@ -442,47 +454,44 @@ endmodule
     )
 
 
-@pytest.mark.remote_target
-def test_remote_target_constraint_simulation():
-    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+@pytest.mark.remote_sv
+def test_remote_sv_constraint_simulation():
+    host = os.environ["SVTYPES_REMOTE_SV_HOST"]
     reachable = subprocess.run(
         ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
         capture_output=True,
         text=True,
     )
     if reachable.returncode != 0:
-        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+        pytest.skip(f"remote target host {host} is not reachable")
     out = Path(__file__).resolve().parents[2] / ".tmp" / "constraint_sv"
     if out.exists():
         shutil.rmtree(out)
     _write_sv_sim(out)
     remote = (
         "bash -ilc '"
-        "cd /path/to/svtypes/.tmp/constraint_sv && "
-        "rm -rf simv csrc simv.daidir && "
-        "target -full64 -sverilog -timescale=1ns/1ps "
-        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
-        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
-        "constraint_sv_test.sv tb.sv -o simv && ./simv'"
+        "cd $SVTYPES_REMOTE_SV_ROOT/.tmp/constraint_sv && "
+        ""
+        "$SVTYPES_REMOTE_SV_RUNNER compile "        "constraint_sv_test.sv tb.sv && $SVTYPES_REMOTE_SV_RUNNER run'"
     )
-    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    result = _run_remote(host, remote)
     log = result.stdout + result.stderr
     print(log)
     assert result.returncode == 0, log
     assert "SVTYPES_CONSTRAINT_PASS" in log, log
 
 
-@pytest.mark.remote_target
-def test_remote_target_dynamic_collection_simulation():
-    """Dynamic-array and queue size/foreach constraints run in SystemVerilog target."""
-    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+@pytest.mark.remote_sv
+def test_remote_sv_dynamic_collection_simulation():
+    """Dynamic-array and queue size/foreach constraints run in target."""
+    host = os.environ["SVTYPES_REMOTE_SV_HOST"]
     reachable = subprocess.run(
         ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
         capture_output=True,
         text=True,
     )
     if reachable.returncode != 0:
-        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+        pytest.skip(f"remote target host {host} is not reachable")
     out = Path(__file__).resolve().parents[2] / ".tmp" / "dynamic_collection_sv"
     if out.exists():
         shutil.rmtree(out)
@@ -539,31 +548,28 @@ endmodule
     )
     remote = (
         "bash -ilc '"
-        "cd /path/to/svtypes/.tmp/dynamic_collection_sv && "
-        "rm -rf simv csrc simv.daidir && "
-        "target -full64 -sverilog -timescale=1ns/1ps "
-        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
-        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
-        "dynamic_collection_sv_test.sv tb.sv -o simv && ./simv'"
+        "cd $SVTYPES_REMOTE_SV_ROOT/.tmp/dynamic_collection_sv && "
+        ""
+        "$SVTYPES_REMOTE_SV_RUNNER compile "        "dynamic_collection_sv_test.sv tb.sv && $SVTYPES_REMOTE_SV_RUNNER run'"
     )
-    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    result = _run_remote(host, remote)
     log = result.stdout + result.stderr
     print(log)
     assert result.returncode == 0, log
     assert "SVTYPES_DYNAMIC_COLLECTION_PASS" in log, log
 
 
-@pytest.mark.remote_target
-def test_remote_target_rand_handle_randomization():
-    """A pre-allocated rand class handle is solved with its parent in SystemVerilog target."""
-    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+@pytest.mark.remote_sv
+def test_remote_sv_rand_handle_randomization():
+    """A pre-allocated rand class handle is solved with its parent in target."""
+    host = os.environ["SVTYPES_REMOTE_SV_HOST"]
     reachable = subprocess.run(
         ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
         capture_output=True,
         text=True,
     )
     if reachable.returncode != 0:
-        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+        pytest.skip(f"remote target host {host} is not reachable")
 
     out = Path(__file__).resolve().parents[2] / ".tmp" / "rand_handle_sv"
     if out.exists():
@@ -574,8 +580,8 @@ def test_remote_target_rand_handle_randomization():
             [
                 "package rand_handle_sv_test;",
                 "  import svtypes_pkg::*;",
-                targetHandleChild.to_sv_obj(level=1),
-                targetHandleParent.to_sv_obj(level=1),
+                TargetHandleChild.to_sv_obj(level=1),
+                TargetHandleParent.to_sv_obj(level=1),
                 "endpackage",
                 "",
             ]
@@ -587,14 +593,14 @@ module tb;
   import svtypes_pkg::*;
   import rand_handle_sv_test::*;
 
-  class HookChild extends targetHandleChild;
+  class HookChild extends TargetHandleChild;
     int pre_count;
     int post_count;
     function void pre_randomize(); pre_count++; endfunction
     function void post_randomize(); post_count++; endfunction
   endclass
 
-  class HookParent extends targetHandleParent;
+  class HookParent extends TargetHandleParent;
     int pre_count;
     int post_count;
     function void pre_randomize(); pre_count++; endfunction
@@ -624,31 +630,28 @@ endmodule
     )
     remote = (
         "bash -ilc '"
-        "cd /path/to/svtypes/.tmp/rand_handle_sv && "
-        "rm -rf simv csrc simv.daidir && "
-        "target -full64 -sverilog -timescale=1ns/1ps "
-        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
-        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
-        "rand_handle_sv_test.sv tb.sv -o simv && ./simv'"
+        "cd $SVTYPES_REMOTE_SV_ROOT/.tmp/rand_handle_sv && "
+        ""
+        "$SVTYPES_REMOTE_SV_RUNNER compile "        "rand_handle_sv_test.sv tb.sv && $SVTYPES_REMOTE_SV_RUNNER run'"
     )
-    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    result = _run_remote(host, remote)
     log = result.stdout + result.stderr
     print(log)
     assert result.returncode == 0, log
     assert "SVTYPES_RAND_HANDLE_PASS" in log, log
 
 
-@pytest.mark.remote_target
-def test_remote_target_rand_handle_container_randomization():
-    """Pre-allocated rand handles in every unpacked container randomize in SystemVerilog target."""
-    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+@pytest.mark.remote_sv
+def test_remote_sv_rand_handle_container_randomization():
+    """Pre-allocated rand handles in every unpacked container randomize in target."""
+    host = os.environ["SVTYPES_REMOTE_SV_HOST"]
     reachable = subprocess.run(
         ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
         capture_output=True,
         text=True,
     )
     if reachable.returncode != 0:
-        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+        pytest.skip(f"remote target host {host} is not reachable")
 
     out = Path(__file__).resolve().parents[2] / ".tmp" / "rand_handle_container_sv"
     if out.exists():
@@ -659,8 +662,8 @@ def test_remote_target_rand_handle_container_randomization():
             [
                 "package rand_handle_container_sv_test;",
                 "  import svtypes_pkg::*;",
-                targetHandleChild.to_sv_obj(level=1),
-                targetContainerHandleParent.to_sv_obj(level=1),
+                TargetHandleChild.to_sv_obj(level=1),
+                TargetContainerHandleParent.to_sv_obj(level=1),
                 "endpackage",
                 "",
             ]
@@ -673,8 +676,8 @@ module tb;
   import rand_handle_container_sv_test::*;
 
   initial begin
-    targetContainerHandleParent p;
-    targetHandleChild fixed, dynamic, queued, mapped;
+    TargetContainerHandleParent p;
+    TargetHandleChild fixed, dynamic, queued, mapped;
     p = new();
     fixed = new(); dynamic = new(); queued = new(); mapped = new();
     p.fixed[0] = fixed;
@@ -696,32 +699,29 @@ endmodule
     )
     remote = (
         "bash -ilc '"
-        "cd /path/to/svtypes/.tmp/rand_handle_container_sv && "
-        "rm -rf simv csrc simv.daidir && "
-        "target -full64 -sverilog -timescale=1ns/1ps "
-        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
-        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
-        "rand_handle_container_sv_test.sv tb.sv -o simv && ./simv'"
+        "cd $SVTYPES_REMOTE_SV_ROOT/.tmp/rand_handle_container_sv && "
+        ""
+        "$SVTYPES_REMOTE_SV_RUNNER compile "        "rand_handle_container_sv_test.sv tb.sv && $SVTYPES_REMOTE_SV_RUNNER run'"
     )
-    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    result = _run_remote(host, remote)
     log = result.stdout + result.stderr
     print(log)
     assert result.returncode == 0, log
     assert "SVTYPES_RAND_HANDLE_CONTAINER_PASS" in log, log
 
 
-@pytest.mark.remote_target
-def test_remote_target_dist_expression_simulation():
+@pytest.mark.remote_sv
+def test_remote_sv_dist_expression_simulation():
     """The same expression/range/weight dist IR accepted by Python compiles
     and constrains target-language randomization."""
-    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+    host = os.environ["SVTYPES_REMOTE_SV_HOST"]
     reachable = subprocess.run(
         ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
         capture_output=True,
         text=True,
     )
     if reachable.returncode != 0:
-        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+        pytest.skip(f"remote target host {host} is not reachable")
 
     class ConditionalDistPacket(SvObject):
         gate = Bit(1)
@@ -833,31 +833,28 @@ endmodule
     )
     remote = (
         "bash -ilc '"
-        "cd /path/to/svtypes/.tmp/dist_sv && "
-        "rm -rf simv csrc simv.daidir && "
-        "target -full64 -sverilog -timescale=1ns/1ps "
-        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
-        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
-        "dist_sv_test.sv tb.sv -o simv && ./simv'"
+        "cd $SVTYPES_REMOTE_SV_ROOT/.tmp/dist_sv && "
+        ""
+        "$SVTYPES_REMOTE_SV_RUNNER compile "        "dist_sv_test.sv tb.sv && $SVTYPES_REMOTE_SV_RUNNER run'"
     )
-    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    result = _run_remote(host, remote)
     log = result.stdout + result.stderr
     print(log)
     assert result.returncode == 0, log
     assert "SVTYPES_DIST_PASS" in log, log
 
 
-@pytest.mark.remote_target
-def test_remote_target_randc_cycle_simulation():
+@pytest.mark.remote_sv
+def test_remote_sv_randc_cycle_simulation():
     """Generated `randc` follows the observable SV cycle and mode rules."""
-    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+    host = os.environ["SVTYPES_REMOTE_SV_HOST"]
     reachable = subprocess.run(
         ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
         capture_output=True,
         text=True,
     )
     if reachable.returncode != 0:
-        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+        pytest.skip(f"remote target host {host} is not reachable")
     out = Path(__file__).resolve().parents[2] / ".tmp" / "randc_sv"
     if out.exists():
         shutil.rmtree(out)
@@ -913,30 +910,27 @@ endmodule
     )
     remote = (
         "bash -ilc '"
-        "cd /path/to/svtypes/.tmp/randc_sv && "
-        "rm -rf simv csrc simv.daidir && "
-        "target -full64 -sverilog -timescale=1ns/1ps "
-        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
-        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
-        "randc_sv_test.sv tb.sv -o simv && ./simv'"
+        "cd $SVTYPES_REMOTE_SV_ROOT/.tmp/randc_sv && "
+        ""
+        "$SVTYPES_REMOTE_SV_RUNNER compile "        "randc_sv_test.sv tb.sv && $SVTYPES_REMOTE_SV_RUNNER run'"
     )
-    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    result = _run_remote(host, remote)
     log = result.stdout + result.stderr
     print(log)
     assert result.returncode == 0, log
     assert "SVTYPES_RANDC_PASS" in log, log
 
 
-@pytest.mark.remote_target
-def test_remote_target_unique_scalar_simulation():
-    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+@pytest.mark.remote_sv
+def test_remote_sv_unique_scalar_simulation():
+    host = os.environ["SVTYPES_REMOTE_SV_HOST"]
     reachable = subprocess.run(
         ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
         capture_output=True,
         text=True,
     )
     if reachable.returncode != 0:
-        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+        pytest.skip(f"remote target host {host} is not reachable")
     out = Path(__file__).resolve().parents[2] / ".tmp" / "unique_sv"
     if out.exists():
         shutil.rmtree(out)
@@ -974,30 +968,27 @@ endmodule
     )
     remote = (
         "bash -ilc '"
-        "cd /path/to/svtypes/.tmp/unique_sv && "
-        "rm -rf simv csrc simv.daidir && "
-        "target -full64 -sverilog -timescale=1ns/1ps "
-        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
-        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
-        "unique_sv_test.sv tb.sv -o simv && ./simv'"
+        "cd $SVTYPES_REMOTE_SV_ROOT/.tmp/unique_sv && "
+        ""
+        "$SVTYPES_REMOTE_SV_RUNNER compile "        "unique_sv_test.sv tb.sv && $SVTYPES_REMOTE_SV_RUNNER run'"
     )
-    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    result = _run_remote(host, remote)
     log = result.stdout + result.stderr
     print(log)
     assert result.returncode == 0, log
     assert "SVTYPES_UNIQUE_PASS" in log, log
 
 
-@pytest.mark.remote_target
-def test_remote_target_unique_collection_simulation():
-    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+@pytest.mark.remote_sv
+def test_remote_sv_unique_collection_simulation():
+    host = os.environ["SVTYPES_REMOTE_SV_HOST"]
     reachable = subprocess.run(
         ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
         capture_output=True,
         text=True,
     )
     if reachable.returncode != 0:
-        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+        pytest.skip(f"remote target host {host} is not reachable")
     out = Path(__file__).resolve().parents[2] / ".tmp" / "unique_collection_sv"
     if out.exists():
         shutil.rmtree(out)
@@ -1050,30 +1041,27 @@ endmodule
     )
     remote = (
         "bash -ilc '"
-        "cd /path/to/svtypes/.tmp/unique_collection_sv && "
-        "rm -rf simv csrc simv.daidir && "
-        "target -full64 -sverilog -timescale=1ns/1ps "
-        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
-        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
-        "unique_collection_sv_test.sv tb.sv -o simv && ./simv'"
+        "cd $SVTYPES_REMOTE_SV_ROOT/.tmp/unique_collection_sv && "
+        ""
+        "$SVTYPES_REMOTE_SV_RUNNER compile "        "unique_collection_sv_test.sv tb.sv && $SVTYPES_REMOTE_SV_RUNNER run'"
     )
-    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    result = _run_remote(host, remote)
     log = result.stdout + result.stderr
     print(log)
     assert result.returncode == 0, log
     assert "SVTYPES_UNIQUE_COLLECTION_PASS" in log, log
 
 
-@pytest.mark.remote_target
-def test_remote_target_soft_constraint_simulation():
-    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+@pytest.mark.remote_sv
+def test_remote_sv_soft_constraint_simulation():
+    host = os.environ["SVTYPES_REMOTE_SV_HOST"]
     reachable = subprocess.run(
         ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
         capture_output=True,
         text=True,
     )
     if reachable.returncode != 0:
-        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+        pytest.skip(f"remote target host {host} is not reachable")
     out = Path(__file__).resolve().parents[2] / ".tmp" / "soft_sv"
     if out.exists():
         shutil.rmtree(out)
@@ -1123,30 +1111,27 @@ endmodule
     )
     remote = (
         "bash -ilc '"
-        "cd /path/to/svtypes/.tmp/soft_sv && "
-        "rm -rf simv csrc simv.daidir && "
-        "target -full64 -sverilog -timescale=1ns/1ps "
-        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
-        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
-        "soft_sv_test.sv tb.sv -o simv && ./simv'"
+        "cd $SVTYPES_REMOTE_SV_ROOT/.tmp/soft_sv && "
+        ""
+        "$SVTYPES_REMOTE_SV_RUNNER compile "        "soft_sv_test.sv tb.sv && $SVTYPES_REMOTE_SV_RUNNER run'"
     )
-    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    result = _run_remote(host, remote)
     log = result.stdout + result.stderr
     print(log)
     assert result.returncode == 0, log
     assert "SVTYPES_SOFT_PASS" in log, log
 
 
-@pytest.mark.remote_target
-def test_remote_target_solve_before_simulation():
-    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+@pytest.mark.remote_sv
+def test_remote_sv_solve_before_simulation():
+    host = os.environ["SVTYPES_REMOTE_SV_HOST"]
     reachable = subprocess.run(
         ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
         capture_output=True,
         text=True,
     )
     if reachable.returncode != 0:
-        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+        pytest.skip(f"remote target host {host} is not reachable")
 
     class WideSolveBeforePacket(SvObject):
         first = Bit(13)
@@ -1202,33 +1187,30 @@ endmodule
     )
     remote = (
         "bash -ilc '"
-        "cd /path/to/svtypes/.tmp/solve_before_sv && "
-        "rm -rf simv csrc simv.daidir && "
-        "target -full64 -sverilog -timescale=1ns/1ps "
-        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
-        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
-        "solve_before_sv_test.sv tb.sv -o simv && ./simv'"
+        "cd $SVTYPES_REMOTE_SV_ROOT/.tmp/solve_before_sv && "
+        ""
+        "$SVTYPES_REMOTE_SV_RUNNER compile "        "solve_before_sv_test.sv tb.sv && $SVTYPES_REMOTE_SV_RUNNER run'"
     )
-    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    result = _run_remote(host, remote)
     log = result.stdout + result.stderr
     print(log)
     assert result.returncode == 0, log
     assert "SVTYPES_SOLVE_BEFORE_PASS" in log, log
 
 
-@pytest.mark.remote_target
-def test_remote_target_template_specialization_simulation():
+@pytest.mark.remote_sv
+def test_remote_sv_template_specialization_simulation():
     """The generated template definition is compiled, and both the emitted
     specialization and a direct Templated#(.WIDTH(...)) instance (resolved
     entirely by the target language) simulate correctly."""
-    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+    host = os.environ["SVTYPES_REMOTE_SV_HOST"]
     reachable = subprocess.run(
         ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
         capture_output=True,
         text=True,
     )
     if reachable.returncode != 0:
-        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+        pytest.skip(f"remote target host {host} is not reachable")
 
     class Templated(SvObject):
         WIDTH = Parameter(Int)
@@ -1292,32 +1274,29 @@ endmodule
     )
     remote = (
         "bash -ilc '"
-        "cd /path/to/svtypes/.tmp/template_sv && "
-        "rm -rf simv csrc simv.daidir && "
-        "target -full64 -sverilog -timescale=1ns/1ps "
-        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
-        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
-        "template_sv_test.sv tb.sv -o simv && ./simv'"
+        "cd $SVTYPES_REMOTE_SV_ROOT/.tmp/template_sv && "
+        ""
+        "$SVTYPES_REMOTE_SV_RUNNER compile "        "template_sv_test.sv tb.sv && $SVTYPES_REMOTE_SV_RUNNER run'"
     )
-    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    result = _run_remote(host, remote)
     log = result.stdout + result.stderr
     print(log)
     assert result.returncode == 0, log
     assert "SVTYPES_TEMPLATE_PASS" in log, log
 
 
-@pytest.mark.remote_target
-def test_remote_target_type_parameter_simulation():
+@pytest.mark.remote_sv
+def test_remote_sv_type_parameter_simulation():
     """A type-parameter template compiles; direct Kind#(.T(Payload))
     instances are resolved by the target language and simulate."""
-    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+    host = os.environ["SVTYPES_REMOTE_SV_HOST"]
     reachable = subprocess.run(
         ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
         capture_output=True,
         text=True,
     )
     if reachable.returncode != 0:
-        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+        pytest.skip(f"remote target host {host} is not reachable")
 
     class Kind(SvObject):
         T = Parameter(type)
@@ -1371,33 +1350,30 @@ endmodule
     )
     remote = (
         "bash -ilc '"
-        "cd /path/to/svtypes/.tmp/type_param_sv && "
-        "rm -rf simv csrc simv.daidir && "
-        "target -full64 -sverilog -timescale=1ns/1ps "
-        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
-        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
-        "type_param_sv_test.sv tb.sv -o simv && ./simv'"
+        "cd $SVTYPES_REMOTE_SV_ROOT/.tmp/type_param_sv && "
+        ""
+        "$SVTYPES_REMOTE_SV_RUNNER compile "        "type_param_sv_test.sv tb.sv && $SVTYPES_REMOTE_SV_RUNNER run'"
     )
-    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    result = _run_remote(host, remote)
     log = result.stdout + result.stderr
     print(log)
     assert result.returncode == 0, log
     assert "SVTYPES_TYPE_PARAM_PASS" in log, log
 
 
-@pytest.mark.remote_target
-def test_remote_target_template_constraint_on_parameterized_instance():
+@pytest.mark.remote_sv
+def test_remote_sv_template_constraint_on_parameterized_instance():
     """Constraints are rendered on the template with parameter names, so a
     direct Bound#(.WIDTH(8)) instance is constrained by the target-language
     solver."""
-    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+    host = os.environ["SVTYPES_REMOTE_SV_HOST"]
     reachable = subprocess.run(
         ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
         capture_output=True,
         text=True,
     )
     if reachable.returncode != 0:
-        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+        pytest.skip(f"remote target host {host} is not reachable")
 
     class Bound(SvObject):
         WIDTH = Parameter(Int)
@@ -1450,14 +1426,11 @@ endmodule
     )
     remote = (
         "bash -ilc '"
-        "cd /path/to/svtypes/.tmp/template_constraint_sv && "
-        "rm -rf simv csrc simv.daidir && "
-        "target -full64 -sverilog -timescale=1ns/1ps "
-        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
-        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
-        "template_constraint_sv_test.sv tb.sv -o simv && ./simv'"
+        "cd $SVTYPES_REMOTE_SV_ROOT/.tmp/template_constraint_sv && "
+        ""
+        "$SVTYPES_REMOTE_SV_RUNNER compile "        "template_constraint_sv_test.sv tb.sv && $SVTYPES_REMOTE_SV_RUNNER run'"
     )
-    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    result = _run_remote(host, remote)
     log = result.stdout + result.stderr
     print(log)
     assert result.returncode == 0, log
@@ -1465,19 +1438,19 @@ endmodule
     assert "SVTYPES_REVIEW hi=0" in log, log
 
 
-@pytest.mark.remote_target
-def test_remote_target_paramref_forwarding_and_symbolic_for():
+@pytest.mark.remote_sv
+def test_remote_sv_paramref_forwarding_and_symbolic_for():
     """A ParamRef-forwarding subclass flattens to the original template, and a
     symbolic `for i in range(WIDTH)` constraint is solved by the target
     language on a Sub#(.WIDTH(4)) instance."""
-    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+    host = os.environ["SVTYPES_REMOTE_SV_HOST"]
     reachable = subprocess.run(
         ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
         capture_output=True,
         text=True,
     )
     if reachable.returncode != 0:
-        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+        pytest.skip(f"remote target host {host} is not reachable")
 
     class Base(SvObject):
         WIDTH = Parameter(Int)
@@ -1537,30 +1510,27 @@ endmodule
     )
     remote = (
         "bash -ilc '"
-        "cd /path/to/svtypes/.tmp/paramref_for_sv && "
-        "rm -rf simv csrc simv.daidir && "
-        "target -full64 -sverilog -timescale=1ns/1ps "
-        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
-        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
-        "paramref_for_sv_test.sv tb.sv -o simv && ./simv'"
+        "cd $SVTYPES_REMOTE_SV_ROOT/.tmp/paramref_for_sv && "
+        ""
+        "$SVTYPES_REMOTE_SV_RUNNER compile "        "paramref_for_sv_test.sv tb.sv && $SVTYPES_REMOTE_SV_RUNNER run'"
     )
-    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    result = _run_remote(host, remote)
     log = result.stdout + result.stderr
     print(log)
     assert result.returncode == 0, log
     assert "SVTYPES_PARAMREF_FOR_PASS" in log, log
 
 
-@pytest.mark.remote_target
-def test_remote_target_layered_randomize_simulation():
-    host = os.environ.get("SVTYPES_target_HOST", "remote-target")
+@pytest.mark.remote_sv
+def test_remote_sv_layered_randomize_simulation():
+    host = os.environ["SVTYPES_REMOTE_SV_HOST"]
     reachable = subprocess.run(
         ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
         capture_output=True,
         text=True,
     )
     if reachable.returncode != 0:
-        pytest.skip(f"remote SystemVerilog target host {host} is not reachable")
+        pytest.skip(f"remote target host {host} is not reachable")
 
     class LayerPkt(SvObject):
         addr = Bit(32)
@@ -1806,14 +1776,11 @@ endmodule
     )
     remote = (
         "bash -ilc '"
-        "cd /path/to/svtypes/.tmp/layered_sv && "
-        "rm -rf simv csrc simv.daidir && "
-        "target -full64 -sverilog -timescale=1ns/1ps "
-        "+incdir+/path/to/svtypes/svtypes_runtime/sv "
-        "/path/to/svtypes/svtypes_runtime/sv/svtypes_pkg.sv "
-        "layered_sv_test.sv tb.sv -o simv && ./simv'"
+        "cd $SVTYPES_REMOTE_SV_ROOT/.tmp/layered_sv && "
+        ""
+        "$SVTYPES_REMOTE_SV_RUNNER compile "        "layered_sv_test.sv tb.sv && $SVTYPES_REMOTE_SV_RUNNER run'"
     )
-    result = subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+    result = _run_remote(host, remote)
     log = result.stdout + result.stderr
     print(log)
     assert result.returncode == 0, log

@@ -316,7 +316,7 @@ encoding schema、encoding fingerprint 与二进制布局不因本功能改变�
 - 按 SV target 粒度调整/验证 runtime mode 管理。
 - 为 `randomize()` / `randomize_with()` 增加 hook 生命周期并保护三个入口不可覆盖。
 - 实现 Python `layered_randomize()`、精确 mode 恢复和 `LayeredRandomizeStatus`。
-- 生成 SV `layered_randomize()` 并用远程 SystemVerilog target 编译与执行验证。
+- 生成 SV `layered_randomize()` 并用远程 SystemVerilog conformance target 编译与执行验证。
 - 将分组数据纳入 source schema，但保持单 constraint `ir_digest` 不变。
 
 最低验收覆盖：
@@ -328,6 +328,6 @@ encoding schema、encoding fingerprint 与二进制布局不因本功能改变�
 5. 进入前关闭的成员仍按 `@rand_layer` / builtin 声明参与内部随机化，且所有正常/失败/异常路径精确恢复进入时 modes。
 6. UNSAT、`state_xz`、hook/backend 异常的失败层级报告及成功值不回滚。
 7. `pre_randomize` / `post_randomize` 的次数、成功条件和继承行为。
-8. Python final-entry 拒绝与返回 `int` 的 SV virtual `layered_randomize()` 的 SystemVerilog target 编译/运行。
+8. Python final-entry 拒绝与返回 `int` 的 SV virtual `layered_randomize()` 的 target 编译/运行。
 9. source schema 的分组变化、`ir_digest` 的谓词稳定性和 encoding identity 不变。
 10. fixed array 元素 target 的 Python/SV 精确 mode、跨 priority state 与非法索引。
