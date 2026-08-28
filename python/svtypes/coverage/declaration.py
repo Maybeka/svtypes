@@ -145,12 +145,28 @@ class CoverGroupInstance:
         self.option.name = name
 
     def snapshot_document(self) -> dict[str, Any]:
+        point_definitions = {}
+        for point in self.declaration.ir.points:
+            options = dict(point.options)
+            point_definitions[point.name] = {
+                "at_least": int(options.get("at_least", 1)),
+                "goal": int(options.get("goal", 100)),
+                "weight": int(options.get("weight", 1)),
+                "normal_bins": [
+                    bin_.name for bin_ in point.bins
+                    if bin_.kind in {"normal", "default"}
+                    and not (isinstance(bin_.selector, dict) and bin_.selector.get("kind") == "values" and not bin_.selector.get("items"))
+                ],
+            }
         return {
             "covergroup_type_id": self.declaration.ir.covergroup_type_id,
             "declaration_semantic_digest": self.declaration.ir.declaration_semantic_digest,
             "instance_layout_digest": self.instance_layout_digest,
             "instance_name": self.option.name if self.option is not None else None,
             "comment": self.option.comment if self.option is not None else "",
+            "options": dict(self.declaration.ir.options),
+            "type_options": dict(self.declaration.ir.type_options),
+            "point_definitions": point_definitions,
             "points": self.snapshot(),
         }
 

@@ -80,6 +80,27 @@ class CoverageDatabase:
     def snapshot_json(self) -> str:
         return json.dumps(self.snapshot_document(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
+    def type_summary(self, covergroup_type_id: str) -> dict[str, Any]:
+        """Return the LRM-shaped type result for one declaration slot.
+
+        With ``merge_instances=0`` this is a weighted average of independent
+        instance percentages.  With ``=1`` counters are first combined by bin
+        name, then scored as one type bin universe.
+        """
+        records = [record.document for (type_id, _), record in self._records.items() if type_id == covergroup_type_id]
+        if not records:
+            raise CoverageError(f"unknown coverage group type {covergroup_type_id!r}")
+        merge_instances = int(records[0].get("type_options", {}).get("merge_instances", 0))
+        if any(int(record.get("type_options", {}).get("merge_instances", 0)) != merge_instances for record in records):
+            raise CoverageError(f"coverage database type option mismatch for {covergroup_type_id}")
+        if not merge_instances:
+            values = [_record_coverage(record) for record in records]
+            return {"coverage": sum(values) / len(values), "merge_instances": 0}
+        merged = deepcopy(records[0])
+        for record in records[1:]:
+            merged = _merge_record_documents(merged, record)
+        return {"coverage": _record_coverage(merged), "merge_instances": 1, "points": merged["points"]}
+
 
 def _merge_record_documents(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     """Merge counters from equivalent, independently sampled instances."""
@@ -97,3 +118,22 @@ def _merge_record_documents(left: dict[str, Any], right: dict[str, Any]) -> dict
             left_counter[field] = dict(sorted(merged.items()))
         left_counter["samples"] = left_counter.get("samples", 0) + right_counter.get("samples", 0)
     return result
+
+
+def _record_coverage(document: dict[str, Any]) -> float:
+    weighted: list[tuple[float, int]] = []
+    for name, definition in document.get("point_definitions", {}).items():
+        normal = definition["normal_bins"]
+        if not normal:
+            value = 100.0
+        else:
+            hits = document["points"][name].get("hits", {})
+            covered = sum(hits.get(bin_name, 0) >= definition["at_least"] for bin_name in normal)
+            value = min(100.0, 100.0 * covered / len(normal) * 100.0 / definition["goal"])
+        if definition["weight"] > 0:
+            weighted.append((value, definition["weight"]))
+    if not weighted:
+        return 100.0
+    raw = sum(value * weight for value, weight in weighted) / sum(weight for _, weight in weighted)
+    goal = int(document.get("options", {}).get("goal", 100))
+    return min(100.0, raw * 100.0 / goal)

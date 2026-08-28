@@ -2,7 +2,7 @@ from copy import deepcopy
 
 import pytest
 
-from svtypes import Bit, CoverageDatabase, CoverageError, CoverGroupOption, CoverInput, SvObject, covergroup
+from svtypes import Bit, CoverageDatabase, CoverageError, CoverGroupOption, CoverGroupTypeOption, CoverInput, SvObject, covergroup
 from svtypes.coverage import CovPoint, bins
 
 
@@ -106,3 +106,53 @@ def test_per_instance_database_record_requires_bound_logical_key_and_checks_layo
     same_layout.cg.bind_logical_instance("dut.packet")
     with pytest.raises(CoverageError, match="already registered"):
         database.record(same_layout.cg.instance)
+
+
+def test_database_type_summary_supports_independent_and_merged_instance_scoring() -> None:
+    class Independent(SvObject):
+        code = Bit(1)
+
+        @covergroup
+        def cg(self):
+            class type_option(CoverGroupTypeOption):
+                merge_instances = 0
+
+            class code_cp(CovPoint, source=self.code):
+                zero = bins[0]
+                one = bins[1]
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    database = CoverageDatabase()
+    for value, key in ((0, "a"), (1, "b")):
+        packet = Independent()
+        packet.code.value = value
+        packet.cg.sample()
+        database.record(packet.cg.instance, logical_instance_key=key)
+    assert database.type_summary(Independent.cg.freeze().covergroup_type_id) == {"coverage": 50.0, "merge_instances": 0}
+
+    class Merged(SvObject):
+        code = Bit(1)
+
+        @covergroup
+        def cg(self):
+            class type_option(CoverGroupTypeOption):
+                merge_instances = 1
+
+            class code_cp(CovPoint, source=self.code):
+                zero = bins[0]
+                one = bins[1]
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    database = CoverageDatabase()
+    for value, key in ((0, "a"), (1, "b")):
+        packet = Merged()
+        packet.code.value = value
+        packet.cg.sample()
+        database.record(packet.cg.instance, logical_instance_key=key)
+    assert database.type_summary(Merged.cg.freeze().covergroup_type_id)["coverage"] == 100.0
