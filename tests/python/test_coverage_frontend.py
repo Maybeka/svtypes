@@ -7,6 +7,7 @@ from svtypes import (
     CovPointArray,
     CovPoint,
     CoverInput,
+    CoverRef,
     CoverGroupOption,
     SvObject,
     DynArray,
@@ -152,3 +153,26 @@ def test_dynamic_container_value_domain_samples_each_current_element_into_one_po
     result = packet.cg.instance.snapshot()["values_cp"]
     assert result["samples"] == 3
     assert result["hits"] == {"low": 2}
+
+
+def test_coverref_reads_its_bound_host_field_on_each_sample():
+    class Packet(SvObject):
+        mode = Bit(2)
+
+        @covergroup
+        def cg(self, mode: CoverRef[Bit]):
+            class mode_cp(CovPoint, source=mode):
+                read = bins[0]
+                write = bins[1]
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    packet = Packet()
+    packet.mode.value = 0
+    packet.cg.sample()
+    packet.mode.value = 1
+    packet.cg.sample()
+
+    assert packet.cg.instance.snapshot()["mode_cp"]["hits"] == {"read": 1, "write": 1}

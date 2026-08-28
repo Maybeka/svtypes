@@ -48,6 +48,8 @@ class CoverGroupInstance:
             if formal.name in values:
                 raise CoverageError(f"coverage constructor {self.declaration.qualified_name} binds {formal.name!r} twice")
             values[formal.name] = value
+        for formal in self.declaration.ir.reference_parameters:
+            values[formal.name] = getattr(self.host, formal.name)
         for formal, value in zip(formals, args):
             values[formal.name] = value
         for name, value in kwargs.items():

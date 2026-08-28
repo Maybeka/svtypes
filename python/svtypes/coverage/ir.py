@@ -169,6 +169,7 @@ class CoverageIR:
     sample_type: str
     declaration_name: str
     constructor_parameters: tuple[SampleParameterIR, ...] = ()
+    reference_parameters: tuple[SampleParameterIR, ...] = ()
     sample_parameters: tuple[SampleParameterIR, ...] = ()
     points: tuple[CoveragePointIR, ...] = ()
     crosses: tuple[CoverageCrossIR, ...] = ()
@@ -180,6 +181,7 @@ class CoverageIR:
             raise ValueError("coverage sample type must be a non-empty string")
         _require_name("covergroup declaration", self.declaration_name)
         _validate_parameter_names("constructor", self.constructor_parameters)
+        _validate_parameter_names("reference", self.reference_parameters)
         _validate_parameter_names("sample", self.sample_parameters)
         points = _canonical_named_items("point", self.points)
         crosses = _canonical_named_items("cross", self.crosses)
@@ -215,6 +217,9 @@ class CoverageIR:
             "declaration_name": self.declaration_name,
             "options": {key: canonical_value(value) for key, value in sorted(self.options)},
             "points": [item.stable_dict() for item in self.points],
+            "reference_parameters": [
+                item.stable_dict() for item in self.reference_parameters
+            ],
             "sample_parameters": [item.stable_dict() for item in self.sample_parameters],
             "sample_type": self.sample_type,
             "type_options": {

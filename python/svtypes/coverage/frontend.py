@@ -12,6 +12,7 @@ from ..collection import Array, AssocArray, DynArray, Queue
 from ..enum import Enum
 from ..errors import CoverageDeclarationError
 from ..logic import Logic
+from ..base import TypeBase
 from .ir import CoverageBinIR, CoverageIR, CoveragePointIR, SampleParameterIR
 
 
@@ -36,6 +37,11 @@ def _annotation(node: ast.arg) -> str:
     if node.annotation is None:
         raise _error(f"coverage formal {node.arg!r} requires a type annotation")
     return ast.unparse(node.annotation)
+
+
+def _annotation_base(node: ast.arg) -> str | None:
+    annotation = node.annotation
+    return annotation.value.id if isinstance(annotation, ast.Subscript) and isinstance(annotation.value, ast.Name) else None
 
 
 def _operator(node: ast.AST) -> str:
@@ -224,9 +230,20 @@ def compile_declaration(declaration: Any) -> CoverageIR:
     arguments = function.args.args
     if not arguments or arguments[0].arg != "self":
         raise _error(f"coverage declaration {declaration.qualified_name} requires self as its first formal")
-    constructor_parameters = tuple(
-        SampleParameterIR(argument.arg, _annotation(argument)) for argument in arguments[1:]
-    )
+    constructor: list[SampleParameterIR] = []
+    references: list[SampleParameterIR] = []
+    for argument in arguments[1:]:
+        marker = _annotation_base(argument)
+        if marker == "CoverInput":
+            constructor.append(SampleParameterIR(argument.arg, _annotation(argument)))
+        elif marker == "CoverRef":
+            descriptor = next((value for base in declaration.owner.mro() if (value := base.__dict__.get(argument.arg)) is not None), None)
+            if not isinstance(descriptor, TypeBase) or isinstance(descriptor, (Array, AssocArray, DynArray, Queue)):
+                raise _error(f"coverage ref {argument.arg!r} must bind a static singular TypeBase host field")
+            references.append(SampleParameterIR(argument.arg, _annotation(argument)))
+        else:
+            raise _error(f"coverage formal {argument.arg!r} must be CoverInput[...] or CoverRef[...]")
+    constructor_parameters = tuple(constructor)
     sample: ast.FunctionDef | None = None
     point_nodes: list[ast.ClassDef] = []
     for statement in function.body:
@@ -257,6 +274,7 @@ def compile_declaration(declaration: Any) -> CoverageIR:
         sample_type=sample_type,
         declaration_name=declaration.name,
         constructor_parameters=constructor_parameters,
+        reference_parameters=tuple(references),
         sample_parameters=sample_parameters,
         points=points,
     )
