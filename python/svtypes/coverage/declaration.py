@@ -105,6 +105,7 @@ class CoverGroupInstance:
         if missing:
             raise CoverageError(f"coverage sample {self.declaration.qualified_name} is missing {missing[0]!r}")
         values["self"] = self.host
+        values["item"] = self.host
         self.runtime.sample(values)
 
     @property
@@ -332,6 +333,14 @@ def bind_covergroups(host: Any) -> None:
                 declarations[name] = value
     for declaration in declarations.values():
         host.__dict__[declaration._storage_key] = BoundCoverGroup(declaration, host)
+    from .auto import AUTO_COVERGROUP_NAME, AutoCoverageDeclaration, auto_coverage_ir
+
+    automatic_ir = auto_coverage_ir(type(host))
+    if automatic_ir is not None:
+        declaration = AutoCoverageDeclaration(type(host), automatic_ir)
+        bound = BoundCoverGroup(declaration, host)
+        host.__dict__[AUTO_COVERGROUP_NAME] = bound
+        bound.instantiate()
 
 
 def _layout_value(value: Any) -> Any:

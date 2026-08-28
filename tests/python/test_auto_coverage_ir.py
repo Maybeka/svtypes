@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from svtypes import Array, AssocArray, Bit, DynArray, Object, Queue, String, SvObject
+from svtypes import Array, AssocArray, Bit, DynArray, Logic, Object, Queue, String, SvObject
 from svtypes.coverage import AUTO_COVERGROUP_NAME, auto_coverage_ir
 from svtypes.errors import CoverageDeclarationError
 
@@ -34,6 +34,36 @@ def test_no_effective_cov_fields_produces_no_default_group():
         ignored = Bit(8, cov=False)
 
     assert auto_coverage_ir(Plain) is None
+
+
+def test_default_auto_coverage_group_is_bound_and_samples_scalar_and_dynamic_values():
+    class Packet(SvObject):
+        opcode = Bit(2)
+        dynamic = DynArray(Bit(2), cov=True)
+
+    packet = Packet()
+    packet.opcode.value = 1
+    packet.dynamic.value = [0, 3]
+    packet.svtypes_auto_cov.sample()
+    snapshot = packet.svtypes_auto_cov.instance.snapshot()
+    assert snapshot["opcode"]["hits"] == {"auto[1]": 1}
+    assert snapshot["dynamic"]["hits"] == {"auto[0]": 1, "auto[3]": 1}
+
+
+def test_default_auto_coverage_tracks_handle_nullness_and_excludes_xz_from_two_state_bins():
+    class Packet(SvObject):
+        state = Logic(1)
+        child = Object("Child")
+
+    packet = Packet()
+    packet.state.value = "x"
+    packet.svtypes_auto_cov.sample()
+    packet.state.value = 1
+    packet.child = Packet()
+    packet.svtypes_auto_cov.sample()
+    snapshot = packet.svtypes_auto_cov.instance.snapshot()
+    assert snapshot["state"]["hits"] == {"auto[1]": 1}
+    assert snapshot["child"]["hits"] == {"auto[0]": 1, "auto[1]": 1}
 
 
 def test_object_handles_keep_the_existing_nullness_auto_coverage_semantics():

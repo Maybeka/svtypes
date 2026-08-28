@@ -11,12 +11,28 @@ from .ir import CoverageBinIR, CoverageIR, CoveragePointIR
 
 
 def _value(value: Any) -> Any:
-    return value.value if hasattr(value, "value") else value
+    value = value.value if hasattr(value, "value") else value
+    if hasattr(value, "value_mask") and not getattr(value, "x_mask", 0) and not getattr(value, "z_mask", 0):
+        return value.value_mask
+    return value
 
 
 def eval_expr(expression: Any, context: dict[str, Any]) -> Any:
     """Evaluate the restricted structural CoverageExpr IR."""
     kind = expression["kind"]
+    if kind in {"field", "slot", "container_values", "assoc_values", "is_null"}:
+        _, field_name = expression["path"].split(".", 1)
+        item = context["item"]
+        if kind == "is_null":
+            descriptor = next((base.__dict__[field_name] for base in type(item).mro() if field_name in base.__dict__), None)
+            return int(item.__dict__.get(getattr(descriptor, "_cache_key", "")) is None)
+        value = getattr(item, field_name)
+        if kind == "field":
+            return _value(value)
+        if kind == "slot":
+            return _value(value[expression["index"]])
+        if kind in {"container_values", "assoc_values"}:
+            return value.value
     if kind == "constant":
         return expression["value"]
     if kind == "name":
@@ -69,6 +85,8 @@ def eval_expr(expression: Any, context: dict[str, Any]) -> Any:
 
 def _matches_selector(value: Any, selector: Any, context: dict[str, Any]) -> bool:
     if selector is None:
+        return False
+    if getattr(value, "x_mask", 0) or getattr(value, "z_mask", 0):
         return False
     kind = selector["kind"]
     if kind == "values":
