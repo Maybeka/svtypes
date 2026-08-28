@@ -1,7 +1,7 @@
 # SvTypes 2.0 功能覆盖率路线图
 
-**状态：1.7 规格冻结；实现与 SystemVerilog target 证据收集进行中。** 本文件冻结 2.0 coverage
-声明的载体、语义和 IR 契约；它不承诺在 1.7 即交付实现。
+**状态：1.7 设计冻结完成；CoverageIR/自动 `cov` 基础切片已交付。** 本文件冻结 2.0 coverage
+声明的载体、语义和 IR 契约；完整运行时与 SV parity 按 §8 在后续里程碑交付。
 
 **路线图的解读优先级：**本文首先规定方向性原则、公开可观测语义、身份/merge 边界和里程碑
 门槛；§5 中的声明片段说明这些契约应如何落到 DSL，但不是私有 parser、运行时对象布局或
@@ -659,7 +659,7 @@ SvTypes 采用独立核心 DB 加适配层、而非直接定义为某个 simulat
 
 | 里程碑 | 交付 | 完成门槛 |
 |---|---|---|
-| 1.7 设计冻结 | coverage DSL、CoverageIR、bin ID/实例身份、数据库和 UCIS 映射规格；完成 §2 的 `cov` 自动声明迁移边界，并冻结 §5.1、§5.2、§5.5、§5.9、§5.13 | 本文的冻结条款与对应 SystemVerilog target 微型 fixture 一一对应；fixture 必须在公开实现前通过，未冻结构造不实现公开 DSL |
+| 1.7 设计冻结 | coverage DSL、CoverageIR、bin ID/实例身份、数据库和 UCIS 映射规格；完成 §2 的 `cov` 自动声明迁移边界，并冻结 §5.1、§5.2、§5.5、§5.9、§5.13；交付不可变 IR、自动 `cov` 编译和静态 cross 限额基础 | 冻结条款均有对应的 Python/SystemVerilog target fixture 计划；fixture 在承载其运行时或 renderer 能力的后续里程碑成为交付门槛。未冻结构造不实现公开 DSL |
 | 1.8 Python core | CoverageIR、表达式 evaluator、embedded covergroup/point/bins/iff、automatic/array bins、宿主 `__init__` 内的 embedded `.instantiate(...)` `CoverInput` 实例化、静态成员 `CoverRef` binding、定长覆盖率数组与值域 point、有界 transition（非数组式）、内存 DB、有限用例来源、确定性 JSON test snapshot 与可选 sample 日志 | 单元测试覆盖命中、未命中、automatic bins 的 enum/整除/余数/XZ、array bins 的 `split()` / `split(count)` / empty bin、`CoverInput` snapshot 与不同 actual 的实例 bin 布局、`CoverInput` 不改变声明语义摘要、`CoverRef` 当前值读取、embedded covergroup 可不实例化，或仅在宿主 `__init__` 中以 `.instantiate(...)` 构造一次、未实例化成员方法调用失败、覆盖组内置方法、illegal、ignore、goal、数组槽跳过、定长 transition 与 `[*m:n]` 的命中/未命中、数组式声明带 transition 的声明期失败、来源额满、声明语义摘要相同而 provenance 不同的 merge、加权类型汇总与按 bin 名合并的类型结果、`CoverGroupOption.per_instance = 1` 时 illegal 按覆盖组实例分开、实例覆盖率用例下逻辑实例键缺失/重复注册失败、同一逻辑实例键而实例布局摘要不同的 merge 拒绝 |
 | 1.9 cross 与 SV parity | cross、`CrossQueueType` 函数、实例策略、SV renderer、生成覆盖组、observation manifest、Python/SV conformance vectors、编解码同步双侧采样 | 固定 sample 向量下按 manifest 将 coverage reporter 具名 bin/illegal 与 Python DB 精确对拍，coverage 百分比按 §5.14 交叉校验；`CrossQueueType` 的实例化后 concrete tuple queue、bin 名和 coverage 必须与生成 SV 相等；再用 SvTypes pack/unpack 把同一批对象同步到两侧，两边同时 `sample()`，大量样本后同样对拍（ignore 只验证未进 named hit/分母）；按 §5.15 的汇总方式选择 type 或 instance 覆盖率对拍；manifest 缺项或 coverage reporter 多出未映射具名 bin 为失败；生成期拒绝不支持语义 |
 | 1.10 UCIS bridge | 公开二进制 coverage database chunk/schema/version、UCIS XML export/import 子集、loss report、SystemVerilog target 导出集成验证 | 二进制库 round-trip 与版本兼容策略、UCIS round-trip、跨 run merge、外部 UCIS 样本导入和不兼容诊断 |
@@ -698,10 +698,11 @@ ignore/illegal/`default`、以及 1.9 的 cross。比较以具名 bin hit 和 il
 5. UCIS XML import/export/round-trip；
 6. 大 cross、长期 merge 和报告生成的性能与内存基准。
 
-## 10. 下一步
+## 10. 后续验证计划
 
-1.7 的规格门槛已写入 §2、§5.1、§5.2、§5.5、§5.9 与 §5.13。进入 1.8 前，实施方必须将它们
-各自落实为 CoverageIR / CoverageDatabase 原型测试和以下不可替代的 SystemVerilog target 微型 fixture：
+1.7 的规格门槛已写入 §2、§5.1、§5.2、§5.5、§5.9 与 §5.13。后续实现必须将它们
+各自落实为 CoverageIR / CoverageDatabase 原型测试和以下不可替代的 SystemVerilog target 微型 fixture；每项 fixture
+在其对应的 1.8 或 1.9 公开能力交付前通过：
 
 - §5.1–§5.2：同一已冻结 declaration 的 Python evaluator 与 SV renderer 使用同一 typed expression
   IR/声明语义摘要，且 manifest 正确引用该摘要；宿主 `__init__` 内的 `.instantiate(...)`/静态成员的
@@ -721,9 +722,9 @@ ignore/illegal/`default`、以及 1.9 的 cross。比较以具名 bin hit 和 il
   value-domain 均形成同一 `svtypes_auto_cov` CoverageIR；`cov=False` 字段不进入默认组。生成 SV 时
   该默认组取代 1.x legacy nested collector，并与显式 `@covergroup` 一同产生 coverage DB/声明语义摘要。
 
-这些 1.7 fixture 不得改写已冻结语义；若目标 SystemVerilog target 不能表达或观测该语义，生成器必须在 freeze 期
-拒绝该声明，并将该能力留在未支持集合。`CrossQueueType` 的实例化后 queue、资源预算、bin
-membership 与 SystemVerilog target 对拍属于 §8 的 1.9 cross 交付，不是进入 1.8 的门槛。1.9 的全面对拍继续按
+这些 fixture 不得改写已冻结语义；若目标 SystemVerilog target 不能表达或观测该语义，生成器必须在相应公开能力的
+交付期拒绝该声明，并将该能力留在未支持集合。`CrossQueueType` 的实例化后 queue、资源预算、bin
+membership 与 SystemVerilog target 对拍属于 §8 的 1.9 cross 交付，不是 1.8 的门槛。1.9 的全面对拍继续按
 §5.11、§5.14、§5.15 执行。
 
 ## 11. 1.7 实施详细设计
@@ -880,8 +881,8 @@ canonical SHA-256 serializer，并以单元测试确认 type ID 与声明摘要�
    所列 Python oracle；cross 的 1.7 边界只实现静态 IR/limit 检查，完整 `CrossQueueType` 留给 1.9。
 6. 从 IR 实现 SV renderer、declaration document 与 manifest，编写 §10 的最小 SystemVerilog target fixture。每项 fixture
    必须同时断言生成失败路径或 named hit/illegal 观测，不能只以编译通过作为证据。
-7. 最后接入严格/master merge、per-instance layout 校验及确定性 JSON snapshot；只有所有 fixture
-   与本地回归通过，才将 1.7 状态从“规格冻结”推进到“实现原型可供 1.8 开发消费”。
+7. 最后接入严格/master merge、per-instance layout 校验及确定性 JSON snapshot；这些是 1.8 runtime
+   原型及后续公开能力的验收项，不倒灌为 1.7 设计冻结的完成条件。
 
 每一步至少包含：IR/diagnostic 单元测试、Python 行为测试、相关生成文本断言；涉及可生成 SV 的冻结
 语义再加 SystemVerilog target fixture。SystemVerilog target 结果需同时确认进程退出码、仿真通过标记及 coverage reporter/manifest 可观测项。任一
