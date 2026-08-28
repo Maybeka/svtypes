@@ -34,6 +34,7 @@ class CoverGroupInstance:
     constructor_actuals: tuple[Any, ...]
     constructor_named_actuals: tuple[tuple[str, Any], ...]
     runtime: Any = None
+    instance_name: str | None = None
 
     def __post_init__(self) -> None:
         from .evaluator import CoverageRuntime
@@ -69,10 +70,25 @@ class CoverGroupInstance:
     def get_coverage(self) -> float:
         return self.runtime.coverage()
 
+    def get_inst_coverage(self) -> float:
+        return self.get_coverage()
+
+    def start(self) -> None:
+        self.runtime.start()
+
+    def stop(self) -> None:
+        self.runtime.stop()
+
+    def set_inst_name(self, name: str) -> None:
+        if not isinstance(name, str) or not name:
+            raise CoverageError("coverage instance name must be a non-empty string")
+        self.instance_name = name
+
     def snapshot_document(self) -> dict[str, Any]:
         return {
             "covergroup_type_id": self.declaration.ir.covergroup_type_id,
             "declaration_semantic_digest": self.declaration.ir.declaration_semantic_digest,
+            "instance_name": self.instance_name,
             "points": self.snapshot(),
         }
 
@@ -152,6 +168,18 @@ class BoundCoverGroup:
 
     def get_coverage(self) -> float:
         return self.instance.get_coverage()
+
+    def get_inst_coverage(self) -> float:
+        return self.instance.get_inst_coverage()
+
+    def start(self) -> None:
+        self.instance.start()
+
+    def stop(self) -> None:
+        self.instance.stop()
+
+    def set_inst_name(self, name: str) -> None:
+        self.instance.set_inst_name(name)
 
     def snapshot_document(self) -> dict[str, Any]:
         return self.instance.snapshot_document()

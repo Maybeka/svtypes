@@ -96,6 +96,31 @@ def test_python_runtime_classifies_iff_ignore_illegal_overlapping_normal_and_def
     assert result["illegal_hits"] == {"reserved": 1}
 
 
+def test_coverage_instance_methods_control_sampling_and_report_name():
+    class Packet(SvObject):
+        opcode = Bit(2)
+
+        @covergroup
+        def cg(self):
+            class opcode_cp(CovPoint, source=self.opcode):
+                zero = bins[0]
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    packet = Packet()
+    packet.cg.stop()
+    packet.cg.sample()
+    packet.cg.start()
+    packet.cg.sample()
+    packet.cg.set_inst_name("tb.packet.coverage")
+
+    assert packet.cg.instance.snapshot()["opcode_cp"]["samples"] == 1
+    assert packet.cg.get_inst_coverage() == packet.cg.get_coverage() == 100.0
+    assert packet.cg.snapshot_document()["instance_name"] == "tb.packet.coverage"
+
+
 def test_freeze_generates_deterministic_automatic_bins_from_a_bit_field_domain():
     class Packet(SvObject):
         opcode = Bit(4)

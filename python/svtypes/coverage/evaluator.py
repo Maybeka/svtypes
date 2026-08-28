@@ -94,14 +94,23 @@ class CoverageRuntime:
     ir: CoverageIR
     counters: dict[str, PointCounters] = field(init=False)
     histories: dict[str, list[Any]] = field(init=False)
+    enabled: bool = field(init=False, default=True)
 
     def __post_init__(self) -> None:
         self.counters = {point.name: PointCounters() for point in self.ir.points}
         self.histories = {point.name: [] for point in self.ir.points}
 
     def sample(self, context: dict[str, Any]) -> None:
+        if not self.enabled:
+            return
         for point in self.ir.points:
             self._sample_point(point, context)
+
+    def start(self) -> None:
+        self.enabled = True
+
+    def stop(self) -> None:
+        self.enabled = False
 
     def _sample_point(self, point: CoveragePointIR, context: dict[str, Any]) -> None:
         counters = self.counters[point.name]
