@@ -223,6 +223,26 @@ def test_array_bins_split_expand_compress_and_keep_empty_bins_out_of_denominator
     assert packet.cg.instance.snapshot()["opcode_cp"]["hits"] == {"fixed[0]": 1, "with_empty[2]": 1}
 
 
+def test_array_bins_split_max_bins_compresses_without_dropping_values():
+    class Packet(SvObject):
+        opcode = Bit(3)
+
+        @covergroup
+        def cg(self):
+            class opcode_cp(CovPoint, source=self.opcode):
+                compressed = bins[0:4].split(max_bins=2)
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    packet = Packet()
+    packet.opcode.value = 4
+    packet.cg.sample()
+    point = packet.cg.instance.snapshot()["opcode_cp"]
+    assert point["hits"] == {"compressed[1]": 1}
+
+
 def test_repeat_is_rejected_outside_transition_bins():
     class Packet(SvObject):
         opcode = Bit(2)
@@ -234,6 +254,26 @@ def test_repeat_is_rejected_outside_transition_bins():
 
     with pytest.raises(CoverageDeclarationError, match="only in transition_bins"):
         Packet.cg.freeze()
+
+
+def test_transition_bins_are_rejected_for_array_and_value_domain_points():
+    class Packet(SvObject):
+        values = DynArray(Bit(2))
+
+        @covergroup
+        def array_cg(self):
+            class value_cp(CovPointArray, source=self.values, length=2):
+                invalid = transition_bins[0, 1]
+
+        @covergroup
+        def domain_cg(self):
+            class value_cp(CovPoint, source=self.values):
+                invalid = transition_bins[0, 1]
+
+    with pytest.raises(CoverageDeclarationError, match="point array.*cannot declare transition"):
+        Packet.array_cg.freeze()
+    with pytest.raises(CoverageDeclarationError, match="container value-domain.*cannot declare transition"):
+        Packet.domain_cg.freeze()
 
 
 def test_coverage_case_name_is_global_and_sample_does_not_take_case_metadata():
