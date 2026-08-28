@@ -17,9 +17,11 @@ from svtypes import (
     ignore_bins,
     illegal_bins,
     repeat,
+    set_coverage_case_name,
     transition_bins,
 )
 from svtypes.errors import CoverageDeclarationError, CoverageError
+from svtypes.coverage.context import _reset_coverage_case_name_for_testing
 
 
 def test_freeze_compiles_source_only_points_and_bins_without_executing_declaration():
@@ -234,7 +236,7 @@ def test_repeat_is_rejected_outside_transition_bins():
         Packet.cg.freeze()
 
 
-def test_coverage_sample_retains_at_most_three_case_sources_for_normal_and_illegal_bins():
+def test_coverage_case_name_is_global_and_sample_does_not_take_case_metadata():
     class Packet(SvObject):
         opcode = Bit(2)
 
@@ -249,16 +251,20 @@ def test_coverage_sample_retains_at_most_three_case_sources_for_normal_and_illeg
             self.cg.instantiate()
 
     packet = Packet()
-    for case_id in ("a", "b", "c", "d", "a"):
-        packet.opcode.value = 0
-        packet.cg.sample(case_id=case_id)
-    for case_id in ("x", "y", "z", "overflow"):
-        packet.opcode.value = 3
-        packet.cg.sample(case_id=case_id)
+    _reset_coverage_case_name_for_testing()
+    set_coverage_case_name("smoke")
+    packet.opcode.value = 0
+    packet.cg.sample()
+    packet.opcode.value = 3
+    packet.cg.sample()
     result = packet.cg.instance.snapshot()["opcode_cp"]
-    assert result["hits"] == {"zero": 5}
-    assert result["source_ids"] == {"zero": ["a", "b", "c"]}
-    assert result["illegal_source_ids"] == {"reserved": ["x", "y", "z"]}
+    assert result["source_ids"] == {"zero": ["smoke"]}
+    assert result["illegal_source_ids"] == {"reserved": ["smoke"]}
+    with pytest.raises(CoverageError, match="already set"):
+        set_coverage_case_name("other")
+    with pytest.raises(CoverageError, match="process-wide"):
+        packet.cg.sample(case_id="not-allowed")
+    _reset_coverage_case_name_for_testing()
 
 
 def test_cover_input_materializes_instance_bin_selectors_without_changing_declaration_digest():
@@ -313,6 +319,19 @@ def test_coverage_options_require_their_declared_base_and_supported_fields():
         Packet.bad_limit.freeze()
 
 
+def test_coverage_freeze_rejects_expression_names_outside_the_declared_sample_scope():
+    class Packet(SvObject):
+        opcode = Bit(1)
+
+        @covergroup
+        def cg(self):
+            class opcode_cp(CovPoint, source=missing):
+                zero = bins[0]
+
+    with pytest.raises(CoverageDeclarationError, match="unknown name 'missing'"):
+        Packet.cg.freeze()
+
+
 def test_optional_sample_log_obeys_record_and_byte_budgets_without_affecting_hits():
     class Packet(SvObject):
         opcode = Bit(1)
@@ -328,10 +347,10 @@ def test_optional_sample_log_obeys_record_and_byte_budgets_without_affecting_hit
 
     packet = Packet()
     packet.cg.enable_sample_log(max_records=1, max_bytes=256)
-    packet.cg.sample(case_id="first")
-    packet.cg.sample(case_id="second")
+    packet.cg.sample()
+    packet.cg.sample()
     assert packet.cg.instance.snapshot()["opcode_cp"]["hits"] == {"zero": 2}
-    assert packet.cg.sample_log_snapshot() == [{"case_id": "first", "values": {}}]
+    assert packet.cg.sample_log_snapshot() == [{"case_id": None, "values": {}}]
 
 
 def test_case_source_limit_is_configurable_only_before_sampling():
@@ -349,9 +368,9 @@ def test_case_source_limit_is_configurable_only_before_sampling():
 
     packet = Packet()
     packet.cg.configure_case_sources(1)
-    packet.cg.sample(case_id="first")
-    packet.cg.sample(case_id="second")
-    assert packet.cg.instance.snapshot()["opcode_cp"]["source_ids"] == {"zero": ["first"]}
+    packet.cg.sample()
+    packet.cg.sample()
+    assert "source_ids" not in packet.cg.instance.snapshot()["opcode_cp"]
     with pytest.raises(CoverageError, match="before first sample"):
         packet.cg.configure_case_sources(2)
 

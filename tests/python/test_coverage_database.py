@@ -3,7 +3,8 @@ from copy import deepcopy
 import pytest
 
 from svtypes import Bit, CoverageDatabase, CoverageError, CoverGroupOption, CoverGroupTypeOption, CoverInput, SvObject, covergroup
-from svtypes.coverage import CovPoint, bins, illegal_bins
+from svtypes.coverage import CovPoint, bins, illegal_bins, set_coverage_case_name
+from svtypes.coverage.context import _reset_coverage_case_name_for_testing
 
 
 class DatabasePacket(SvObject):
@@ -174,16 +175,21 @@ def test_database_merge_unions_case_sources_without_changing_counts() -> None:
     right = CoverageDatabase()
     first = DatabasePacket()
     first.code.value = 0
-    first.cg.sample(case_id="first")
+    _reset_coverage_case_name_for_testing()
+    set_coverage_case_name("first")
+    first.cg.sample()
     left.record(first.cg.instance, logical_instance_key="dut.packet")
     second = DatabasePacket()
     second.code.value = 0
-    second.cg.sample(case_id="second")
+    _reset_coverage_case_name_for_testing()
+    set_coverage_case_name("second")
+    second.cg.sample()
     right.record(second.cg.instance, logical_instance_key="dut.packet")
     left.merge(right)
     point = left.snapshot_document()["records"][0]["points"]["code_cp"]
     assert point["hits"] == {"low": 2}
     assert point["source_ids"] == {"low": ["first", "second"]}
+    _reset_coverage_case_name_for_testing()
 
 
 def test_per_instance_illegal_hits_remain_separate_by_logical_key() -> None:

@@ -130,6 +130,17 @@ def _contains_repeat(selector: Any) -> bool:
     return False
 
 
+def _validate_expression_names(expression: Any, allowed_names: set[str], owner: str) -> None:
+    if isinstance(expression, dict):
+        if expression.get("kind") == "name" and expression["name"] not in allowed_names:
+            raise _error(f"coverage {owner} references unknown name {expression['name']!r}")
+        for value in expression.values():
+            _validate_expression_names(value, allowed_names, owner)
+    elif isinstance(expression, (list, tuple)):
+        for value in expression:
+            _validate_expression_names(value, allowed_names, owner)
+
+
 def _split_values(node: ast.AST) -> list[int]:
     """Enumerate the finite 2-state selector accepted by array bins."""
     if isinstance(node, ast.Tuple):
@@ -260,7 +271,7 @@ def _automatic_bins(
     return tuple(bins)
 
 
-def _point_class(owner: type[Any], node: ast.ClassDef) -> tuple[CoveragePointIR, ...]:
+def _point_class(owner: type[Any], node: ast.ClassDef, allowed_names: set[str]) -> tuple[CoveragePointIR, ...]:
     if len(node.bases) != 1 or _name(node.bases[0]) not in _POINT_BASES:
         raise _error(f"coverage declaration class {node.name!r} must inherit CovPoint or CovPointArray")
     keywords = {keyword.arg: keyword.value for keyword in node.keywords if keyword.arg is not None}
@@ -268,6 +279,11 @@ def _point_class(owner: type[Any], node: ast.ClassDef) -> tuple[CoveragePointIR,
         raise _error(f"coverage point {node.name!r} has unsupported class keyword")
     if "source" not in keywords:
         raise _error(f"coverage point {node.name!r} requires source=")
+    source_expression = _expr(keywords["source"])
+    _validate_expression_names(source_expression, allowed_names, f"point {node.name!r}")
+    iff_expression = _expr(keywords["iff"]) if "iff" in keywords else None
+    if iff_expression is not None:
+        _validate_expression_names(iff_expression, allowed_names, f"point {node.name!r} iff")
     bins: list[CoverageBinIR] = []
     options: list[tuple[str, Any]] = []
     for statement in node.body:
@@ -291,6 +307,7 @@ def _point_class(owner: type[Any], node: ast.ClassDef) -> tuple[CoveragePointIR,
         if kind is None:
             raise _error(f"coverage point {node.name!r}.{bin_name} has unsupported bin declaration")
         selector = _slice_selector(statement.value.slice)
+        _validate_expression_names(selector, allowed_names, f"point {node.name!r} bin {bin_name!r}")
         if kind != "transition" and _contains_repeat(selector):
             raise _error(f"coverage point {node.name!r}.{bin_name} may use repeat() only in transition_bins")
         bins.append(CoverageBinIR(bin_name, kind, selector))
@@ -312,10 +329,10 @@ def _point_class(owner: type[Any], node: ast.ClassDef) -> tuple[CoveragePointIR,
         points: list[CoveragePointIR] = []
         for index in range(length):
             expression = {
-                "kind": "subscript", "base": _expr(keywords["source"]),
+                "kind": "subscript", "base": source_expression,
                 "index": {"kind": "constant", "value": index},
             }
-            points.append(CoveragePointIR(f"{node.name}[{index}]", expression, tuple(bins), _expr(keywords["iff"]) if "iff" in keywords else None, tuple(options)))
+            points.append(CoveragePointIR(f"{node.name}[{index}]", expression, tuple(bins), iff_expression, tuple(options)))
         return tuple(points)
     elif "length" in keywords:
         raise _error(f"coverage point {node.name!r} cannot specify length=")
@@ -325,9 +342,9 @@ def _point_class(owner: type[Any], node: ast.ClassDef) -> tuple[CoveragePointIR,
         options.append(("container_value_domain", True))
     return (CoveragePointIR(
         node.name,
-        _expr(keywords["source"]),
+        source_expression,
         tuple(bins),
-        _expr(keywords["iff"]) if "iff" in keywords else None,
+        iff_expression,
         tuple(options),
     ),)
 
@@ -402,7 +419,11 @@ def compile_declaration(declaration: Any) -> CoverageIR:
         if any(argument.arg == "case_id" for argument in sample.args.args):
             raise _error(f"coverage sample {declaration.qualified_name}.sample reserves case_id")
         sample_parameters = tuple(SampleParameterIR(argument.arg, _annotation(argument)) for argument in sample.args.args)
-    points = tuple(point for node in point_nodes for point in _point_class(declaration.owner, node))
+    allowed_names = {"self"}
+    allowed_names.update(item.name for item in constructor_parameters)
+    allowed_names.update(item.name for item in references)
+    allowed_names.update(item.name for item in sample_parameters)
+    points = tuple(point for node in point_nodes for point in _point_class(declaration.owner, node, allowed_names))
     sample_type = getattr(declaration.owner, "_svtypes_unified_type_name", declaration.owner.__name__)
     return CoverageIR(
         sample_type=sample_type,

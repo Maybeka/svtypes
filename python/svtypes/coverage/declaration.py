@@ -8,6 +8,7 @@ from typing import Any, Callable, Generic, TypeVar, overload
 
 from ..errors import CoverageError
 from .canonical import semantic_digest
+from .context import coverage_case_name
 from .ir import CoverageBinIR, CoverageIR, CoveragePointIR
 
 
@@ -108,9 +109,9 @@ class CoverGroupInstance:
         self.option = CoverageInstanceOption(self.declaration.ir.options)
 
     def sample(self, *args: Any, **kwargs: Any) -> None:
-        case_id = kwargs.pop("case_id", None)
-        if case_id is not None and (not isinstance(case_id, str) or not case_id):
-            raise CoverageError("coverage case_id must be a non-empty string or None")
+        if "case_id" in kwargs or "case_name" in kwargs:
+            raise CoverageError("coverage case name is process-wide; use set_coverage_case_name() before sampling")
+        case_id = coverage_case_name()
         formals = self.declaration.ir.sample_parameters
         if len(args) > len(formals):
             raise CoverageError(f"coverage sample {self.declaration.qualified_name} has too many positional arguments")
