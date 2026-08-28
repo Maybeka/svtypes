@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import functools
 import struct
 from typing import Any, TypeVar, Callable, overload
 
@@ -336,6 +337,9 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         self.__svtypes_layered_randomize_status = None
         self.__svtypes_layered_randomize_active = False
         self.__svtypes_layered_randomize_priority = 0
+        from .coverage.declaration import bind_covergroups
+
+        bind_covergroups(self)
         if not _defer_identity:
             register_object(self)
 
@@ -765,6 +769,26 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         from .constraint.collect import collect_constraints
 
         collect_constraints(cls)
+
+        # Embedded covergroups may be instantiated exactly while their host is
+        # constructed.  A depth token is robust across cooperative inherited
+        # __init__ calls and avoids brittle stack-frame inspection.
+        original_init = cls.__dict__.get("__init__")
+
+        if original_init is None:
+            def original_init(instance, *args, **kwargs):
+                super(cls, instance).__init__(*args, **kwargs)
+
+        @functools.wraps(original_init)
+        def managed_init(instance, *args, **kwargs):
+            depth = getattr(instance, "_svtypes_coverage_construction_depth", 0)
+            object.__setattr__(instance, "_svtypes_coverage_construction_depth", depth + 1)
+            try:
+                return original_init(instance, *args, **kwargs)
+            finally:
+                object.__setattr__(instance, "_svtypes_coverage_construction_depth", depth)
+
+        cls.__init__ = managed_init
 
     @classmethod
     def specialize(cls: type[T], **kwargs) -> type[T]:

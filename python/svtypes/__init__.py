@@ -66,6 +66,7 @@ from .constraint import (
     unique,
 )
 from .randomizable import is_randomizable
+from .coverage import CoverInput, CoverRef, covergroup
 
 from .scope import Scope, Package, Namespace, get_package
 from .schema import (

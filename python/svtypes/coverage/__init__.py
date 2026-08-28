@@ -14,6 +14,14 @@ from .ir import (
     SampleParameterIR,
 )
 from .auto import AUTO_COVERGROUP_NAME, auto_coverage_ir
+from .declaration import (
+    BoundCoverGroup,
+    CoverGroupDeclaration,
+    CoverGroupInstance,
+    CoverInput,
+    CoverRef,
+    covergroup,
+)
 from .identity import bin_id, point_id
 from .limits import (
     MAX_CROSS_MEMBERS,
@@ -25,6 +33,11 @@ from .limits import (
 __all__ = [
     "COVERAGE_IR_VERSION",
     "AUTO_COVERGROUP_NAME",
+    "BoundCoverGroup",
+    "CoverGroupDeclaration",
+    "CoverGroupInstance",
+    "CoverInput",
+    "CoverRef",
     "CoverageBinIR",
     "CoverageCrossIR",
     "CoverageIR",
@@ -38,4 +51,5 @@ __all__ = [
     "point_id",
     "validate_cross_normal_bin_count",
     "auto_coverage_ir",
+    "covergroup",
 ]
