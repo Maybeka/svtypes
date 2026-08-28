@@ -34,6 +34,10 @@ def _validate_element_template(codec: TypeBase, location: str) -> None:
             raise DeclarationError(
                 f"{policy}=True is a containing-field policy and is invalid on {location}"
             )
+    if options.cov_slots is not None:
+        raise DeclarationError(
+            f"cov_slots is a containing-field policy and is invalid on {location}"
+        )
 
 
 class Array(CollectionBase, Generic[T], metaclass=_ArrayMeta):

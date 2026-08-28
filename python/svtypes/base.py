@@ -9,6 +9,7 @@ class FieldOptions:
     plusarg: bool | None = None
     dump: bool | None = None
     cov: bool | None = None
+    cov_slots: int | None = None
     intelli: bool | None = None
     pack_bytes: bool | None = True
 
@@ -35,12 +36,15 @@ class TypeBase:
         intelli: bool | None = None,
         pack_bytes: bool | None = True,
         randc: bool = False,
+        *,
+        cov_slots: int | None = None,
     ) -> None:
         '''
         :param rand: 该变量在SystemVerilog侧是否有rand修饰符
         :param plusarg: 是否自动生成针对该变量的plusargs的覆盖语句
         :param dump: 是否在print相关函数中打印该变量
-        :param cov: 是否自动生成该变量相关的单点覆盖率
+        :param cov: 是否自动生成该变量相关的默认覆盖率
+        :param cov_slots: 动态数组或队列自动生成前 N 个槽位覆盖率；未指定时采样元素值域
         :param intelli: 是否在智能操作中考虑该变量
         :param pack_bytes: 在将对象打包成byte流或从byte流解包时，是否包含该变量
         '''
@@ -54,6 +58,15 @@ class TypeBase:
         }.items():
             if value is not None and not isinstance(value, bool):
                 raise TypeError(f"Field policy {name} must be True, False, or None")
+        if (
+            cov_slots is not None
+            and (
+                not isinstance(cov_slots, int)
+                or isinstance(cov_slots, bool)
+                or cov_slots <= 0
+            )
+        ):
+            raise TypeError("Field policy cov_slots must be a positive integer or None")
         if not isinstance(randc, bool):
             raise TypeError("Field policy randc must be True or False")
         if randc and rand is not None:
@@ -64,6 +77,7 @@ class TypeBase:
             plusarg=plusarg,
             dump=dump,
             cov=cov,
+            cov_slots=cov_slots,
             intelli=intelli,
             pack_bytes=pack_bytes,
         )

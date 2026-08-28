@@ -29,6 +29,7 @@ def test_field_options_are_public_immutable_three_state_metadata():
         plusarg=False,
         dump=True,
         cov=None,
+        cov_slots=None,
         intelli=None,
         pack_bytes=True,
     )

@@ -707,9 +707,9 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             return False
 
         def cov_supported(desc: Any) -> bool:
-            from .collection import AssocArray, DynArray, Queue
+            from .collection import Array, AssocArray, DynArray, Queue
 
-            return isinstance(desc, (Bit, Logic, Enum, DynArray, Queue, AssocArray, ObjectDescriptor)) or (
+            return isinstance(desc, (Bit, Logic, Enum, Array, DynArray, Queue, AssocArray, ObjectDescriptor)) or (
                 isinstance(desc, SvObject) and not (
                     struct_type is not None and isinstance(desc, struct_type)
                 )
@@ -745,6 +745,14 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                     raise ValueError(
                         f"plusarg=True is unsupported for {cls.__name__}.{name} ({desc.__class__.__name__})"
                     )
+                if desc.field_options.cov_slots is not None:
+                    from .collection import DynArray, Queue
+
+                    if not isinstance(desc, (DynArray, Queue)):
+                        raise ValueError(
+                            f"cov_slots is only supported for DynArray or Queue fields; "
+                            f"got {cls.__name__}.{name} ({desc.__class__.__name__})"
+                        )
                 if desc.field_options.cov is True and not cov_supported(desc):
                     raise ValueError(
                         f"cov=True is unsupported for {cls.__name__}.{name} ({desc.__class__.__name__})"

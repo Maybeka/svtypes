@@ -8,12 +8,60 @@ declaration digest.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar
 
 from .canonical import canonical_value, semantic_digest
 
 
 COVERAGE_IR_VERSION = 1
+_BIN_KINDS = frozenset({"normal", "ignore", "illegal", "default", "transition"})
+_NamedIR = TypeVar("_NamedIR")
+
+
+def _require_name(kind: str, value: str) -> None:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"coverage {kind} name must be a non-empty string")
+
+
+def _canonical_options(
+    owner: str, options: tuple[tuple[str, Any], ...]
+) -> tuple[tuple[str, Any], ...]:
+    seen: set[str] = set()
+    normalized: list[tuple[str, Any]] = []
+    for item in options:
+        if not isinstance(item, tuple) or len(item) != 2:
+            raise TypeError(f"coverage {owner} options must contain (name, value) pairs")
+        name, value = item
+        _require_name("option", name)
+        if name in seen:
+            raise ValueError(f"coverage {owner} has duplicate option {name!r}")
+        seen.add(name)
+        # Validate declaration data now, instead of delaying a non-reproducible
+        # value failure until a digest happens to be requested.
+        canonical_value(value)
+        normalized.append((name, value))
+    return tuple(sorted(normalized, key=lambda item: item[0]))
+
+
+def _canonical_named_items(kind: str, items: tuple[_NamedIR, ...]) -> tuple[_NamedIR, ...]:
+    seen: set[str] = set()
+    for item in items:
+        name = getattr(item, "name", None)
+        _require_name(kind, name)
+        if name in seen:
+            raise ValueError(f"coverage declaration has duplicate {kind} {name!r}")
+        seen.add(name)
+    return tuple(sorted(items, key=lambda item: item.name))
+
+
+def _validate_parameter_names(kind: str, parameters: tuple["SampleParameterIR", ...]) -> None:
+    seen: set[str] = set()
+    for parameter in parameters:
+        if not isinstance(parameter, SampleParameterIR):
+            raise TypeError(f"coverage {kind} parameters must be SampleParameterIR values")
+        if parameter.name in seen:
+            raise ValueError(f"coverage {kind} has duplicate parameter {parameter.name!r}")
+        seen.add(parameter.name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +70,11 @@ class SampleParameterIR:
 
     name: str
     type_name: str
+
+    def __post_init__(self) -> None:
+        _require_name("parameter", self.name)
+        if not isinstance(self.type_name, str) or not self.type_name:
+            raise ValueError("coverage parameter type must be a non-empty string")
 
     def stable_dict(self) -> dict[str, str]:
         return {"name": self.name, "type": self.type_name}
@@ -34,6 +87,13 @@ class CoverageBinIR:
     name: str
     kind: str
     selector: Any = None
+
+    def __post_init__(self) -> None:
+        _require_name("bin", self.name)
+        if self.kind not in _BIN_KINDS:
+            choices = ", ".join(sorted(_BIN_KINDS))
+            raise ValueError(f"coverage bin {self.name!r} has unsupported kind {self.kind!r}; expected {choices}")
+        canonical_value(self.selector)
 
     def stable_dict(self) -> dict[str, Any]:
         return {
@@ -52,6 +112,13 @@ class CoveragePointIR:
     bins: tuple[CoverageBinIR, ...] = ()
     iff: Any = None
     options: tuple[tuple[str, Any], ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_name("point", self.name)
+        canonical_value(self.expression)
+        canonical_value(self.iff)
+        object.__setattr__(self, "bins", _canonical_named_items("bin", self.bins))
+        object.__setattr__(self, "options", _canonical_options(f"point {self.name!r}", self.options))
 
     def stable_dict(self) -> dict[str, Any]:
         return {
@@ -72,6 +139,18 @@ class CoverageCrossIR:
     bins: tuple[CoverageBinIR, ...] = ()
     iff: Any = None
     options: tuple[tuple[str, Any], ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_name("cross", self.name)
+        if not self.members:
+            raise ValueError(f"coverage cross {self.name!r} must have at least one member")
+        for member in self.members:
+            _require_name("cross member", member)
+        if len(set(self.members)) != len(self.members):
+            raise ValueError(f"coverage cross {self.name!r} has duplicate members")
+        canonical_value(self.iff)
+        object.__setattr__(self, "bins", _canonical_named_items("bin", self.bins))
+        object.__setattr__(self, "options", _canonical_options(f"cross {self.name!r}", self.options))
 
     def stable_dict(self) -> dict[str, Any]:
         return {
@@ -95,6 +174,30 @@ class CoverageIR:
     crosses: tuple[CoverageCrossIR, ...] = ()
     options: tuple[tuple[str, Any], ...] = ()
     type_options: tuple[tuple[str, Any], ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.sample_type, str) or not self.sample_type:
+            raise ValueError("coverage sample type must be a non-empty string")
+        _require_name("covergroup declaration", self.declaration_name)
+        _validate_parameter_names("constructor", self.constructor_parameters)
+        _validate_parameter_names("sample", self.sample_parameters)
+        points = _canonical_named_items("point", self.points)
+        crosses = _canonical_named_items("cross", self.crosses)
+        point_names = {point.name for point in points}
+        overlap = point_names.intersection(cross.name for cross in crosses)
+        if overlap:
+            name = min(overlap)
+            raise ValueError(f"coverage declaration reuses {name!r} as both point and cross")
+        for cross in crosses:
+            unknown = [member for member in cross.members if member not in point_names]
+            if unknown:
+                raise ValueError(
+                    f"coverage cross {cross.name!r} references unknown point {unknown[0]!r}"
+                )
+        object.__setattr__(self, "points", points)
+        object.__setattr__(self, "crosses", crosses)
+        object.__setattr__(self, "options", _canonical_options("covergroup", self.options))
+        object.__setattr__(self, "type_options", _canonical_options("covergroup type", self.type_options))
 
     @property
     def covergroup_type_id(self) -> str:
