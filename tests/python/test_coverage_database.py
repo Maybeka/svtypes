@@ -63,3 +63,11 @@ def test_database_record_refresh_does_not_double_count() -> None:
     database.record(packet.cg.instance, logical_instance_key="dut.pkt")
     database.record(packet.cg.instance, logical_instance_key="dut.pkt")
     assert database.snapshot_document()["records"][0]["points"]["code_cp"]["hits"] == {"low": 1}
+
+
+def test_database_snapshot_is_not_a_mutable_view_of_internal_records() -> None:
+    database = CoverageDatabase()
+    database.record(_sample(0).cg.instance)
+    snapshot = database.snapshot_document()
+    snapshot["records"][0]["points"]["code_cp"]["hits"]["low"] = 99
+    assert database.snapshot_document()["records"][0]["points"]["code_cp"]["hits"] == {"low": 1}

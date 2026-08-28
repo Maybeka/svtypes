@@ -53,7 +53,14 @@ class CoverageDatabase:
             )
 
     def snapshot_document(self) -> dict[str, Any]:
-        return {"records": [{"logical_instance_key": record.logical_instance_key, **record.document} for _, record in sorted(self._records.items(), key=lambda item: (item[0][0], item[0][1] or ""))]}
+        return {
+            "records": [
+                {"logical_instance_key": record.logical_instance_key, **deepcopy(record.document)}
+                for _, record in sorted(
+                    self._records.items(), key=lambda item: (item[0][0], item[0][1] or "")
+                )
+            ]
+        }
 
     def snapshot_json(self) -> str:
         return json.dumps(self.snapshot_document(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
