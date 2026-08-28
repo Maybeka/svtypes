@@ -172,7 +172,11 @@ class CoverageRuntime:
         options = dict(point.options)
         at_least = int(options.get("at_least", 1))
         goal = int(options.get("goal", 100))
-        normal = [item for item in point.bins if item.kind in {"normal", "default"}]
+        normal = [
+            item for item in point.bins
+            if item.kind in {"normal", "default"}
+            and not (isinstance(item.selector, dict) and item.selector.get("kind") == "values" and not item.selector.get("items"))
+        ]
         if not normal:
             return 100.0
         covered = sum(self.counters[point_name].hits[item.name] >= at_least for item in normal)

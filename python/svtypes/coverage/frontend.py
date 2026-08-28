@@ -127,6 +127,65 @@ def _contains_repeat(selector: Any) -> bool:
     return False
 
 
+def _split_values(node: ast.AST) -> list[int]:
+    """Enumerate the finite 2-state selector accepted by array bins."""
+    if isinstance(node, ast.Tuple):
+        return [value for item in node.elts for value in _split_values(item)]
+    if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
+        return [node.value]
+    if isinstance(node, ast.Slice):
+        if not all(isinstance(item, ast.Constant) and isinstance(item.value, int) and not isinstance(item.value, bool) for item in (node.lower, node.upper)):
+            raise _error("bins.split() ranges require integer endpoints")
+        if node.lower.value > node.upper.value:
+            raise _error("bins.split() range lower endpoint exceeds upper endpoint")
+        return list(range(node.lower.value, node.upper.value + 1))
+    raise _error("bins.split() requires finite integer values or ranges")
+
+
+def _value_selector(values: list[int]) -> Any:
+    return {"kind": "values", "items": [{"kind": "constant", "value": value} for value in values]}
+
+
+def _fixed_split_bins(name: str, values: list[int], count: int) -> list[CoverageBinIR]:
+    width, remainder = divmod(len(values), count)
+    result: list[CoverageBinIR] = []
+    offset = 0
+    for index in range(count):
+        take = width + (remainder if index == count - 1 else 0)
+        result.append(CoverageBinIR(f"{name}[{index}]", "normal", _value_selector(values[offset:offset + take])))
+        offset += take
+    return result
+
+
+def _array_bin_declaration(name: str, call: ast.Call) -> list[CoverageBinIR]:
+    if not isinstance(call.func, ast.Attribute) or call.func.attr != "split" or not isinstance(call.func.value, ast.Subscript):
+        raise _error(f"coverage bin {name!r} has unsupported array-bin declaration")
+    values = _split_values(call.func.value.slice)
+    if len(set(values)) != len(values):
+        raise _error(f"coverage array bin {name!r} contains duplicate values")
+    if len(call.args) > 1 or any(keyword.arg != "max_bins" for keyword in call.keywords):
+        raise _error("bins.split() accepts one positional count or max_bins= only")
+    if call.args and call.keywords:
+        raise _error("bins.split() cannot combine count and max_bins")
+    if call.args:
+        count_node = call.args[0]
+        if not isinstance(count_node, ast.Constant) or not isinstance(count_node.value, int) or isinstance(count_node.value, bool) or count_node.value <= 0:
+            raise _error("bins.split(count) requires a positive declaration-time integer")
+        return _fixed_split_bins(name, values, count_node.value)
+    maximum: int | None = 64
+    if call.keywords:
+        value = call.keywords[0].value
+        if isinstance(value, ast.Constant) and value.value is None:
+            maximum = None
+        elif isinstance(value, ast.Constant) and isinstance(value.value, int) and not isinstance(value.value, bool) and value.value > 0:
+            maximum = value.value
+        else:
+            raise _error("bins.split(max_bins=...) requires a positive integer or None")
+    if maximum is not None and len(values) > maximum:
+        return _fixed_split_bins(name, values, maximum)
+    return [CoverageBinIR(f"{name}[{value}]", "normal", {"kind": "constant", "value": value}) for value in values]
+
+
 def _option_values(node: ast.ClassDef, owner: str) -> tuple[tuple[str, Any], ...]:
     values: list[tuple[str, Any]] = []
     for statement in node.body:
@@ -207,6 +266,9 @@ def _point_class(owner: type[Any], node: ast.ClassDef) -> tuple[CoveragePointIR,
         bin_name = statement.targets[0].id
         if isinstance(statement.value, ast.Name) and statement.value.id == "default_bins":
             bins.append(CoverageBinIR(bin_name, "default"))
+            continue
+        if isinstance(statement.value, ast.Call):
+            bins.extend(_array_bin_declaration(bin_name, statement.value))
             continue
         if not isinstance(statement.value, ast.Subscript) or not isinstance(statement.value.value, ast.Name):
             raise _error(f"coverage point {node.name!r}.{bin_name} must use a bins declaration")

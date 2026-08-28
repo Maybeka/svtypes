@@ -198,6 +198,29 @@ def test_transition_repeat_matches_every_finite_repetition_length():
     assert packet.cg.instance.snapshot()["opcode_cp"]["hits"] == {"burst": 2}
 
 
+def test_array_bins_split_expand_compress_and_keep_empty_bins_out_of_denominator():
+    class Packet(SvObject):
+        opcode = Bit(3)
+
+        @covergroup
+        def cg(self):
+            class opcode_cp(CovPoint, source=self.opcode):
+                expanded = bins[1, 3:4].split()
+                fixed = bins[0:7].split(3)
+                with_empty = bins[0:1].split(3)
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    point = Packet.cg.freeze().points[0]
+    assert {bin_.name for bin_ in point.bins} >= {"expanded[1]", "expanded[3]", "expanded[4]", "fixed[0]", "fixed[1]", "fixed[2]", "with_empty[2]"}
+    packet = Packet()
+    packet.opcode.value = 0
+    packet.cg.sample()
+    assert packet.cg.instance.snapshot()["opcode_cp"]["hits"] == {"fixed[0]": 1, "with_empty[2]": 1}
+
+
 def test_repeat_is_rejected_outside_transition_bins():
     class Packet(SvObject):
         opcode = Bit(2)
