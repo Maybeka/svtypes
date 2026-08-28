@@ -54,6 +54,23 @@ class CoverageInstanceOption:
         self._values[name] = value
 
 
+@dataclass(slots=True)
+class CoverageSampleLog:
+    max_records: int
+    max_bytes: int
+    records: list[dict[str, Any]]
+    used_bytes: int = 0
+
+    def append(self, record: dict[str, Any]) -> None:
+        if len(self.records) >= self.max_records:
+            return
+        size = len(json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+        if self.used_bytes + size > self.max_bytes:
+            return
+        self.records.append(record)
+        self.used_bytes += size
+
+
 class CoverInput(Generic[T]):
     """Type-only marker for an embedded covergroup constructor input."""
 
@@ -78,6 +95,7 @@ class CoverGroupInstance:
     instance_ir: CoverageIR | None = None
     option: CoverageInstanceOption | None = None
     logical_instance_key: str | None = None
+    sample_log: CoverageSampleLog | None = None
 
     def __post_init__(self) -> None:
         from .evaluator import CoverageRuntime
@@ -114,7 +132,24 @@ class CoverGroupInstance:
             raise CoverageError(f"coverage sample {self.declaration.qualified_name} is missing {missing[0]!r}")
         values["self"] = self.host
         values["item"] = self.host
+        if self.sample_log is not None:
+            self.sample_log.append({
+                "case_id": case_id,
+                "values": {name: _layout_value(value) for name, value in values.items() if name not in {"self", "item"}},
+            })
         self.runtime.sample(values, case_id=case_id)
+
+    def enable_sample_log(self, *, max_records: int = 1024, max_bytes: int = 1 << 20) -> None:
+        if any(counter.samples for counter in self.runtime.counters.values()):
+            raise CoverageError("coverage sample log must be enabled before first sample")
+        if not isinstance(max_records, int) or isinstance(max_records, bool) or max_records <= 0:
+            raise CoverageError("coverage sample log max_records must be a positive integer")
+        if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes <= 0:
+            raise CoverageError("coverage sample log max_bytes must be a positive integer")
+        self.sample_log = CoverageSampleLog(max_records, max_bytes, [])
+
+    def sample_log_snapshot(self) -> list[dict[str, Any]]:
+        return [] if self.sample_log is None else json.loads(json.dumps(self.sample_log.records))
 
     @property
     def instance_layout_digest(self) -> str:
@@ -270,6 +305,12 @@ class BoundCoverGroup:
 
     def bind_logical_instance(self, key: str) -> None:
         self.instance.bind_logical_instance(key)
+
+    def enable_sample_log(self, *, max_records: int = 1024, max_bytes: int = 1 << 20) -> None:
+        self.instance.enable_sample_log(max_records=max_records, max_bytes=max_bytes)
+
+    def sample_log_snapshot(self) -> list[dict[str, Any]]:
+        return self.instance.sample_log_snapshot()
 
     @property
     def option(self) -> CoverageInstanceOption:

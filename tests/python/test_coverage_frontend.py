@@ -313,6 +313,27 @@ def test_coverage_options_require_their_declared_base_and_supported_fields():
         Packet.bad_limit.freeze()
 
 
+def test_optional_sample_log_obeys_record_and_byte_budgets_without_affecting_hits():
+    class Packet(SvObject):
+        opcode = Bit(1)
+
+        @covergroup
+        def cg(self):
+            class opcode_cp(CovPoint, source=self.opcode):
+                zero = bins[0]
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    packet = Packet()
+    packet.cg.enable_sample_log(max_records=1, max_bytes=256)
+    packet.cg.sample(case_id="first")
+    packet.cg.sample(case_id="second")
+    assert packet.cg.instance.snapshot()["opcode_cp"]["hits"] == {"zero": 2}
+    assert packet.cg.sample_log_snapshot() == [{"case_id": "first", "values": {}}]
+
+
 def test_array_points_freeze_to_fixed_slots_and_skip_missing_dynamic_elements():
     class Packet(SvObject):
         values = DynArray(Bit(8))
