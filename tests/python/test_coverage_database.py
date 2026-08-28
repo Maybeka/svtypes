@@ -176,24 +176,22 @@ def test_non_per_instance_records_without_logical_keys_remain_separate_type_cont
 
 
 def test_database_merge_unions_case_sources_without_changing_counts() -> None:
-    left = CoverageDatabase()
-    right = CoverageDatabase()
-    first = DatabasePacket()
-    first.code.value = 0
-    _reset_coverage_case_name_for_testing()
-    set_coverage_case_name("first")
-    first.cg.sample()
-    left.record(first.cg.instance, logical_instance_key="dut.packet")
-    second = DatabasePacket()
-    second.code.value = 0
-    _reset_coverage_case_name_for_testing()
-    set_coverage_case_name("second")
-    second.cg.sample()
-    right.record(second.cg.instance, logical_instance_key="dut.packet")
-    left.merge(right)
+    databases = []
+    for case_name in ("first", "second", "third", "overflow"):
+        database = CoverageDatabase()
+        packet = DatabasePacket()
+        packet.code.value = 0
+        _reset_coverage_case_name_for_testing()
+        set_coverage_case_name(case_name)
+        packet.cg.sample()
+        database.record(packet.cg.instance, logical_instance_key="dut.packet")
+        databases.append(database)
+    left = databases[0]
+    for right in databases[1:]:
+        left.merge(right)
     point = left.snapshot_document()["records"][0]["points"]["code_cp"]
-    assert point["hits"] == {"low": 2}
-    assert point["source_ids"] == {"low": ["first", "second"]}
+    assert point["hits"] == {"low": 4}
+    assert point["source_ids"] == {"low": ["first", "second", "third"]}
     _reset_coverage_case_name_for_testing()
 
 
