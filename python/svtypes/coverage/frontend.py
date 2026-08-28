@@ -7,7 +7,10 @@ import inspect
 import textwrap
 from typing import Any
 
+from ..bit import Bit
+from ..enum import Enum
 from ..errors import CoverageDeclarationError
+from ..logic import Logic
 from .ir import CoverageBinIR, CoverageIR, CoveragePointIR, SampleParameterIR
 
 
@@ -100,7 +103,49 @@ def _slice_selector(node: ast.AST) -> Any:
     return _expr(node)
 
 
-def _point_class(node: ast.ClassDef) -> CoveragePointIR:
+def _field_descriptor(owner: type[Any], source: ast.AST) -> Any | None:
+    if not (
+        isinstance(source, ast.Attribute)
+        and isinstance(source.value, ast.Name)
+        and source.value.id == "self"
+    ):
+        return None
+    for base in owner.mro():
+        if source.attr in base.__dict__:
+            return base.__dict__[source.attr]
+    return None
+
+
+def _automatic_bins(owner: type[Any], point_name: str, source: ast.AST) -> tuple[CoverageBinIR, ...]:
+    descriptor = _field_descriptor(owner, source)
+    if isinstance(descriptor, Enum):
+        return tuple(
+            CoverageBinIR(f"auto[{member.value}]", "normal", {"kind": "constant", "value": member.value})
+            for member in descriptor._enum_items
+        )
+    if not isinstance(descriptor, (Bit, Logic)):
+        raise _error(f"coverage point {point_name!r} needs explicit bins because its automatic value domain is unknown")
+    lower = -(1 << (descriptor.width - 1)) if descriptor.signed else 0
+    upper = (1 << (descriptor.width - 1)) - 1 if descriptor.signed else (1 << descriptor.width) - 1
+    count = min(upper - lower + 1, 64)
+    base_width, remainder = divmod(upper - lower + 1, count)
+    bins: list[CoverageBinIR] = []
+    current = lower
+    for index in range(count):
+        width = base_width + (remainder if index == count - 1 else 0)
+        end = current + width - 1
+        selector: Any = {"kind": "constant", "value": current} if current == end else {
+            "kind": "range",
+            "lower": {"kind": "constant", "value": current},
+            "upper": {"kind": "constant", "value": end},
+        }
+        name = f"auto[{current}]" if current == end else f"auto[{current}:{end}]"
+        bins.append(CoverageBinIR(name, "normal", selector))
+        current = end + 1
+    return tuple(bins)
+
+
+def _point_class(owner: type[Any], node: ast.ClassDef) -> CoveragePointIR:
     if len(node.bases) != 1 or _name(node.bases[0]) not in _POINT_BASES:
         raise _error(f"coverage declaration class {node.name!r} must inherit CovPoint or CovPointArray")
     keywords = {keyword.arg: keyword.value for keyword in node.keywords if keyword.arg is not None}
@@ -126,6 +171,8 @@ def _point_class(node: ast.ClassDef) -> CoveragePointIR:
         if kind is None:
             raise _error(f"coverage point {node.name!r}.{bin_name} has unsupported bin declaration")
         bins.append(CoverageBinIR(bin_name, kind, _slice_selector(statement.value.slice)))
+    if not any(bin_.kind in {"normal", "default", "transition"} for bin_ in bins):
+        bins.extend(_automatic_bins(owner, node.name, keywords["source"]))
     options: list[tuple[str, Any]] = []
     if _name(node.bases[0]) == "CovPointArray":
         if "length" not in keywords:
@@ -187,7 +234,7 @@ def compile_declaration(declaration: Any) -> CoverageIR:
             raise _error(f"coverage sample {declaration.qualified_name}.sample has unsupported body statement")
         point_nodes = [item for item in sample.body if isinstance(item, ast.ClassDef)]
         sample_parameters = tuple(SampleParameterIR(argument.arg, _annotation(argument)) for argument in sample.args.args)
-    points = tuple(_point_class(node) for node in point_nodes)
+    points = tuple(_point_class(declaration.owner, node) for node in point_nodes)
     sample_type = getattr(declaration.owner, "_svtypes_unified_type_name", declaration.owner.__name__)
     return CoverageIR(
         sample_type=sample_type,

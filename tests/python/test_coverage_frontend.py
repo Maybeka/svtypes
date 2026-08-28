@@ -90,3 +90,17 @@ def test_python_runtime_classifies_iff_ignore_illegal_overlapping_normal_and_def
     assert result["samples"] == 4
     assert result["hits"] == {"even": 1, "low": 1, "other": 1}
     assert result["illegal_hits"] == {"reserved": 1}
+
+
+def test_freeze_generates_deterministic_automatic_bins_from_a_bit_field_domain():
+    class Packet(SvObject):
+        opcode = Bit(4)
+
+        @covergroup
+        def cg(self):
+            class opcode_cp(CovPoint, source=self.opcode):
+                pass
+
+    bins_ir = Packet.cg.freeze().points[0].bins
+
+    assert {item.name for item in bins_ir} == {f"auto[{index}]" for index in range(16)}
