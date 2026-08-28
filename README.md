@@ -32,6 +32,15 @@ python3 -m venv .venv
 .venv/bin/python -m pytest -q
 ```
 
+The command above permits remote SystemVerilog target tests to skip when no SystemVerilog target host is
+available. Release validation must require that host instead:
+
+```sh
+.venv/bin/python -m pytest -q --require-target
+```
+
+Set `SVTYPES_target_HOST` to use a host other than the project default.
+
 SVX should depend on a versioned SvTypes release and discover support files
 through the public `svtypes` package helpers.
 
