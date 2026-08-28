@@ -20,7 +20,7 @@ class CoverRef(Generic[T]):
     """Type-only marker for an embedded covergroup reference input."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class CoverGroupInstance:
     """One instantiated embedded covergroup.
 
@@ -32,11 +32,36 @@ class CoverGroupInstance:
     host: Any
     constructor_actuals: tuple[Any, ...]
     constructor_named_actuals: tuple[tuple[str, Any], ...]
+    runtime: Any = None
+
+    def __post_init__(self) -> None:
+        from .evaluator import CoverageRuntime
+
+        self.runtime = CoverageRuntime(self.declaration.ir)
 
     def sample(self, *args: Any, **kwargs: Any) -> None:
-        raise CoverageError(
-            f"coverage evaluator is not attached to {self.declaration.qualified_name}"
-        )
+        formals = self.declaration.ir.sample_parameters
+        if len(args) > len(formals):
+            raise CoverageError(f"coverage sample {self.declaration.qualified_name} has too many positional arguments")
+        values = {name: value for name, value in self.constructor_named_actuals}
+        for formal, value in zip(self.declaration.ir.constructor_parameters, self.constructor_actuals):
+            if formal.name in values:
+                raise CoverageError(f"coverage constructor {self.declaration.qualified_name} binds {formal.name!r} twice")
+            values[formal.name] = value
+        for formal, value in zip(formals, args):
+            values[formal.name] = value
+        for name, value in kwargs.items():
+            if name not in {formal.name for formal in formals} or name in values:
+                raise CoverageError(f"coverage sample {self.declaration.qualified_name} has invalid argument {name!r}")
+            values[name] = value
+        missing = [formal.name for formal in formals if formal.name not in values]
+        if missing:
+            raise CoverageError(f"coverage sample {self.declaration.qualified_name} is missing {missing[0]!r}")
+        values["self"] = self.host
+        self.runtime.sample(values)
+
+    def snapshot(self) -> dict[str, Any]:
+        return self.runtime.snapshot()
 
 
 class BoundCoverGroup:

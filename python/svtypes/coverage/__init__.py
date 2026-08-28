@@ -37,6 +37,7 @@ from .dsl import (
     transition_bins,
 )
 from .identity import bin_id, point_id
+from .evaluator import CoverageRuntime, eval_expr
 from .limits import (
     MAX_CROSS_MEMBERS,
     MAX_NORMAL_CROSS_BINS,
@@ -64,6 +65,7 @@ __all__ = [
     "CoverageIR",
     "CoveragePointIR",
     "CoverageProvenance",
+    "CoverageRuntime",
     "MAX_CROSS_MEMBERS",
     "MAX_NORMAL_CROSS_BINS",
     "MAX_NORMAL_CROSS_BINS_PER_COVERGROUP",
@@ -75,6 +77,7 @@ __all__ = [
     "bins",
     "covergroup",
     "default_bins",
+    "eval_expr",
     "ignore_bins",
     "illegal_bins",
     "transition_bins",
