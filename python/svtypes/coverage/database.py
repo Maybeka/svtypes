@@ -34,11 +34,16 @@ class CoverageDatabase:
         if logical_instance_key is not None and bound_key is not None and logical_instance_key != bound_key:
             raise CoverageError("coverage database logical instance key disagrees with instance binding")
         logical_instance_key = bound_key if bound_key is not None else logical_instance_key
-        if getattr(getattr(instance, "option", None), "per_instance", 0) and logical_instance_key is None:
+        per_instance = bool(getattr(getattr(instance, "option", None), "per_instance", 0))
+        if per_instance and logical_instance_key is None:
             raise CoverageError("per-instance coverage requires a logical instance key")
         document = instance.snapshot_document()
         type_id = document["covergroup_type_id"]
-        key = (type_id, logical_instance_key)
+        # A non-per-instance result can contribute to type coverage without a
+        # user-visible identity.  Keep such live records separate internally;
+        # never expose this ephemeral implementation key in a snapshot.
+        storage_key = logical_instance_key if logical_instance_key is not None else f"__ephemeral__{id(instance)}"
+        key = (type_id, storage_key)
         current = self._records.get(key)
         if current is not None and current.document["declaration_semantic_digest"] != document["declaration_semantic_digest"]:
             raise CoverageError(f"coverage database declaration mismatch for {type_id}")
@@ -72,7 +77,7 @@ class CoverageDatabase:
             "records": [
                 {"logical_instance_key": record.logical_instance_key, **deepcopy(record.document)}
                 for _, record in sorted(
-                    self._records.items(), key=lambda item: (item[0][0], item[0][1] or "")
+                    self._records.items(), key=lambda item: (item[0][0], item[0][1])
                 )
             ]
         }
