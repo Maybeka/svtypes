@@ -13,6 +13,46 @@ from .ir import CoverageIR
 T = TypeVar("T")
 
 
+_GROUP_OPTION_DEFAULTS = {
+    "name": None,
+    "comment": "",
+    "per_instance": 0,
+    "get_inst_coverage": 0,
+    "weight": 1,
+    "goal": 100,
+    "at_least": 1,
+    "auto_bin_max": 64,
+    "detect_overlap": 0,
+    "cross_num_print_missing": 0,
+}
+
+
+class CoverageInstanceOption:
+    """Runtime covergroup ``option`` view with SVTypes' frozen-field boundary."""
+
+    def __init__(self, declaration_options: tuple[tuple[str, Any], ...]) -> None:
+        object.__setattr__(self, "_values", {**_GROUP_OPTION_DEFAULTS, **dict(declaration_options)})
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self._values[name]
+        except KeyError as error:
+            raise AttributeError(name) from error
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name not in self._values:
+            raise AttributeError(f"unknown coverage option {name!r}")
+        if name == "name":
+            if value is not None and (not isinstance(value, str) or not value):
+                raise CoverageError("coverage option.name must be a non-empty string or None")
+        elif name == "comment":
+            if not isinstance(value, str):
+                raise CoverageError("coverage option.comment must be a string")
+        else:
+            raise CoverageError(f"SVT-COV-OPTION-FROZEN: option.{name} is frozen after instantiate")
+        self._values[name] = value
+
+
 class CoverInput(Generic[T]):
     """Type-only marker for an embedded covergroup constructor input."""
 
@@ -34,12 +74,13 @@ class CoverGroupInstance:
     constructor_actuals: tuple[Any, ...]
     constructor_named_actuals: tuple[tuple[str, Any], ...]
     runtime: Any = None
-    instance_name: str | None = None
+    option: CoverageInstanceOption | None = None
 
     def __post_init__(self) -> None:
         from .evaluator import CoverageRuntime
 
         self.runtime = CoverageRuntime(self.declaration.ir)
+        self.option = CoverageInstanceOption(self.declaration.ir.options)
 
     def sample(self, *args: Any, **kwargs: Any) -> None:
         formals = self.declaration.ir.sample_parameters
@@ -80,15 +121,15 @@ class CoverGroupInstance:
         self.runtime.stop()
 
     def set_inst_name(self, name: str) -> None:
-        if not isinstance(name, str) or not name:
-            raise CoverageError("coverage instance name must be a non-empty string")
-        self.instance_name = name
+        assert self.option is not None
+        self.option.name = name
 
     def snapshot_document(self) -> dict[str, Any]:
         return {
             "covergroup_type_id": self.declaration.ir.covergroup_type_id,
             "declaration_semantic_digest": self.declaration.ir.declaration_semantic_digest,
-            "instance_name": self.instance_name,
+            "instance_name": self.option.name if self.option is not None else None,
+            "comment": self.option.comment if self.option is not None else "",
             "points": self.snapshot(),
         }
 
@@ -180,6 +221,10 @@ class BoundCoverGroup:
 
     def set_inst_name(self, name: str) -> None:
         self.instance.set_inst_name(name)
+
+    @property
+    def option(self) -> CoverageInstanceOption:
+        return self.instance.option
 
     def snapshot_document(self) -> dict[str, Any]:
         return self.instance.snapshot_document()

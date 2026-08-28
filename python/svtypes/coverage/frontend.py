@@ -136,7 +136,9 @@ def _field_descriptor(owner: type[Any], source: ast.AST) -> Any | None:
     return None
 
 
-def _automatic_bins(owner: type[Any], point_name: str, source: ast.AST) -> tuple[CoverageBinIR, ...]:
+def _automatic_bins(
+    owner: type[Any], point_name: str, source: ast.AST, auto_bin_max: int
+) -> tuple[CoverageBinIR, ...]:
     descriptor = _field_descriptor(owner, source)
     if isinstance(descriptor, Enum):
         return tuple(
@@ -147,11 +149,11 @@ def _automatic_bins(owner: type[Any], point_name: str, source: ast.AST) -> tuple
         raise _error(f"coverage point {point_name!r} needs explicit bins because its automatic value domain is unknown")
     lower = -(1 << (descriptor.width - 1)) if descriptor.signed else 0
     upper = (1 << (descriptor.width - 1)) - 1 if descriptor.signed else (1 << descriptor.width) - 1
-    count = min(upper - lower + 1, 64)
+    if not isinstance(auto_bin_max, int) or isinstance(auto_bin_max, bool) or auto_bin_max <= 0:
+        raise _error(f"coverage point {point_name!r} option auto_bin_max must be a positive integer")
+    count = min(upper - lower + 1, auto_bin_max)
     base_width, remainder = divmod(upper - lower + 1, count)
     bins: list[CoverageBinIR] = []
-    options: list[tuple[str, Any]] = []
-    options: list[tuple[str, Any]] = []
     current = lower
     for index in range(count):
         width = base_width + (remainder if index == count - 1 else 0)
@@ -198,7 +200,8 @@ def _point_class(owner: type[Any], node: ast.ClassDef) -> tuple[CoveragePointIR,
     base_name = _name(node.bases[0])
     descriptor = _field_descriptor(owner, keywords["source"])
     if not any(bin_.kind in {"normal", "default", "transition"} for bin_ in bins) and base_name == "CovPoint":
-        bins.extend(_automatic_bins(owner, node.name, keywords["source"]))
+        auto_bin_max = dict(options).get("auto_bin_max", 64)
+        bins.extend(_automatic_bins(owner, node.name, keywords["source"], auto_bin_max))
     if base_name == "CovPointArray":
         if "length" not in keywords:
             raise _error(f"coverage point array {node.name!r} requires length=")

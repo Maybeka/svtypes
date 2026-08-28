@@ -18,7 +18,7 @@ from svtypes import (
     illegal_bins,
     transition_bins,
 )
-from svtypes.errors import CoverageDeclarationError
+from svtypes.errors import CoverageDeclarationError, CoverageError
 
 
 def test_freeze_compiles_source_only_points_and_bins_without_executing_declaration():
@@ -115,10 +115,14 @@ def test_coverage_instance_methods_control_sampling_and_report_name():
     packet.cg.start()
     packet.cg.sample()
     packet.cg.set_inst_name("tb.packet.coverage")
+    packet.cg.option.comment = "packet counters"
 
     assert packet.cg.instance.snapshot()["opcode_cp"]["samples"] == 1
     assert packet.cg.get_inst_coverage() == packet.cg.get_coverage() == 100.0
     assert packet.cg.snapshot_document()["instance_name"] == "tb.packet.coverage"
+    assert packet.cg.snapshot_document()["comment"] == "packet counters"
+    with pytest.raises(CoverageError, match="SVT-COV-OPTION-FROZEN"):
+        packet.cg.option.goal = 90
 
 
 def test_freeze_generates_deterministic_automatic_bins_from_a_bit_field_domain():
@@ -133,6 +137,24 @@ def test_freeze_generates_deterministic_automatic_bins_from_a_bit_field_domain()
     bins_ir = Packet.cg.freeze().points[0].bins
 
     assert {item.name for item in bins_ir} == {f"auto[{index}]" for index in range(16)}
+
+
+def test_automatic_bins_honor_point_limit_and_assign_remainder_to_final_bin():
+    class Packet(SvObject):
+        opcode = Bit(4)
+
+        @covergroup
+        def cg(self):
+            class opcode_cp(CovPoint, source=self.opcode):
+                class option(CovPointOption):
+                    auto_bin_max = 3
+
+    bins_ir = Packet.cg.freeze().points[0].bins
+    assert [(item.name, item.selector) for item in bins_ir] == [
+        ("auto[0:4]", {"kind": "range", "lower": {"kind": "constant", "value": 0}, "upper": {"kind": "constant", "value": 4}}),
+        ("auto[10:15]", {"kind": "range", "lower": {"kind": "constant", "value": 10}, "upper": {"kind": "constant", "value": 15}}),
+        ("auto[5:9]", {"kind": "range", "lower": {"kind": "constant", "value": 5}, "upper": {"kind": "constant", "value": 9}}),
+    ]
 
 
 def test_array_points_freeze_to_fixed_slots_and_skip_missing_dynamic_elements():
