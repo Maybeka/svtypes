@@ -2,7 +2,7 @@ from copy import deepcopy
 
 import pytest
 
-from svtypes import Bit, CoverageDatabase, CoverageError, SvObject, covergroup
+from svtypes import Bit, CoverageDatabase, CoverageError, CoverGroupOption, CoverInput, SvObject, covergroup
 from svtypes.coverage import CovPoint, bins
 
 
@@ -71,3 +71,38 @@ def test_database_snapshot_is_not_a_mutable_view_of_internal_records() -> None:
     snapshot = database.snapshot_document()
     snapshot["records"][0]["points"]["code_cp"]["hits"]["low"] = 99
     assert database.snapshot_document()["records"][0]["points"]["code_cp"]["hits"] == {"low": 1}
+
+
+def test_per_instance_database_record_requires_bound_logical_key_and_checks_layout() -> None:
+    class Packet(SvObject):
+        code = Bit(2)
+
+        @covergroup
+        def cg(self, limit: CoverInput[int]):
+            class option(CoverGroupOption):
+                per_instance = 1
+
+            class code_cp(CovPoint, source=self.code):
+                low = bins[0]
+
+        def __init__(self, limit: int):
+            super().__init__()
+            self.cg.instantiate(limit)
+
+    database = CoverageDatabase()
+    one = Packet(1)
+    with pytest.raises(CoverageError, match="requires a logical instance key"):
+        database.record(one.cg.instance)
+    one.cg.bind_logical_instance("dut.packet")
+    database.record(one.cg.instance)
+    two = Packet(2)
+    two.cg.bind_logical_instance("dut.packet")
+    other_database = CoverageDatabase()
+    other_database.record(two.cg.instance)
+    with pytest.raises(CoverageError, match="instance layout mismatch"):
+        database.merge(other_database)
+
+    same_layout = Packet(1)
+    same_layout.cg.bind_logical_instance("dut.packet")
+    with pytest.raises(CoverageError, match="already registered"):
+        database.record(same_layout.cg.instance)

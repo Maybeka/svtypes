@@ -7,6 +7,7 @@ import json
 from typing import Any, Callable, Generic, TypeVar, overload
 
 from ..errors import CoverageError
+from .canonical import semantic_digest
 from .ir import CoverageIR
 
 
@@ -75,6 +76,7 @@ class CoverGroupInstance:
     constructor_named_actuals: tuple[tuple[str, Any], ...]
     runtime: Any = None
     option: CoverageInstanceOption | None = None
+    logical_instance_key: str | None = None
 
     def __post_init__(self) -> None:
         from .evaluator import CoverageRuntime
@@ -105,6 +107,23 @@ class CoverGroupInstance:
         values["self"] = self.host
         self.runtime.sample(values)
 
+    @property
+    def instance_layout_digest(self) -> str:
+        """Digest constructor bindings that can alter an instance's bin layout."""
+        values = {name: _layout_value(value) for name, value in self.constructor_named_actuals}
+        for formal, value in zip(self.declaration.ir.constructor_parameters, self.constructor_actuals):
+            values.setdefault(formal.name, _layout_value(value))
+        return semantic_digest({"constructor_actuals": values})
+
+    def bind_logical_instance(self, key: str) -> None:
+        if not isinstance(key, str) or not key:
+            raise CoverageError("logical instance key must be a non-empty string")
+        if any(counter.samples for counter in self.runtime.counters.values()):
+            raise CoverageError("logical instance key must be bound before first coverage sample")
+        if self.logical_instance_key is not None and self.logical_instance_key != key:
+            raise CoverageError("logical instance key is already bound")
+        self.logical_instance_key = key
+
     def snapshot(self) -> dict[str, Any]:
         return self.runtime.snapshot()
 
@@ -128,6 +147,7 @@ class CoverGroupInstance:
         return {
             "covergroup_type_id": self.declaration.ir.covergroup_type_id,
             "declaration_semantic_digest": self.declaration.ir.declaration_semantic_digest,
+            "instance_layout_digest": self.instance_layout_digest,
             "instance_name": self.option.name if self.option is not None else None,
             "comment": self.option.comment if self.option is not None else "",
             "points": self.snapshot(),
@@ -222,6 +242,9 @@ class BoundCoverGroup:
     def set_inst_name(self, name: str) -> None:
         self.instance.set_inst_name(name)
 
+    def bind_logical_instance(self, key: str) -> None:
+        self.instance.bind_logical_instance(key)
+
     @property
     def option(self) -> CoverageInstanceOption:
         return self.instance.option
@@ -309,3 +332,13 @@ def bind_covergroups(host: Any) -> None:
                 declarations[name] = value
     for declaration in declarations.values():
         host.__dict__[declaration._storage_key] = BoundCoverGroup(declaration, host)
+
+
+def _layout_value(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if hasattr(value, "value"):
+        return {"type": f"{type(value).__module__}.{type(value).__qualname__}", "value": _layout_value(value.value)}
+    if isinstance(value, tuple):
+        return [_layout_value(item) for item in value]
+    raise CoverageError(f"coverage constructor binding {type(value).__name__} cannot form a stable instance layout")

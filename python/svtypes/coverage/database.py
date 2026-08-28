@@ -21,6 +21,7 @@ class CoverageDatabase:
 
     def __init__(self) -> None:
         self._records: dict[tuple[str, str | None], CoverageRecord] = {}
+        self._live_instance_ids: dict[tuple[str, str | None], int] = {}
 
     def record(self, instance: Any, *, logical_instance_key: str | None = None) -> None:
         """Store the current snapshot for one logical coverage instance.
@@ -29,19 +30,33 @@ class CoverageDatabase:
         already-known live instance replaces its previous snapshot instead of
         counting the same samples twice.
         """
+        bound_key = getattr(instance, "logical_instance_key", None)
+        if logical_instance_key is not None and bound_key is not None and logical_instance_key != bound_key:
+            raise CoverageError("coverage database logical instance key disagrees with instance binding")
+        logical_instance_key = bound_key if bound_key is not None else logical_instance_key
+        if getattr(getattr(instance, "option", None), "per_instance", 0) and logical_instance_key is None:
+            raise CoverageError("per-instance coverage requires a logical instance key")
         document = instance.snapshot_document()
         type_id = document["covergroup_type_id"]
         key = (type_id, logical_instance_key)
         current = self._records.get(key)
         if current is not None and current.document["declaration_semantic_digest"] != document["declaration_semantic_digest"]:
             raise CoverageError(f"coverage database declaration mismatch for {type_id}")
+        if current is not None and current.document.get("instance_layout_digest") != document.get("instance_layout_digest"):
+            raise CoverageError(f"coverage database instance layout mismatch for {type_id}")
+        current_id = self._live_instance_ids.get(key)
+        if current_id is not None and current_id != id(instance):
+            raise CoverageError(f"coverage database logical instance key is already registered for {type_id}")
         self._records[key] = CoverageRecord(logical_instance_key, deepcopy(document))
+        self._live_instance_ids[key] = id(instance)
 
     def merge(self, other: "CoverageDatabase") -> None:
         for key, record in other._records.items():
             current = self._records.get(key)
             if current is not None and current.document["declaration_semantic_digest"] != record.document["declaration_semantic_digest"]:
                 raise CoverageError(f"coverage database declaration mismatch for {key[0]}")
+            if current is not None and current.document.get("instance_layout_digest") != record.document.get("instance_layout_digest"):
+                raise CoverageError(f"coverage database instance layout mismatch for {key[0]}")
             if current is None:
                 self._records[key] = CoverageRecord(
                     record.logical_instance_key, deepcopy(record.document)
