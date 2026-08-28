@@ -285,6 +285,34 @@ def test_cover_input_materializes_instance_bin_selectors_without_changing_declar
     assert narrow.cg.instance.instance_layout_digest != wide.cg.instance.instance_layout_digest
 
 
+def test_coverage_options_require_their_declared_base_and_supported_fields():
+    class Packet(SvObject):
+        opcode = Bit(1)
+
+        @covergroup
+        def wrong_base(self):
+            class option(CovPointOption):
+                goal = 100
+
+        @covergroup
+        def unknown_option(self):
+            class option(CoverGroupOption):
+                strobe = 1
+
+        @covergroup
+        def bad_limit(self):
+            class opcode_cp(CovPoint, source=self.opcode):
+                class option(CovPointOption):
+                    auto_bin_max = 0
+
+    with pytest.raises(CoverageDeclarationError, match="must inherit CoverGroupOption"):
+        Packet.wrong_base.freeze()
+    with pytest.raises(CoverageDeclarationError, match="unsupported option"):
+        Packet.unknown_option.freeze()
+    with pytest.raises(CoverageDeclarationError, match="positive integer"):
+        Packet.bad_limit.freeze()
+
+
 def test_array_points_freeze_to_fixed_slots_and_skip_missing_dynamic_elements():
     class Packet(SvObject):
         values = DynArray(Bit(8))
@@ -364,7 +392,7 @@ def test_coverage_uses_at_least_and_goal_options():
                 goal = 50
 
             class opcode_cp(CovPoint, source=self.opcode):
-                class option:
+                class option(CovPointOption):
                     at_least = 2
                 zero = bins[0]
                 one = bins[1]

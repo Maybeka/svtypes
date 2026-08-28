@@ -23,6 +23,9 @@ _BIN_BASES = {
     "transition_bins": "transition",
 }
 _POINT_BASES = {"CovPoint", "CovPointArray"}
+_GROUP_OPTIONS = {"name", "comment", "per_instance", "get_inst_coverage", "weight", "goal", "at_least", "auto_bin_max", "detect_overlap", "cross_num_print_missing"}
+_TYPE_OPTIONS = {"comment", "weight", "goal", "merge_instances"}
+_POINT_OPTIONS = {"comment", "weight", "goal", "at_least", "auto_bin_max", "detect_overlap"}
 
 
 def _error(message: str) -> CoverageDeclarationError:
@@ -186,16 +189,28 @@ def _array_bin_declaration(name: str, call: ast.Call) -> list[CoverageBinIR]:
     return [CoverageBinIR(f"{name}[{value}]", "normal", {"kind": "constant", "value": value}) for value in values]
 
 
-def _option_values(node: ast.ClassDef, owner: str) -> tuple[tuple[str, Any], ...]:
+def _option_values(node: ast.ClassDef, owner: str, base: str, allowed: set[str]) -> tuple[tuple[str, Any], ...]:
+    if len(node.bases) != 1 or _name(node.bases[0]) != base:
+        raise _error(f"coverage {owner} option must inherit {base}")
     values: list[tuple[str, Any]] = []
     for statement in node.body:
         if isinstance(statement, ast.Pass):
             continue
         if not isinstance(statement, ast.Assign) or len(statement.targets) != 1 or not isinstance(statement.targets[0], ast.Name):
             raise _error(f"coverage {owner} option has unsupported body statement")
-        if not isinstance(statement.value, ast.Constant) or not isinstance(statement.value.value, (bool, int, str)):
+        if not isinstance(statement.value, ast.Constant) or not (
+            isinstance(statement.value.value, (bool, int, str))
+            or (statement.targets[0].id == "name" and statement.value.value is None)
+        ):
             raise _error(f"coverage {owner} option {statement.targets[0].id!r} must be a declaration-time constant")
-        values.append((statement.targets[0].id, statement.value.value))
+        name, value = statement.targets[0].id, statement.value.value
+        if name not in allowed:
+            raise _error(f"coverage {owner} has unsupported option {name!r}")
+        if name in {"weight", "goal", "at_least", "auto_bin_max", "cross_num_print_missing"} and (not isinstance(value, int) or isinstance(value, bool) or value <= 0):
+            raise _error(f"coverage {owner} option {name!r} must be a positive integer")
+        if name in {"per_instance", "get_inst_coverage", "detect_overlap", "merge_instances"} and value not in {0, 1, False, True}:
+            raise _error(f"coverage {owner} option {name!r} must be 0 or 1")
+        values.append((name, value))
     return tuple(values)
 
 
@@ -259,7 +274,7 @@ def _point_class(owner: type[Any], node: ast.ClassDef) -> tuple[CoveragePointIR,
         if isinstance(statement, ast.Pass):
             continue
         if isinstance(statement, ast.ClassDef) and statement.name == "option":
-            options.extend(_option_values(statement, f"point {node.name!r}"))
+            options.extend(_option_values(statement, f"point {node.name!r}", "CovPointOption", _POINT_OPTIONS))
             continue
         if not isinstance(statement, ast.Assign) or len(statement.targets) != 1 or not isinstance(statement.targets[0], ast.Name):
             raise _error(f"coverage point {node.name!r} has unsupported body statement")
@@ -362,10 +377,10 @@ def compile_declaration(declaration: Any) -> CoverageIR:
             sample = statement
             continue
         if isinstance(statement, ast.ClassDef) and statement.name == "option":
-            group_options = _option_values(statement, f"covergroup {declaration.qualified_name}")
+            group_options = _option_values(statement, f"covergroup {declaration.qualified_name}", "CoverGroupOption", _GROUP_OPTIONS)
             continue
         if isinstance(statement, ast.ClassDef) and statement.name == "type_option":
-            type_options = _option_values(statement, f"covergroup type {declaration.qualified_name}")
+            type_options = _option_values(statement, f"covergroup type {declaration.qualified_name}", "CoverGroupTypeOption", _TYPE_OPTIONS)
             continue
         if isinstance(statement, ast.ClassDef):
             point_nodes.append(statement)
