@@ -38,6 +38,7 @@ from .dsl import (
 )
 from .identity import bin_id, point_id
 from .evaluator import CoverageRuntime, eval_expr
+from .database import CoverageDatabase, CoverageRecord
 from .limits import (
     MAX_CROSS_MEMBERS,
     MAX_NORMAL_CROSS_BINS,
@@ -66,6 +67,8 @@ __all__ = [
     "CoveragePointIR",
     "CoverageProvenance",
     "CoverageRuntime",
+    "CoverageDatabase",
+    "CoverageRecord",
     "MAX_CROSS_MEMBERS",
     "MAX_NORMAL_CROSS_BINS",
     "MAX_NORMAL_CROSS_BINS_PER_COVERGROUP",

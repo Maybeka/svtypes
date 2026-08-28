@@ -37,6 +37,8 @@ from .object import (
 from .enum import Enum
 from .errors import (
     CompatibilityError,
+    CoverageDeclarationError,
+    CoverageError,
     ConstraintBackendError,
     ConstraintError,
     ConstraintNameError,
@@ -67,6 +69,7 @@ from .constraint import (
 )
 from .randomizable import is_randomizable
 from .coverage import (
+    CoverageDatabase,
     CovPoint,
     CovPointArray,
     CovPointOption,
