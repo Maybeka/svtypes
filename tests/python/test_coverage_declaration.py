@@ -66,3 +66,26 @@ def test_covergroup_cannot_be_instantiated_outside_its_host_constructor():
 
     with pytest.raises(CoverageError, match="host __init__"):
         packet.cg.instantiate()
+
+
+@pytest.mark.parametrize(
+    ("actuals", "named", "message"),
+    [
+        ((1, 2), {}, "too many positional"),
+        ((), {}, "missing 'limit'"),
+        ((1,), {"limit": 2}, "binds 'limit' twice"),
+        ((1,), {"other": 2}, "unknown argument 'other'"),
+    ],
+)
+def test_coverinput_constructor_bindings_are_exact(actuals, named, message):
+    class Packet(SvObject):
+        @covergroup
+        def cg(self, limit: CoverInput[int]):
+            pass
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate(*actuals, **named)
+
+    with pytest.raises(CoverageError, match=message):
+        Packet()

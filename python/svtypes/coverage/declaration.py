@@ -100,7 +100,29 @@ class BoundCoverGroup:
             raise CoverageError(
                 f"coverage group {self._declaration.qualified_name} is already instantiated"
             )
-        self._declaration.freeze()
+        ir = self._declaration.freeze()
+        formals = ir.constructor_parameters
+        if len(actuals) > len(formals):
+            raise CoverageError(
+                f"coverage constructor {self._declaration.qualified_name} has too many positional arguments"
+            )
+        names = {formal.name for formal in formals}
+        unknown = next((name for name in named_actuals if name not in names), None)
+        if unknown is not None:
+            raise CoverageError(
+                f"coverage constructor {self._declaration.qualified_name} has unknown argument {unknown!r}"
+            )
+        positional_names = {formal.name for formal in formals[:len(actuals)]}
+        duplicate = next((name for name in named_actuals if name in positional_names), None)
+        if duplicate is not None:
+            raise CoverageError(
+                f"coverage constructor {self._declaration.qualified_name} binds {duplicate!r} twice"
+            )
+        missing = next((formal.name for formal in formals if formal.name not in positional_names and formal.name not in named_actuals), None)
+        if missing is not None:
+            raise CoverageError(
+                f"coverage constructor {self._declaration.qualified_name} is missing {missing!r}"
+            )
         self._instance = CoverGroupInstance(
             declaration=self._declaration,
             host=self._host,
