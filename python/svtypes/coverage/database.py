@@ -110,6 +110,19 @@ class CoverageDatabase:
             merged = _merge_record_documents(merged, record)
         return {"coverage": _record_coverage(merged), "merge_instances": 1, "points": merged["points"]}
 
+    def coverage(self) -> float:
+        """Return the option-weighted aggregate across covergroup types."""
+        type_ids = sorted({type_id for type_id, _ in self._records})
+        weighted: list[tuple[float, int]] = []
+        for type_id in type_ids:
+            records = [record.document for (candidate, _), record in self._records.items() if candidate == type_id]
+            weight = int(records[0].get("options", {}).get("weight", 1))
+            if weight > 0:
+                weighted.append((self.type_summary(type_id)["coverage"], weight))
+        if not weighted:
+            return 100.0
+        return sum(value * weight for value, weight in weighted) / sum(weight for _, weight in weighted)
+
 
 def _merge_record_documents(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     """Merge counters from equivalent, independently sampled instances."""

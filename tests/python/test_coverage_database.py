@@ -224,3 +224,42 @@ def test_per_instance_illegal_hits_remain_separate_by_logical_key() -> None:
     records = {record["logical_instance_key"]: record for record in database.snapshot_document()["records"]}
     assert records["dut.a"]["points"]["code_cp"]["illegal_hits"] == {"reserved": 1}
     assert records["dut.b"]["points"]["code_cp"]["illegal_hits"] == {"reserved": 2}
+
+
+def test_database_aggregate_coverage_honors_covergroup_weight() -> None:
+    class WeightedLow(SvObject):
+        code = Bit(1)
+
+        @covergroup
+        def cg(self):
+            class option(CoverGroupOption):
+                weight = 3
+
+            class code_cp(CovPoint, source=self.code):
+                zero = bins[0]
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    class WeightedHigh(SvObject):
+        code = Bit(1)
+
+        @covergroup
+        def cg(self):
+            class option(CoverGroupOption):
+                weight = 1
+
+            class code_cp(CovPoint, source=self.code):
+                zero = bins[0]
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    database = CoverageDatabase()
+    database.record(WeightedLow().cg.instance)
+    high = WeightedHigh()
+    high.cg.sample()
+    database.record(high.cg.instance)
+    assert database.coverage() == 25.0
