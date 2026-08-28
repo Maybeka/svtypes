@@ -286,6 +286,12 @@ class BoundCoverGroup:
             raise CoverageError(
                 f"coverage constructor {self._declaration.qualified_name} is missing {missing!r}"
             )
+        resolved_actuals = {
+            formal.name: actuals[index] if index < len(actuals) else named_actuals[formal.name]
+            for index, formal in enumerate(formals)
+        }
+        for formal in formals:
+            _validate_cover_input_actual(formal.name, formal.type_name, resolved_actuals[formal.name])
         self._instance = CoverGroupInstance(
             declaration=self._declaration,
             host=self._host,
@@ -429,6 +435,21 @@ def _layout_value(value: Any) -> Any:
     if isinstance(value, tuple):
         return [_layout_value(item) for item in value]
     raise CoverageError(f"coverage constructor binding {type(value).__name__} cannot form a stable instance layout")
+
+
+def _validate_cover_input_actual(name: str, type_name: str, value: Any) -> None:
+    """Validate the builtin type forms that have stable Python counterparts."""
+    if not type_name.startswith("CoverInput[") or not type_name.endswith("]"):
+        return
+    target = type_name[len("CoverInput["):-1].strip()
+    expected = {"int": int, "str": str, "bool": bool, "float": float}.get(target)
+    if expected is None:
+        return
+    valid = isinstance(value, expected) and not (expected is int and isinstance(value, bool))
+    if not valid:
+        raise CoverageError(
+            f"coverage constructor argument {name!r} expects {target}, got {type(value).__name__}"
+        )
 
 
 def _materialize_value(value: Any, bindings: dict[str, Any]) -> Any:

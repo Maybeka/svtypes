@@ -89,3 +89,17 @@ def test_coverinput_constructor_bindings_are_exact(actuals, named, message):
 
     with pytest.raises(CoverageError, match=message):
         Packet()
+
+
+def test_coverinput_builtin_type_mismatch_is_rejected_at_instantiate():
+    class Packet(SvObject):
+        @covergroup
+        def cg(self, limit: CoverInput[int]):
+            pass
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate("not-an-int")
+
+    with pytest.raises(CoverageError, match="expects int"):
+        Packet()
