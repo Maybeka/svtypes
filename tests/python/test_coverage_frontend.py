@@ -176,3 +176,30 @@ def test_coverref_reads_its_bound_host_field_on_each_sample():
     packet.cg.sample()
 
     assert packet.cg.instance.snapshot()["mode_cp"]["hits"] == {"read": 1, "write": 1}
+
+
+def test_coverage_uses_at_least_and_goal_options():
+    class Packet(SvObject):
+        opcode = Bit(2)
+
+        @covergroup
+        def cg(self):
+            class option(CoverGroupOption):
+                goal = 50
+
+            class opcode_cp(CovPoint, source=self.opcode):
+                class option:
+                    at_least = 2
+                zero = bins[0]
+                one = bins[1]
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    packet = Packet()
+    packet.opcode.value = 0
+    packet.cg.sample()
+    assert packet.cg.get_coverage() == 0.0
+    packet.cg.sample()
+    assert packet.cg.get_coverage() == 100.0

@@ -110,6 +110,19 @@ def _slice_selector(node: ast.AST) -> Any:
     return _expr(node)
 
 
+def _option_values(node: ast.ClassDef, owner: str) -> tuple[tuple[str, Any], ...]:
+    values: list[tuple[str, Any]] = []
+    for statement in node.body:
+        if isinstance(statement, ast.Pass):
+            continue
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1 or not isinstance(statement.targets[0], ast.Name):
+            raise _error(f"coverage {owner} option has unsupported body statement")
+        if not isinstance(statement.value, ast.Constant) or not isinstance(statement.value.value, (bool, int, str)):
+            raise _error(f"coverage {owner} option {statement.targets[0].id!r} must be a declaration-time constant")
+        values.append((statement.targets[0].id, statement.value.value))
+    return tuple(values)
+
+
 def _field_descriptor(owner: type[Any], source: ast.AST) -> Any | None:
     if not (
         isinstance(source, ast.Attribute)
@@ -137,6 +150,8 @@ def _automatic_bins(owner: type[Any], point_name: str, source: ast.AST) -> tuple
     count = min(upper - lower + 1, 64)
     base_width, remainder = divmod(upper - lower + 1, count)
     bins: list[CoverageBinIR] = []
+    options: list[tuple[str, Any]] = []
+    options: list[tuple[str, Any]] = []
     current = lower
     for index in range(count):
         width = base_width + (remainder if index == count - 1 else 0)
@@ -161,10 +176,12 @@ def _point_class(owner: type[Any], node: ast.ClassDef) -> tuple[CoveragePointIR,
     if "source" not in keywords:
         raise _error(f"coverage point {node.name!r} requires source=")
     bins: list[CoverageBinIR] = []
+    options: list[tuple[str, Any]] = []
     for statement in node.body:
         if isinstance(statement, ast.Pass):
             continue
         if isinstance(statement, ast.ClassDef) and statement.name == "option":
+            options.extend(_option_values(statement, f"point {node.name!r}"))
             continue
         if not isinstance(statement, ast.Assign) or len(statement.targets) != 1 or not isinstance(statement.targets[0], ast.Name):
             raise _error(f"coverage point {node.name!r} has unsupported body statement")
@@ -182,7 +199,6 @@ def _point_class(owner: type[Any], node: ast.ClassDef) -> tuple[CoveragePointIR,
     descriptor = _field_descriptor(owner, keywords["source"])
     if not any(bin_.kind in {"normal", "default", "transition"} for bin_ in bins) and base_name == "CovPoint":
         bins.extend(_automatic_bins(owner, node.name, keywords["source"]))
-    options: list[tuple[str, Any]] = []
     if base_name == "CovPointArray":
         if "length" not in keywords:
             raise _error(f"coverage point array {node.name!r} requires length=")
@@ -245,6 +261,8 @@ def compile_declaration(declaration: Any) -> CoverageIR:
             raise _error(f"coverage formal {argument.arg!r} must be CoverInput[...] or CoverRef[...]")
     constructor_parameters = tuple(constructor)
     sample: ast.FunctionDef | None = None
+    group_options: tuple[tuple[str, Any], ...] = ()
+    type_options: tuple[tuple[str, Any], ...] = ()
     point_nodes: list[ast.ClassDef] = []
     for statement in function.body:
         if isinstance(statement, ast.Pass):
@@ -254,7 +272,11 @@ def compile_declaration(declaration: Any) -> CoverageIR:
                 raise _error(f"coverage declaration {declaration.qualified_name} defines sample twice")
             sample = statement
             continue
-        if isinstance(statement, ast.ClassDef) and statement.name in {"option", "type_option"}:
+        if isinstance(statement, ast.ClassDef) and statement.name == "option":
+            group_options = _option_values(statement, f"covergroup {declaration.qualified_name}")
+            continue
+        if isinstance(statement, ast.ClassDef) and statement.name == "type_option":
+            type_options = _option_values(statement, f"covergroup type {declaration.qualified_name}")
             continue
         if isinstance(statement, ast.ClassDef):
             point_nodes.append(statement)
@@ -277,4 +299,6 @@ def compile_declaration(declaration: Any) -> CoverageIR:
         reference_parameters=tuple(references),
         sample_parameters=sample_parameters,
         points=points,
+        options=group_options,
+        type_options=type_options,
     )

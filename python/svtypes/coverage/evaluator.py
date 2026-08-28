@@ -143,3 +143,28 @@ class CoverageRuntime:
             }
             for name, counter in sorted(self.counters.items())
         }
+
+    def point_coverage(self, point_name: str) -> float:
+        point = next((item for item in self.ir.points if item.name == point_name), None)
+        if point is None:
+            raise CoverageError(f"unknown coverage point {point_name!r}")
+        options = dict(point.options)
+        at_least = int(options.get("at_least", 1))
+        goal = int(options.get("goal", 100))
+        normal = [item for item in point.bins if item.kind in {"normal", "default"}]
+        if not normal:
+            return 100.0
+        covered = sum(self.counters[point_name].hits[item.name] >= at_least for item in normal)
+        return min(100.0, 100.0 * covered / len(normal) * 100.0 / goal)
+
+    def coverage(self) -> float:
+        weighted: list[tuple[float, int]] = []
+        for point in self.ir.points:
+            weight = int(dict(point.options).get("weight", 1))
+            if weight > 0:
+                weighted.append((self.point_coverage(point.name), weight))
+        if not weighted:
+            return 100.0
+        raw = sum(value * weight for value, weight in weighted) / sum(weight for _, weight in weighted)
+        goal = int(dict(self.ir.options).get("goal", 100))
+        return min(100.0, raw * 100.0 / goal)

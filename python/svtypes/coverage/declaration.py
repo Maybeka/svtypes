@@ -65,6 +65,9 @@ class CoverGroupInstance:
     def snapshot(self) -> dict[str, Any]:
         return self.runtime.snapshot()
 
+    def get_coverage(self) -> float:
+        return self.runtime.coverage()
+
 
 class BoundCoverGroup:
     """A declaration slot bound to exactly one host object."""
@@ -135,6 +138,9 @@ class BoundCoverGroup:
 
     def sample(self, *args: Any, **kwargs: Any) -> None:
         self.instance.sample(*args, **kwargs)
+
+    def get_coverage(self) -> float:
+        return self.instance.get_coverage()
 
 
 class CoverGroupDeclaration:
