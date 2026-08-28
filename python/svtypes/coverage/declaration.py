@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Any, Callable, Generic, TypeVar, overload
 
 from ..errors import CoverageError
@@ -67,6 +68,16 @@ class CoverGroupInstance:
 
     def get_coverage(self) -> float:
         return self.runtime.coverage()
+
+    def snapshot_document(self) -> dict[str, Any]:
+        return {
+            "covergroup_type_id": self.declaration.ir.covergroup_type_id,
+            "declaration_semantic_digest": self.declaration.ir.declaration_semantic_digest,
+            "points": self.snapshot(),
+        }
+
+    def snapshot_json(self) -> str:
+        return json.dumps(self.snapshot_document(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 class BoundCoverGroup:
@@ -141,6 +152,12 @@ class BoundCoverGroup:
 
     def get_coverage(self) -> float:
         return self.instance.get_coverage()
+
+    def snapshot_document(self) -> dict[str, Any]:
+        return self.instance.snapshot_document()
+
+    def snapshot_json(self) -> str:
+        return self.instance.snapshot_json()
 
 
 class CoverGroupDeclaration:

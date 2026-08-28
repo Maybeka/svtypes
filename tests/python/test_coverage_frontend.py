@@ -226,3 +226,26 @@ def test_transition_bin_matches_only_after_its_finite_sequence_is_observed():
     packet.opcode.value = 1
     packet.cg.sample()
     assert packet.cg.instance.snapshot()["opcode_cp"]["hits"] == {"rise": 1}
+
+
+def test_coverage_snapshot_json_is_deterministic_and_carries_declaration_identity():
+    class Packet(SvObject):
+        opcode = Bit(2)
+
+        @covergroup
+        def cg(self):
+            class opcode_cp(CovPoint, source=self.opcode):
+                zero = bins[0]
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    packet = Packet()
+    packet.opcode.value = 0
+    packet.cg.sample()
+    document = packet.cg.snapshot_document()
+
+    assert document["covergroup_type_id"].endswith("::cg")
+    assert len(document["declaration_semantic_digest"]) == 64
+    assert packet.cg.snapshot_json() == packet.cg.snapshot_json()
