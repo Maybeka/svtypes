@@ -66,6 +66,9 @@ def test_covergroup_cannot_be_instantiated_outside_its_host_constructor():
 
     with pytest.raises(CoverageError, match="host __init__"):
         packet.cg.instantiate()
+    for call in (packet.cg.sample, packet.cg.get_coverage, packet.cg.get_inst_coverage, packet.cg.start, packet.cg.stop):
+        with pytest.raises(CoverageError, match="not instantiated"):
+            call()
 
 
 @pytest.mark.parametrize(
