@@ -238,10 +238,11 @@ def _field_descriptor(owner: type[Any], source: ast.AST) -> Any | None:
     return None
 
 
-def _automatic_bins(
-    owner: type[Any], point_name: str, source: ast.AST, auto_bin_max: int
+def _automatic_bins_for_descriptor(
+    descriptor: Any, point_name: str, auto_bin_max: int
 ) -> tuple[CoverageBinIR, ...]:
-    descriptor = _field_descriptor(owner, source)
+    if isinstance(descriptor, (Array, DynArray, Queue, AssocArray)):
+        descriptor = descriptor._val_template if isinstance(descriptor, AssocArray) else descriptor._elem_template
     if isinstance(descriptor, Enum):
         return tuple(
             CoverageBinIR(f"auto[{member.value}]", "normal", {"kind": "constant", "value": member.value})
@@ -269,6 +270,12 @@ def _automatic_bins(
         bins.append(CoverageBinIR(name, "normal", selector))
         current = end + 1
     return tuple(bins)
+
+
+def _automatic_bins(
+    owner: type[Any], point_name: str, source: ast.AST, auto_bin_max: int
+) -> tuple[CoverageBinIR, ...]:
+    return _automatic_bins_for_descriptor(_field_descriptor(owner, source), point_name, auto_bin_max)
 
 
 def _point_class(owner: type[Any], node: ast.ClassDef, allowed_names: set[str]) -> tuple[CoveragePointIR, ...]:
@@ -325,6 +332,8 @@ def _point_class(owner: type[Any], node: ast.ClassDef, allowed_names: set[str]) 
             raise _error(f"coverage point array {node.name!r} source must be a direct array, dynamic array, or queue field")
         if any(bin_.kind == "transition" for bin_ in bins):
             raise _error(f"coverage point array {node.name!r} cannot declare transition bins")
+        if not any(bin_.kind in {"normal", "default", "transition"} for bin_ in bins):
+            bins.extend(_automatic_bins_for_descriptor(descriptor, node.name, dict(options).get("auto_bin_max", 64)))
         length = keywords["length"].value
         points: list[CoveragePointIR] = []
         for index in range(length):

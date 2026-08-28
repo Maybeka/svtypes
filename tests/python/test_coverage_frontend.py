@@ -439,6 +439,31 @@ def test_array_points_freeze_to_fixed_slots_and_skip_missing_dynamic_elements():
     assert snapshot["value_cp[2]"]["samples"] == 0
 
 
+def test_array_and_value_domain_points_inherit_automatic_bins_from_element_type():
+    class Packet(SvObject):
+        values = DynArray(Bit(2))
+
+        @covergroup
+        def cg(self):
+            class slots(CovPointArray, source=self.values, length=2):
+                pass
+
+            class domain(CovPoint, source=self.values):
+                pass
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    packet = Packet()
+    packet.values.value = [1, 3]
+    packet.cg.sample()
+    result = packet.cg.instance.snapshot()
+    assert result["slots[0]"]["hits"] == {"auto[1]": 1}
+    assert result["slots[1]"]["hits"] == {"auto[3]": 1}
+    assert result["domain"]["hits"] == {"auto[1]": 1, "auto[3]": 1}
+
+
 def test_dynamic_container_value_domain_samples_each_current_element_into_one_point():
     class Packet(SvObject):
         values = DynArray(Bit(8))
