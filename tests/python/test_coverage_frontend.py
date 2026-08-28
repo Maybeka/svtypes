@@ -334,6 +334,28 @@ def test_optional_sample_log_obeys_record_and_byte_budgets_without_affecting_hit
     assert packet.cg.sample_log_snapshot() == [{"case_id": "first", "values": {}}]
 
 
+def test_case_source_limit_is_configurable_only_before_sampling():
+    class Packet(SvObject):
+        opcode = Bit(1)
+
+        @covergroup
+        def cg(self):
+            class opcode_cp(CovPoint, source=self.opcode):
+                zero = bins[0]
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    packet = Packet()
+    packet.cg.configure_case_sources(1)
+    packet.cg.sample(case_id="first")
+    packet.cg.sample(case_id="second")
+    assert packet.cg.instance.snapshot()["opcode_cp"]["source_ids"] == {"zero": ["first"]}
+    with pytest.raises(CoverageError, match="before first sample"):
+        packet.cg.configure_case_sources(2)
+
+
 def test_array_points_freeze_to_fixed_slots_and_skip_missing_dynamic_elements():
     class Packet(SvObject):
         values = DynArray(Bit(8))

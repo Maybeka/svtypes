@@ -110,6 +110,7 @@ class CoverageDatabase:
 def _merge_record_documents(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     """Merge counters from equivalent, independently sampled instances."""
     result = deepcopy(left)
+    source_limit = int(result.get("source_limit", 3))
     left_points = result.get("points", {})
     right_points = right.get("points", {})
     if set(left_points) != set(right_points):
@@ -126,7 +127,7 @@ def _merge_record_documents(left: dict[str, Any], right: dict[str, Any]) -> dict
             for bin_name, source_ids in right_counter.get(field, {}).items():
                 target = merged_sources.setdefault(bin_name, [])
                 for source_id in source_ids:
-                    if source_id not in target and len(target) < 3:
+                    if source_id not in target and len(target) < source_limit:
                         target.append(source_id)
             left_counter[field] = dict(sorted(merged_sources.items()))
         left_counter["samples"] = left_counter.get("samples", 0) + right_counter.get("samples", 0)

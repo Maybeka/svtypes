@@ -148,6 +148,13 @@ class CoverGroupInstance:
             raise CoverageError("coverage sample log max_bytes must be a positive integer")
         self.sample_log = CoverageSampleLog(max_records, max_bytes, [])
 
+    def configure_case_sources(self, limit: int) -> None:
+        if any(counter.samples for counter in self.runtime.counters.values()):
+            raise CoverageError("coverage case source limit must be configured before first sample")
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+            raise CoverageError("coverage case source limit must be a positive integer")
+        self.runtime.source_limit = limit
+
     def sample_log_snapshot(self) -> list[dict[str, Any]]:
         return [] if self.sample_log is None else json.loads(json.dumps(self.sample_log.records))
 
@@ -210,6 +217,7 @@ class CoverGroupInstance:
             "comment": self.option.comment if self.option is not None else "",
             "options": dict(self.declaration.ir.options),
             "type_options": dict(self.declaration.ir.type_options),
+            "source_limit": self.runtime.source_limit,
             "point_definitions": point_definitions,
             "points": self.snapshot(),
         }
@@ -311,6 +319,9 @@ class BoundCoverGroup:
 
     def sample_log_snapshot(self) -> list[dict[str, Any]]:
         return self.instance.sample_log_snapshot()
+
+    def configure_case_sources(self, limit: int) -> None:
+        self.instance.configure_case_sources(limit)
 
     @property
     def option(self) -> CoverageInstanceOption:
