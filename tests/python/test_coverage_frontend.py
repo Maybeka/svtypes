@@ -4,10 +4,12 @@ import pytest
 
 from svtypes import (
     Bit,
+    CovPointArray,
     CovPoint,
     CoverInput,
     CoverGroupOption,
     SvObject,
+    DynArray,
     bins,
     covergroup,
     default_bins,
@@ -104,3 +106,49 @@ def test_freeze_generates_deterministic_automatic_bins_from_a_bit_field_domain()
     bins_ir = Packet.cg.freeze().points[0].bins
 
     assert {item.name for item in bins_ir} == {f"auto[{index}]" for index in range(16)}
+
+
+def test_array_points_freeze_to_fixed_slots_and_skip_missing_dynamic_elements():
+    class Packet(SvObject):
+        values = DynArray(Bit(8))
+
+        @covergroup
+        def cg(self):
+            class value_cp(CovPointArray, source=self.values, length=3):
+                low = bins[0:3]
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    packet = Packet()
+    packet.values.value = [1, 9]
+    packet.cg.sample()
+    points = packet.cg.declaration.ir.points
+    assert [point.name for point in points] == ["value_cp[0]", "value_cp[1]", "value_cp[2]"]
+    snapshot = packet.cg.instance.snapshot()
+    assert snapshot["value_cp[0]"]["hits"] == {"low": 1}
+    assert snapshot["value_cp[1]"]["hits"] == {}
+    assert snapshot["value_cp[2]"]["samples"] == 0
+
+
+def test_dynamic_container_value_domain_samples_each_current_element_into_one_point():
+    class Packet(SvObject):
+        values = DynArray(Bit(8))
+
+        @covergroup
+        def cg(self):
+            class values_cp(CovPoint, source=self.values):
+                low = bins[0:3]
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    packet = Packet()
+    packet.values.value = [1, 9, 2]
+    packet.cg.sample()
+
+    result = packet.cg.instance.snapshot()["values_cp"]
+    assert result["samples"] == 3
+    assert result["hits"] == {"low": 2}

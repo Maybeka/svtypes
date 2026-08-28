@@ -8,6 +8,7 @@ import textwrap
 from typing import Any
 
 from ..bit import Bit
+from ..collection import Array, AssocArray, DynArray, Queue
 from ..enum import Enum
 from ..errors import CoverageDeclarationError
 from ..logic import Logic
@@ -145,7 +146,7 @@ def _automatic_bins(owner: type[Any], point_name: str, source: ast.AST) -> tuple
     return tuple(bins)
 
 
-def _point_class(owner: type[Any], node: ast.ClassDef) -> CoveragePointIR:
+def _point_class(owner: type[Any], node: ast.ClassDef) -> tuple[CoveragePointIR, ...]:
     if len(node.bases) != 1 or _name(node.bases[0]) not in _POINT_BASES:
         raise _error(f"coverage declaration class {node.name!r} must inherit CovPoint or CovPointArray")
     keywords = {keyword.arg: keyword.value for keyword in node.keywords if keyword.arg is not None}
@@ -171,22 +172,38 @@ def _point_class(owner: type[Any], node: ast.ClassDef) -> CoveragePointIR:
         if kind is None:
             raise _error(f"coverage point {node.name!r}.{bin_name} has unsupported bin declaration")
         bins.append(CoverageBinIR(bin_name, kind, _slice_selector(statement.value.slice)))
-    if not any(bin_.kind in {"normal", "default", "transition"} for bin_ in bins):
+    base_name = _name(node.bases[0])
+    descriptor = _field_descriptor(owner, keywords["source"])
+    if not any(bin_.kind in {"normal", "default", "transition"} for bin_ in bins) and base_name == "CovPoint":
         bins.extend(_automatic_bins(owner, node.name, keywords["source"]))
     options: list[tuple[str, Any]] = []
-    if _name(node.bases[0]) == "CovPointArray":
+    if base_name == "CovPointArray":
         if "length" not in keywords:
             raise _error(f"coverage point array {node.name!r} requires length=")
-        options.append(("array_length", _expr(keywords["length"])))
+        if not isinstance(keywords["length"], ast.Constant) or not isinstance(keywords["length"].value, int) or isinstance(keywords["length"].value, bool) or keywords["length"].value <= 0:
+            raise _error(f"coverage point array {node.name!r} length must be a positive declaration-time integer")
+        if not isinstance(descriptor, (Array, DynArray, Queue)):
+            raise _error(f"coverage point array {node.name!r} source must be a direct array, dynamic array, or queue field")
+        length = keywords["length"].value
+        points: list[CoveragePointIR] = []
+        for index in range(length):
+            expression = {
+                "kind": "subscript", "base": _expr(keywords["source"]),
+                "index": {"kind": "constant", "value": index},
+            }
+            points.append(CoveragePointIR(f"{node.name}[{index}]", expression, tuple(bins), _expr(keywords["iff"]) if "iff" in keywords else None, tuple(options)))
+        return tuple(points)
     elif "length" in keywords:
         raise _error(f"coverage point {node.name!r} cannot specify length=")
-    return CoveragePointIR(
+    if isinstance(descriptor, (DynArray, Queue, AssocArray)):
+        options.append(("container_value_domain", True))
+    return (CoveragePointIR(
         node.name,
         _expr(keywords["source"]),
         tuple(bins),
         _expr(keywords["iff"]) if "iff" in keywords else None,
         tuple(options),
-    )
+    ),)
 
 
 def _function_node(function: Any) -> ast.FunctionDef:
@@ -234,7 +251,7 @@ def compile_declaration(declaration: Any) -> CoverageIR:
             raise _error(f"coverage sample {declaration.qualified_name}.sample has unsupported body statement")
         point_nodes = [item for item in sample.body if isinstance(item, ast.ClassDef)]
         sample_parameters = tuple(SampleParameterIR(argument.arg, _annotation(argument)) for argument in sample.args.args)
-    points = tuple(_point_class(declaration.owner, node) for node in point_nodes)
+    points = tuple(point for node in point_nodes for point in _point_class(declaration.owner, node))
     sample_type = getattr(declaration.owner, "_svtypes_unified_type_name", declaration.owner.__name__)
     return CoverageIR(
         sample_type=sample_type,

@@ -105,7 +105,17 @@ class CoverageRuntime:
         counters = self.counters[point.name]
         if point.iff is not None and not bool(eval_expr(point.iff, context)):
             return
-        value = eval_expr(point.expression, context)
+        try:
+            values = eval_expr(point.expression, context)
+        except IndexError:
+            return
+        if dict(point.options).get("container_value_domain"):
+            for value in values:
+                self._classify_value(point, counters, _value(value), context)
+            return
+        self._classify_value(point, counters, values, context)
+
+    def _classify_value(self, point: CoveragePointIR, counters: PointCounters, value: Any, context: dict[str, Any]) -> None:
         counters.samples += 1
         ignored = [bin_ for bin_ in point.bins if bin_.kind == "ignore" and _matches_selector(value, bin_.selector, context)]
         if ignored:
