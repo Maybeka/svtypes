@@ -41,3 +41,12 @@ ignore_bins = _BinNamespace()
 illegal_bins = _BinNamespace()
 transition_bins = _BinNamespace()
 default_bins = object()
+
+
+def repeat(term: Any, minimum: int, maximum: int) -> Any:
+    """Declaration-only marker for a bounded transition repetition.
+
+    The frontend consumes the AST directly, so this function is never called
+    while compiling a covergroup.
+    """
+    return term, minimum, maximum

@@ -134,8 +134,8 @@ class CoverageRuntime:
             history.append(value)
             history[:] = history[-16:]
             for bin_ in transitions:
-                sequence = _transition_sequence(bin_.selector, context)
-                if len(history) >= len(sequence) and history[-len(sequence):] == sequence:
+                sequences = _transition_sequences(bin_.selector, context)
+                if any(len(history) >= len(sequence) and history[-len(sequence):] == sequence for sequence in sequences):
                     counters.hits[bin_.name] += 1
             return
         ignored = [bin_ for bin_ in point.bins if bin_.kind == "ignore" and _matches_selector(value, bin_.selector, context)]
@@ -191,7 +191,18 @@ class CoverageRuntime:
         return min(100.0, raw * 100.0 / goal)
 
 
-def _transition_sequence(selector: Any, context: dict[str, Any]) -> list[Any]:
+def _transition_sequences(selector: Any, context: dict[str, Any]) -> list[list[Any]]:
     if not isinstance(selector, dict) or selector.get("kind") != "values":
         raise CoverageError("transition bin selector must be a finite value sequence")
-    return [eval_expr(item, context) for item in selector["items"]]
+    sequences: list[list[Any]] = [[]]
+    for item in selector["items"]:
+        if isinstance(item, dict) and item.get("kind") == "repeat":
+            values = _transition_sequences({"kind": "values", "items": [item["term"]]}, context)
+            if len(values) != 1 or len(values[0]) != 1:
+                raise CoverageError("repeat() term must resolve to one transition value")
+            value = values[0][0]
+            expansions = [[value] * count for count in range(item["minimum"], item["maximum"] + 1)]
+        else:
+            expansions = [[eval_expr(item, context)]]
+        sequences = [prefix + suffix for prefix in sequences for suffix in expansions]
+    return sequences

@@ -84,6 +84,7 @@ from .coverage import (
     default_bins,
     ignore_bins,
     illegal_bins,
+    repeat,
     transition_bins,
 )
 

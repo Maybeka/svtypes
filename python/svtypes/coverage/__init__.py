@@ -34,6 +34,7 @@ from .dsl import (
     default_bins,
     ignore_bins,
     illegal_bins,
+    repeat,
     transition_bins,
 )
 from .identity import bin_id, point_id
@@ -83,5 +84,6 @@ __all__ = [
     "eval_expr",
     "ignore_bins",
     "illegal_bins",
+    "repeat",
     "transition_bins",
 ]

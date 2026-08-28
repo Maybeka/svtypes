@@ -16,6 +16,7 @@ from svtypes import (
     default_bins,
     ignore_bins,
     illegal_bins,
+    repeat,
     transition_bins,
 )
 from svtypes.errors import CoverageDeclarationError, CoverageError
@@ -175,6 +176,39 @@ def test_nested_sample_formals_are_bound_at_each_sample_without_executing_functi
     assert packet.cg.instance.snapshot()["opcode_cp"] == {
         "hits": {"zero": 1}, "illegal_hits": {}, "samples": 2,
     }
+
+
+def test_transition_repeat_matches_every_finite_repetition_length():
+    class Packet(SvObject):
+        opcode = Bit(2)
+
+        @covergroup
+        def cg(self):
+            class opcode_cp(CovPoint, source=self.opcode):
+                burst = transition_bins[0, repeat(1, 2, 3), 2]
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    packet = Packet()
+    for value in (0, 1, 1, 2, 0, 1, 1, 1, 2):
+        packet.opcode.value = value
+        packet.cg.sample()
+    assert packet.cg.instance.snapshot()["opcode_cp"]["hits"] == {"burst": 2}
+
+
+def test_repeat_is_rejected_outside_transition_bins():
+    class Packet(SvObject):
+        opcode = Bit(2)
+
+        @covergroup
+        def cg(self):
+            class opcode_cp(CovPoint, source=self.opcode):
+                invalid = bins[repeat(1, 2, 3)]
+
+    with pytest.raises(CoverageDeclarationError, match="only in transition_bins"):
+        Packet.cg.freeze()
 
 
 def test_array_points_freeze_to_fixed_slots_and_skip_missing_dynamic_elements():

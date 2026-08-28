@@ -107,7 +107,24 @@ def _slice_selector(node: ast.AST) -> Any:
             "lower": _expr(node.lower) if node.lower else None,
             "upper": _expr(node.upper) if node.upper else None,
         }
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "repeat":
+        if len(node.args) != 3 or node.keywords:
+            raise _error("repeat() requires term, minimum, maximum")
+        minimum, maximum = node.args[1:]
+        if not all(isinstance(value, ast.Constant) and isinstance(value.value, int) and not isinstance(value.value, bool) for value in (minimum, maximum)):
+            raise _error("repeat() bounds must be declaration-time integers")
+        if minimum.value < 0 or maximum.value < minimum.value:
+            raise _error("repeat() requires 0 <= minimum <= maximum")
+        return {"kind": "repeat", "term": _slice_selector(node.args[0]), "minimum": minimum.value, "maximum": maximum.value}
     return _expr(node)
+
+
+def _contains_repeat(selector: Any) -> bool:
+    if isinstance(selector, dict):
+        return selector.get("kind") == "repeat" or any(_contains_repeat(value) for value in selector.values())
+    if isinstance(selector, list):
+        return any(_contains_repeat(value) for value in selector)
+    return False
 
 
 def _option_values(node: ast.ClassDef, owner: str) -> tuple[tuple[str, Any], ...]:
@@ -196,7 +213,10 @@ def _point_class(owner: type[Any], node: ast.ClassDef) -> tuple[CoveragePointIR,
         kind = _BIN_BASES.get(statement.value.value.id)
         if kind is None:
             raise _error(f"coverage point {node.name!r}.{bin_name} has unsupported bin declaration")
-        bins.append(CoverageBinIR(bin_name, kind, _slice_selector(statement.value.slice)))
+        selector = _slice_selector(statement.value.slice)
+        if kind != "transition" and _contains_repeat(selector):
+            raise _error(f"coverage point {node.name!r}.{bin_name} may use repeat() only in transition_bins")
+        bins.append(CoverageBinIR(bin_name, kind, selector))
     base_name = _name(node.bases[0])
     descriptor = _field_descriptor(owner, keywords["source"])
     if not any(bin_.kind in {"normal", "default", "transition"} for bin_ in bins) and base_name == "CovPoint":
@@ -209,6 +229,8 @@ def _point_class(owner: type[Any], node: ast.ClassDef) -> tuple[CoveragePointIR,
             raise _error(f"coverage point array {node.name!r} length must be a positive declaration-time integer")
         if not isinstance(descriptor, (Array, DynArray, Queue)):
             raise _error(f"coverage point array {node.name!r} source must be a direct array, dynamic array, or queue field")
+        if any(bin_.kind == "transition" for bin_ in bins):
+            raise _error(f"coverage point array {node.name!r} cannot declare transition bins")
         length = keywords["length"].value
         points: list[CoveragePointIR] = []
         for index in range(length):
@@ -221,6 +243,8 @@ def _point_class(owner: type[Any], node: ast.ClassDef) -> tuple[CoveragePointIR,
     elif "length" in keywords:
         raise _error(f"coverage point {node.name!r} cannot specify length=")
     if isinstance(descriptor, (DynArray, Queue, AssocArray)):
+        if any(bin_.kind == "transition" for bin_ in bins):
+            raise _error(f"container value-domain point {node.name!r} cannot declare transition bins")
         options.append(("container_value_domain", True))
     return (CoveragePointIR(
         node.name,
