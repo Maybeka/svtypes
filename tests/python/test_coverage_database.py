@@ -57,6 +57,11 @@ def test_database_rejects_different_declaration_for_same_key() -> None:
     with pytest.raises(CoverageError, match="declaration mismatch"):
         database.record(ImportedSnapshot(incompatible), logical_instance_key="dut.pkt")
 
+    definition_mismatch = deepcopy(instance.snapshot_document())
+    definition_mismatch["definition"]["sample_type"] = "other"
+    with pytest.raises(CoverageError, match="definition mismatch"):
+        database.record(ImportedSnapshot(definition_mismatch), logical_instance_key="dut.pkt")
+
 
 def test_database_record_refresh_does_not_double_count() -> None:
     database = CoverageDatabase()

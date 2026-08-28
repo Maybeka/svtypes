@@ -47,6 +47,8 @@ class CoverageDatabase:
         current = self._records.get(key)
         if current is not None and current.document["declaration_semantic_digest"] != document["declaration_semantic_digest"]:
             raise CoverageError(f"coverage database declaration mismatch for {type_id}")
+        if current is not None and current.document.get("definition") != document.get("definition"):
+            raise CoverageError(f"coverage database definition mismatch for {type_id}")
         if current is not None and current.document.get("instance_layout_digest") != document.get("instance_layout_digest"):
             raise CoverageError(f"coverage database instance layout mismatch for {type_id}")
         current_id = self._live_instance_ids.get(key)
@@ -60,6 +62,8 @@ class CoverageDatabase:
             current = self._records.get(key)
             if current is not None and current.document["declaration_semantic_digest"] != record.document["declaration_semantic_digest"]:
                 raise CoverageError(f"coverage database declaration mismatch for {key[0]}")
+            if current is not None and current.document.get("definition") != record.document.get("definition"):
+                raise CoverageError(f"coverage database definition mismatch for {key[0]}")
             if current is not None and current.document.get("instance_layout_digest") != record.document.get("instance_layout_digest"):
                 raise CoverageError(f"coverage database instance layout mismatch for {key[0]}")
             if current is None:

@@ -213,6 +213,7 @@ class CoverGroupInstance:
         return {
             "covergroup_type_id": self.declaration.ir.covergroup_type_id,
             "declaration_semantic_digest": self.declaration.ir.declaration_semantic_digest,
+            "definition": self.declaration.ir.definition_snapshot(),
             "instance_layout_digest": self.instance_layout_digest,
             "instance_name": self.option.name if self.option is not None else None,
             "comment": self.option.comment if self.option is not None else "",
