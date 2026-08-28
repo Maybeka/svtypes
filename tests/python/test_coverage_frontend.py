@@ -16,6 +16,7 @@ from svtypes import (
     default_bins,
     ignore_bins,
     illegal_bins,
+    transition_bins,
 )
 from svtypes.errors import CoverageDeclarationError
 
@@ -203,3 +204,25 @@ def test_coverage_uses_at_least_and_goal_options():
     assert packet.cg.get_coverage() == 0.0
     packet.cg.sample()
     assert packet.cg.get_coverage() == 100.0
+
+
+def test_transition_bin_matches_only_after_its_finite_sequence_is_observed():
+    class Packet(SvObject):
+        opcode = Bit(2)
+
+        @covergroup
+        def cg(self):
+            class opcode_cp(CovPoint, source=self.opcode):
+                rise = transition_bins[0, 1]
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    packet = Packet()
+    packet.opcode.value = 0
+    packet.cg.sample()
+    assert packet.cg.instance.snapshot()["opcode_cp"]["hits"] == {}
+    packet.opcode.value = 1
+    packet.cg.sample()
+    assert packet.cg.instance.snapshot()["opcode_cp"]["hits"] == {"rise": 1}

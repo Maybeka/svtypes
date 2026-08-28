@@ -93,9 +93,11 @@ class CoverageRuntime:
 
     ir: CoverageIR
     counters: dict[str, PointCounters] = field(init=False)
+    histories: dict[str, list[Any]] = field(init=False)
 
     def __post_init__(self) -> None:
         self.counters = {point.name: PointCounters() for point in self.ir.points}
+        self.histories = {point.name: [] for point in self.ir.points}
 
     def sample(self, context: dict[str, Any]) -> None:
         for point in self.ir.points:
@@ -117,6 +119,16 @@ class CoverageRuntime:
 
     def _classify_value(self, point: CoveragePointIR, counters: PointCounters, value: Any, context: dict[str, Any]) -> None:
         counters.samples += 1
+        transitions = [bin_ for bin_ in point.bins if bin_.kind == "transition"]
+        if transitions:
+            history = self.histories[point.name]
+            history.append(value)
+            history[:] = history[-16:]
+            for bin_ in transitions:
+                sequence = _transition_sequence(bin_.selector, context)
+                if len(history) >= len(sequence) and history[-len(sequence):] == sequence:
+                    counters.hits[bin_.name] += 1
+            return
         ignored = [bin_ for bin_ in point.bins if bin_.kind == "ignore" and _matches_selector(value, bin_.selector, context)]
         if ignored:
             return
@@ -168,3 +180,9 @@ class CoverageRuntime:
         raw = sum(value * weight for value, weight in weighted) / sum(weight for _, weight in weighted)
         goal = int(dict(self.ir.options).get("goal", 100))
         return min(100.0, raw * 100.0 / goal)
+
+
+def _transition_sequence(selector: Any, context: dict[str, Any]) -> list[Any]:
+    if not isinstance(selector, dict) or selector.get("kind") != "values":
+        raise CoverageError("transition bin selector must be a finite value sequence")
+    return [eval_expr(item, context) for item in selector["items"]]
