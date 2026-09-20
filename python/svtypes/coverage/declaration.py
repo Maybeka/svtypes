@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import json
+import functools
+import weakref
+from collections.abc import Mapping
 from typing import Any, Callable, Generic, TypeVar, get_args, get_type_hints, overload
 
 from ..errors import CoverageError
@@ -81,7 +84,7 @@ class CoverRef(Generic[T]):
     """Type-only marker for an embedded covergroup reference input."""
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, weakref_slot=True, eq=False)
 class CoverGroupInstance:
     """One instantiated embedded covergroup.
 
@@ -105,9 +108,18 @@ class CoverGroupInstance:
         bindings = {name: value for name, value in self.constructor_named_actuals}
         for formal, value in zip(self.declaration.ir.constructor_parameters, self.constructor_actuals):
             bindings.setdefault(formal.name, value)
-        self.instance_ir = _materialize_ir(self.declaration.ir, bindings)
+        self.instance_ir = _materialize_ir(
+            self.declaration.ir,
+            bindings,
+            _parameter_bindings(type(self.host)),
+        )
         self.runtime = CoverageRuntime(self.instance_ir)
         self.option = CoverageInstanceOption(self.declaration.ir.options)
+        instances = getattr(self.declaration, "_instances", None)
+        if instances is None:
+            instances = weakref.WeakSet()
+            setattr(self.declaration, "_instances", instances)
+        instances.add(self)
 
     def sample(self, *args: Any, **kwargs: Any) -> None:
         if "case_id" in kwargs or "case_name" in kwargs:
@@ -162,21 +174,13 @@ class CoverGroupInstance:
 
     @property
     def instance_layout_digest(self) -> str:
-        """Digest constructor bindings that can alter an instance's bin layout."""
-        values = {name: _layout_value(value) for name, value in self.constructor_named_actuals}
-        for formal, value in zip(self.declaration.ir.constructor_parameters, self.constructor_actuals):
-            values.setdefault(formal.name, _layout_value(value))
-        cross_queues = {}
-        if self.instance_ir is not None:
-            for cross in self.instance_ir.crosses:
-                queues = {
-                    bin_.name: bin_.selector.get("items", [])
-                    for bin_ in cross.bins
-                    if isinstance(bin_.selector, dict) and bin_.selector.get("kind") == "cross_queue_values"
-                }
-                if queues:
-                    cross_queues[cross.name] = queues
-        return semantic_digest({"constructor_actuals": values, "cross_queue_bins": cross_queues})
+        """Digest this instance's concrete materialized coverage layout.
+
+        Constructor actuals are intentionally not hashed on their own: two
+        actual sets that yield the same bins have the same instance layout.
+        """
+        instance_ir = self.instance_ir or self.declaration.ir
+        return semantic_digest({"instance_layout": instance_ir.definition_snapshot()})
 
     def bind_logical_instance(self, key: str) -> None:
         if not isinstance(key, str) or not key:
@@ -191,10 +195,26 @@ class CoverGroupInstance:
         return self.runtime.snapshot()
 
     def get_coverage(self) -> float:
-        return self.runtime.coverage()
+        """Return cumulative coverage for this covergroup declaration."""
+        type_coverage = getattr(self.declaration, "type_coverage", None)
+        return self.runtime.coverage() if type_coverage is None else type_coverage()
 
     def get_inst_coverage(self) -> float:
-        return self.get_coverage()
+        """Return coverage from this instance's own bins and counters."""
+        return self.runtime.coverage()
+
+    def has_illegal_hits(self) -> bool:
+        """Return whether this covergroup instance observed an illegal bin."""
+        return self.runtime.has_illegal_hits()
+
+    def cross_local_illegal_snapshot(self) -> dict[str, dict[str, dict[str, Any]]]:
+        """Return diagnostics for cross-private member ``illegal_bins`` hits."""
+        return self.runtime.cross_local_illegal_snapshot()
+
+    @property
+    def sample_count(self) -> int:
+        """Number of enabled public ``sample()`` calls on this instance."""
+        return self.runtime.sample_count
 
     def start(self) -> None:
         self.runtime.start()
@@ -240,8 +260,10 @@ class CoverGroupInstance:
             "options": dict(self.declaration.ir.options),
             "type_options": dict(self.declaration.ir.type_options),
             "source_limit": self.runtime.source_limit,
+            "sample_count": self.runtime.sample_count,
             "point_definitions": point_definitions,
             "cross_definitions": cross_definitions,
+            "cross_local_illegal_hits": self.runtime.cross_local_illegal_snapshot(),
             "points": self.snapshot(),
         }
 
@@ -280,6 +302,11 @@ class BoundCoverGroup:
             raise CoverageError(
                 f"coverage group {self._declaration.qualified_name} can only be instantiated "
                 "from its host __init__"
+            )
+        if _has_coverage_init(type(self._host)) and not getattr(self._host, "_svtypes_coverage_init_depth", 0):
+            raise CoverageError(
+                f"coverage group {self._declaration.qualified_name} can only be instantiated "
+                "from a @coverage_init method"
             )
         if self._instance is not None:
             raise CoverageError(
@@ -331,6 +358,17 @@ class BoundCoverGroup:
     def get_inst_coverage(self) -> float:
         return self.instance.get_inst_coverage()
 
+    def has_illegal_hits(self) -> bool:
+        return self.instance.has_illegal_hits()
+
+    def cross_local_illegal_snapshot(self) -> dict[str, dict[str, dict[str, Any]]]:
+        return self.instance.cross_local_illegal_snapshot()
+
+    @property
+    def sample_count(self) -> int:
+        """Number of enabled public ``sample()`` calls on this instance."""
+        return self.instance.sample_count
+
     def start(self) -> None:
         self.instance.start()
 
@@ -379,6 +417,7 @@ class CoverGroupDeclaration:
         self.owner: type[Any] | None = None
         self._storage_key = f"_svtypes_coverage_{self.name}"
         self._ir: CoverageIR | None = None
+        self._instances: weakref.WeakSet[CoverGroupInstance] = weakref.WeakSet()
 
     def __set_name__(self, owner: type[Any], name: str) -> None:
         self.owner = owner
@@ -402,6 +441,17 @@ class CoverGroupDeclaration:
 
             self._ir = compile_declaration(self)
         return self._ir
+
+    def type_coverage(self) -> float:
+        """Compute the LRM-shaped cumulative coverage across live instances."""
+        from .database import CoverageDatabase
+
+        database = CoverageDatabase()
+        for instance in self._instances:
+            database.record(instance)
+        if not self._instances:
+            return 100.0
+        return database.type_summary(self.ir.covergroup_type_id)["coverage"]
 
     @overload
     def __get__(self, host: None, owner: type[Any] | None = None) -> "CoverGroupDeclaration": ...
@@ -430,6 +480,83 @@ def covergroup(function: Callable[..., Any]) -> CoverGroupDeclaration:
     return CoverGroupDeclaration(function)
 
 
+def coverage_init(function: Callable[..., Any]) -> Callable[..., Any]:
+    """Mark a restricted class method as an embedded-coverage initializer.
+
+    The frontend reads this method's source to produce the corresponding SV
+    initializer.  At Python runtime the wrapper supplies an explicit token so
+    a class that opts into this API cannot instantiate its covergroups from an
+    arbitrary helper during construction.
+    """
+    if not callable(function):
+        raise TypeError("@coverage_init must decorate an instance function")
+
+    @functools.wraps(function)
+    def wrapped(self: Any, *args: Any, **kwargs: Any) -> Any:
+        depth = getattr(self, "_svtypes_coverage_init_depth", 0)
+        object.__setattr__(self, "_svtypes_coverage_init_depth", depth + 1)
+        try:
+            return function(self, *args, **kwargs)
+        finally:
+            object.__setattr__(self, "_svtypes_coverage_init_depth", depth)
+
+    setattr(wrapped, "_svtypes_coverage_init", True)
+    return wrapped
+
+
+def _has_coverage_init(cls: type[Any]) -> bool:
+    return any(
+        getattr(value, "_svtypes_coverage_init", False)
+        for base in cls.mro()
+        for value in base.__dict__.values()
+    )
+
+
+def coverage_initializers(owner: type[Any]) -> tuple[Any, ...]:
+    """Return frozen source-only initializer mappings owned by *owner*."""
+    from .frontend import compile_coverage_initializers
+
+    return compile_coverage_initializers(owner)
+
+
+def preview_coverage_layout(
+    owner: type[Any],
+    covergroup_name: str,
+    /,
+    *,
+    parameter_actuals: Mapping[str, Any] | None = None,
+    **arguments: Any,
+) -> CoverageIR:
+    """Materialize one covergroup directly from its ``CoverInput`` signature.
+
+    This pure design-tool API deliberately does not inspect ``@coverage_init``:
+    initializer methods define Python runtime and generated-SV construction,
+    while this API accepts exactly the selected covergroup's CoverInput values.
+    CoverRef bindings remain declaration-owned.
+    """
+    declarations = {
+        name: value for base in reversed(owner.mro())
+        for name, value in base.__dict__.items() if isinstance(value, CoverGroupDeclaration)
+    }
+    declaration = declarations.get(covergroup_name)
+    if declaration is None:
+        raise CoverageError(f"unknown covergroup {owner.__name__}.{covergroup_name}")
+    ir = declaration.freeze()
+    expected = {parameter.name for parameter in ir.constructor_parameters}
+    if set(arguments) != expected:
+        missing = sorted(expected.difference(arguments))
+        unknown = sorted(set(arguments).difference(expected))
+        detail = f"missing {missing[0]!r}" if missing else f"unknown {unknown[0]!r}"
+        raise CoverageError(f"covergroup {owner.__name__}.{covergroup_name} has {detail}")
+    for formal in ir.constructor_parameters:
+        _validate_cover_input_actual(declaration, formal.name, formal.type_name, arguments[formal.name])
+    return _materialize_ir(
+        ir,
+        dict(arguments),
+        _parameter_bindings(owner, parameter_actuals),
+    )
+
+
 def bind_covergroups(host: Any) -> None:
     """Bind every inherited declaration to *host* without instantiating it."""
     declarations: dict[str, CoverGroupDeclaration] = {}
@@ -446,7 +573,12 @@ def bind_covergroups(host: Any) -> None:
         declaration = AutoCoverageDeclaration(type(host), automatic_ir)
         bound = BoundCoverGroup(declaration, host)
         host.__dict__[AUTO_COVERGROUP_NAME] = bound
-        bound.instantiate()
+        depth = getattr(host, "_svtypes_coverage_init_depth", 0)
+        object.__setattr__(host, "_svtypes_coverage_init_depth", depth + 1)
+        try:
+            bound.instantiate()
+        finally:
+            object.__setattr__(host, "_svtypes_coverage_init_depth", depth)
 
 
 def _layout_value(value: Any) -> Any:
@@ -483,46 +615,168 @@ def _validate_cover_input_actual(declaration: Any, name: str, type_name: str, va
         )
 
 
-def _materialize_value(value: Any, bindings: dict[str, Any]) -> Any:
+def _materialize_value(
+    value: Any,
+    bindings: dict[str, Any],
+    parameter_bindings: Mapping[str, Any],
+) -> Any:
     if isinstance(value, dict):
+        if value.get("kind") == "parameter_ref":
+            name = value["name"]
+            if name not in parameter_bindings:
+                raise CoverageError(
+                    f"coverage parameter {name!r} is unbound for this instance layout"
+                )
+            return {"kind": "constant", "value": _layout_value(parameter_bindings[name])}
         if value.get("kind") == "name" and value.get("name") in bindings:
             return {"kind": "constant", "value": _layout_value(bindings[value["name"]])}
-        return {key: _materialize_value(item, bindings) for key, item in value.items()}
+        return {
+            key: _materialize_value(item, bindings, parameter_bindings)
+            for key, item in value.items()
+        }
     if isinstance(value, list):
-        return [_materialize_value(item, bindings) for item in value]
+        return [_materialize_value(item, bindings, parameter_bindings) for item in value]
     if isinstance(value, tuple):
-        return tuple(_materialize_value(item, bindings) for item in value)
+        return tuple(_materialize_value(item, bindings, parameter_bindings) for item in value)
     return value
 
 
-def _materialize_ir(template: CoverageIR, bindings: dict[str, Any]) -> CoverageIR:
+def _parameter_bindings(
+    owner: type[Any], overrides: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Resolve bound class Parameters only when materializing a concrete layout."""
+    from ..parameter import Parameter
+
+    result: dict[str, Any] = {}
+    for base in reversed(owner.mro()):
+        for name, value in base.__dict__.items():
+            if isinstance(value, Parameter) and value.is_bound and not value.is_type_parameter:
+                result[name] = value.value
+    if overrides:
+        unknown = sorted(set(overrides).difference(result))
+        if unknown:
+            raise CoverageError(f"unknown or unbound coverage Parameter {unknown[0]!r}")
+        result.update(overrides)
+    return result
+
+
+def _materialize_ir(
+    template: CoverageIR,
+    bindings: dict[str, Any],
+    parameter_bindings: Mapping[str, Any],
+) -> CoverageIR:
     """Freeze constructor actuals into the per-instance evaluator template."""
     points = tuple(
         replace(
             point,
-            expression=_materialize_value(point.expression, bindings),
-            iff=_materialize_value(point.iff, bindings),
-            bins=tuple(replace(bin_, selector=_materialize_value(bin_.selector, bindings)) for bin_ in point.bins),
+            expression=_materialize_value(point.expression, bindings, parameter_bindings),
+            iff=_materialize_value(point.iff, bindings, parameter_bindings),
+            bins=_materialize_point_bins(point, bindings, parameter_bindings),
         )
         for point in template.points
     )
-    crosses = tuple(_materialize_cross(cross, bindings) for cross in template.crosses)
+    domains = {
+        point.name: dict(point.options).get("comparison_domain")
+        for point in points
+    }
+    crosses = tuple(
+        _materialize_cross(cross, bindings, domains, parameter_bindings)
+        for cross in template.crosses
+    )
     return replace(template, points=points, crosses=crosses)
 
 
-def _materialize_cross(cross: CoverageCrossIR, bindings: dict[str, Any]) -> CoverageCrossIR:
+def _materialize_point_bins(
+    point: Any, bindings: dict[str, Any], parameter_bindings: Mapping[str, Any]
+) -> tuple[Any, ...]:
+    from .evaluator import eval_expr
+    from .frontend import _fixed_split_bins, _normalize_literal
+
+    domain = dict(point.options).get("comparison_domain")
+    comparison_domain = None
+    if isinstance(domain, Mapping):
+        comparison_domain = (
+            domain["width"],
+            domain["signed"],
+            domain["four_state"],
+        )
+    result = []
+    for bin_ in point.bins:
+        selector = _materialize_value(bin_.selector, bindings, parameter_bindings)
+        if comparison_domain is not None:
+            selector = _normalize_literal(selector, comparison_domain, point.name)
+        if not isinstance(selector, dict) or selector.get("kind") != "array_split":
+            result.append(replace(bin_, selector=selector))
+            continue
+        range_selector = selector["selector"]
+        lower = eval_expr(range_selector.get("lower"), bindings) if range_selector.get("lower") is not None else None
+        upper = eval_expr(range_selector.get("upper"), bindings) if range_selector.get("upper") is not None else None
+        if not all(isinstance(value, int) and not isinstance(value, bool) for value in (lower, upper)):
+            raise CoverageError(f"coverage array bin {point.name!r}.{bin_.name} requires integer range endpoints")
+        if lower > upper:
+            raise CoverageError(f"coverage array bin {point.name!r}.{bin_.name} range lower endpoint exceeds upper endpoint")
+        count = selector.get("count")
+        if count is not None:
+            result.extend(_fixed_split_bins(bin_.name, list(range(lower, upper + 1)), count))
+            continue
+        for value in range(lower, upper + 1):
+            result.append(replace(
+                bin_, name=f"{bin_.name}[{value}]",
+                selector={"kind": "constant", "value": value, "array_split_base": bin_.name},
+            ))
+    return tuple(result)
+
+
+def _materialize_cross(
+    cross: CoverageCrossIR,
+    bindings: dict[str, Any],
+    domains: dict[str, Any],
+    parameter_bindings: Mapping[str, Any],
+) -> CoverageCrossIR:
+    member_views = tuple(
+        replace(
+            view,
+            point=replace(
+                view.point,
+                expression=_materialize_value(view.point.expression, bindings, parameter_bindings),
+                iff=_materialize_value(view.point.iff, bindings, parameter_bindings),
+                bins=_materialize_point_bins(view.point, bindings, parameter_bindings),
+            ),
+        )
+        for view in cross.member_views
+    )
+    effective_domains = dict(domains)
+    effective_domains.update({
+        view.name: dict(view.point.options).get("comparison_domain")
+        for view in member_views
+    })
     functions = {function.name: function for function in cross.queue_functions}
     bins: list[CoverageBinIR] = []
     for bin_ in cross.bins:
-        selector = _materialize_value(bin_.selector, bindings)
+        selector = _materialize_value(bin_.selector, bindings, parameter_bindings)
         if isinstance(selector, dict) and selector.get("kind") == "cross_queue_call":
             function = functions.get(selector["function"])
             if function is None:
                 raise CoverageError(f"coverage cross {cross.name!r} references unknown queue function {selector['function']!r}")
             values = _execute_cross_queue_function(function, selector["args"], bindings, len(cross.members))
-            selector = {"kind": "cross_queue_values", "items": [list(value) for value in values]}
+            normalized_values = []
+            for value in values:
+                normalized = []
+                for member, item in zip(cross.members, value):
+                    domain = effective_domains.get(member)
+                    if domain is None:
+                        raise CoverageError(f"coverage cross {cross.name!r} member {member!r} has no comparison domain")
+                    from .frontend import _normalize_literal
+                    normalized.append(_normalize_literal({"kind": "constant", "value": item}, (domain["width"], domain["signed"], domain["four_state"]), cross.name)["value"])
+                normalized_values.append(tuple(normalized))
+            selector = {"kind": "cross_queue_values", "items": [list(value) for value in normalized_values]}
         bins.append(replace(bin_, selector=selector))
-    return replace(cross, iff=_materialize_value(cross.iff, bindings), bins=tuple(bins))
+    return replace(
+        cross,
+        iff=_materialize_value(cross.iff, bindings, parameter_bindings),
+        bins=tuple(bins),
+        member_views=member_views,
+    )
 
 
 def _execute_cross_queue_function(

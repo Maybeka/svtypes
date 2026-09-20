@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UCIS xmlns="http://www.accellera.org/XMLSchema/UCIS" ucisVersion="1.0" writtenBy="external-tool" writtenTime="2020-01-01T00:00:00+00:00">
+  <sourceFiles fileName="external.sv" id="1"/>
+  <historyNodes historyNodeId="1" logicalName="external" kind="UCIS_HISTORYNODE_TEST" testStatus="true" date="2020-01-01T00:00:00+00:00" toolCategory="other" ucisVersion="1.0" vendorId="external" vendorTool="external" vendorToolVersion="1.0"/>
+  <instanceCoverages name="external" key="0">
+    <id file="1" line="1" inlineCount="1"/>
+    <covergroupCoverage weight="1">
+      <cgInstance name="ext.pkt" key="dut.pkt" excluded="false">
+        <options weight="1" goal="100" comment="" at_least="1" detect_overlap="false" auto_bin_max="64" cross_num_print_missing="0" per_instance="false" merge_instances="false"/>
+        <cgId cgName="__COVERGROUP_TYPE_ID__" moduleName="external">
+          <cginstSourceId file="1" line="1" inlineCount="1"/>
+          <cgSourceId file="1" line="1" inlineCount="1"/>
+        </cgId>
+        <coverpoint name="code_cp" key="1:code_cp" exprString="code">
+          <options weight="1" goal="100" comment="" at_least="1" detect_overlap="false" auto_bin_max="64"/>
+          <coverpointBin name="low" key="1:code_cp:low" type="user">
+            <range from="0" to="0">
+              <contents coverageCount="4"/>
+            </range>
+          </coverpointBin>
+          <coverpointBin name="high" key="1:code_cp:high" type="user">
+            <range from="1" to="1">
+              <contents coverageCount="0"/>
+            </range>
+          </coverpointBin>
+        </coverpoint>
+      </cgInstance>
+    </covergroupCoverage>
+  </instanceCoverages>
+</UCIS>

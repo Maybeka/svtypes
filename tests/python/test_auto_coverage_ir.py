@@ -63,7 +63,7 @@ def test_default_auto_coverage_tracks_handle_nullness_and_excludes_xz_from_two_s
     packet.svtypes_auto_cov.sample()
     snapshot = packet.svtypes_auto_cov.instance.snapshot()
     assert snapshot["state"]["hits"] == {"auto[1]": 1}
-    assert snapshot["child"]["hits"] == {"auto[0]": 1, "auto[1]": 1}
+    assert "child" not in snapshot
 
 
 def test_automatic_bins_create_one_named_bin_per_enum_value():
@@ -77,18 +77,16 @@ def test_automatic_bins_create_one_named_bin_per_enum_value():
     packet = Packet()
     packet.opcode.value = Opcode.WRITE
     packet.svtypes_auto_cov.sample()
-    assert packet.svtypes_auto_cov.instance.snapshot()["opcode"]["hits"] == {"auto[7]": 1}
+    assert packet.svtypes_auto_cov.instance.snapshot()["opcode"]["hits"] == {"auto[WRITE]": 1}
 
 
-def test_object_handles_keep_the_existing_nullness_auto_coverage_semantics():
+def test_object_handles_do_not_create_default_nullness_coverage():
     class Packet(SvObject):
         child = Object("Child")
 
     coverage = auto_coverage_ir(Packet)
 
-    assert coverage is not None
-    assert coverage.points[0].name == "child"
-    assert coverage.points[0].expression == {"kind": "is_null", "path": "item.child"}
+    assert coverage is None
 
     class Child(SvObject):
         value = Bit(8)

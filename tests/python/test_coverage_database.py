@@ -1,4 +1,5 @@
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 
@@ -165,6 +166,23 @@ def test_ucis_export_has_required_covergroup_structure_and_file_import_defaults(
     assert report["losses"]
 
 
+def test_ucis_import_requires_explicit_frozen_instance_binding() -> None:
+    source = CoverageDatabase()
+    source.record(_sample(0).cg.instance, logical_instance_key="dut.pkt")
+    xml, report = export_ucis(source)
+    assert report["losses"] == []
+
+    target = DatabasePacket()
+    restored = CoverageDatabase()
+    assert restored.import_ucis(xml, bindings={"dut.pkt": target.cg.instance})["losses"] == []
+    record = restored.snapshot_document()["records"][0]
+    assert record["logical_instance_key"] == "dut.pkt"
+    assert record["points"]["code_cp"]["hits"] == {"high": 0, "low": 1}
+
+    with pytest.raises(CoverageError, match="no declared instance binding"):
+        CoverageDatabase().import_ucis(xml, bindings={})
+
+
 def test_ucis_export_omits_unrepresentable_default_bin_without_invalid_xml() -> None:
     class Packet(SvObject):
         code = Bit(1)
@@ -192,6 +210,70 @@ def test_ucis_export_omits_unrepresentable_default_bin_without_invalid_xml() -> 
     }]
 
 
+def test_ucis_import_accepts_exported_subset_when_default_bins_are_omitted() -> None:
+    class Packet(SvObject):
+        code = Bit(1)
+
+        @covergroup
+        def cg(self):
+            class code_cp(CovPoint, source=self.code):
+                low = bins[0]
+                fallback = default_bins
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    packet = Packet()
+    packet.code.value = 0
+    packet.cg.sample()
+    source = CoverageDatabase()
+    source.record(packet.cg.instance, logical_instance_key="dut.pkt")
+    xml, report = export_ucis(source)
+    assert any("cannot be losslessly projected" in item["reason"] for item in report["losses"])
+
+    restored = CoverageDatabase()
+    restored.import_ucis(xml, bindings={"dut.pkt": Packet().cg.instance})
+    record = restored.snapshot_document()["records"][0]
+    assert record["points"]["code_cp"]["hits"]["low"] == 1
+    assert record["points"]["code_cp"]["hits"]["fallback"] == 0
+
+
+_UCIS_DATA = Path(__file__).resolve().parent / "data" / "ucis"
+
+
+def _external_ucis(name: str, type_id: str) -> str:
+    return (_UCIS_DATA / name).read_text(encoding="utf-8").replace("__COVERGROUP_TYPE_ID__", type_id)
+
+
+def test_ucis_import_accepts_namespaced_external_sample_and_rejects_incompatible_documents() -> None:
+    type_id = DatabasePacket.cg.freeze().covergroup_type_id
+    xml = _external_ucis("external_covergroup.xml", type_id)
+    records, report = import_ucis(xml)
+    assert records[0]["logical_instance_key"] == "dut.pkt"
+    assert records[0]["points"]["code_cp"] == {"low": 4, "high": 0}
+    assert report["losses"] == []
+
+    restored = CoverageDatabase()
+    restored.import_ucis(xml, bindings={"dut.pkt": DatabasePacket().cg.instance})
+    assert restored.snapshot_document()["records"][0]["points"]["code_cp"]["hits"] == {"high": 0, "low": 4}
+
+    with pytest.raises(CoverageError, match="expected UCIS 1.0"):
+        import_ucis((_UCIS_DATA / "incompatible_version.xml").read_text(encoding="utf-8"))
+    with pytest.raises(CoverageError, match="malformed"):
+        import_ucis("<not-xml")
+    with pytest.raises(CoverageError, match="expected UCIS 1.0"):
+        import_ucis("<coverage/>")
+    unknown = _external_ucis("unknown_bin.xml", type_id)
+    with pytest.raises(CoverageError, match="unknown bins"):
+        CoverageDatabase().import_ucis(unknown, bindings={"dut.pkt": DatabasePacket().cg.instance})
+    with pytest.raises(CoverageError, match="covergroup type mismatch"):
+        CoverageDatabase().import_ucis(
+            xml.replace(type_id, "other.Packet::cg"),
+            bindings={"dut.pkt": DatabasePacket().cg.instance},
+        )
+
+
 def test_database_snapshot_is_not_a_mutable_view_of_internal_records() -> None:
     database = CoverageDatabase()
     database.record(_sample(0).cg.instance)
@@ -210,7 +292,7 @@ def test_per_instance_database_record_requires_bound_logical_key_and_checks_layo
                 per_instance = 1
 
             class code_cp(CovPoint, source=self.code):
-                low = bins[0]
+                low = bins[0:limit]
 
         def __init__(self, limit: int):
             super().__init__()

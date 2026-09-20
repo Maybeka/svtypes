@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from svtypes import Bit, CoverInput, SvObject, covergroup
+from svtypes import Bit, CoverInput, CovPoint, SvObject, bins, coverage_init, covergroup
 from svtypes.coverage import BoundCoverGroup, CoverGroupDeclaration
 from svtypes.errors import CoverageError
 
@@ -120,3 +120,45 @@ def test_coverinput_resolved_svtype_class_mismatch_is_rejected_at_instantiate():
 
     with pytest.raises(CoverageError, match="expects Bit"):
         Packet()
+
+
+def test_coverage_init_is_the_only_instantiation_entry_for_an_opted_in_class():
+    class Packet(SvObject):
+        opcode = Bit(2, cov=False)
+
+        @covergroup
+        def cg(self, first: CoverInput[int], last: CoverInput[int]):
+            class opcode_cp(CovPoint, source=self.opcode):
+                window = bins[first:last]
+
+        @coverage_init
+        def configure_coverage(self, first: int, last: int):
+            self.cg.instantiate(first, last)
+
+        def __init__(self):
+            super().__init__()
+            self.configure_coverage(0, 1)
+
+    packet = Packet()
+    packet.opcode.value = 1
+    packet.cg.sample()
+    assert packet.cg.instance.snapshot()["opcode_cp"]["hits"] == {"window": 1}
+
+    class Invalid(SvObject):
+        opcode = Bit(2, cov=False)
+
+        @covergroup
+        def cg(self, value: CoverInput[int]):
+            class opcode_cp(CovPoint, source=self.opcode):
+                hit = bins[value]
+
+        @coverage_init
+        def configure_coverage(self, value: int):
+            self.cg.instantiate(value)
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate(0)
+
+    with pytest.raises(CoverageError, match="@coverage_init"):
+        Invalid()

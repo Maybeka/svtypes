@@ -1,8 +1,8 @@
 # SvTypes Support Matrix
 
 This matrix tracks the production-readiness status for SvTypes serialization
-after M4. Python and C++ coverage runs locally; SystemVerilog typed-channel
-coverage is an optional remote-target integration check.
+after M4. Python and C++ coverage runs locally; configured remote
+SystemVerilog conformance is required by the full regression.
 
 Status legend:
 
@@ -11,6 +11,15 @@ Status legend:
   complete in the listed language/backend
 - `deferred`: deliberately postponed to a later milestone
 - `excluded`: deliberately out of current SVX scope
+
+## Functional coverage (2.0)
+
+| Feature | Python | Generated SystemVerilog | Remote conformance | Status |
+|---|---|---|---|---|
+| `@covergroup`, `CovPoint`, bins, `iff`, transition bins and crosses | covered | covered | required on the configured target | partial: documented capability gates remain |
+| `cov=True` automatic coverage | covered | covered | required on the configured target | partial: `Object(...)` handle fields intentionally have no default nullness point |
+| `@coverage_init`, `CoverInput` and instance layouts | covered | covered where the target supports the declared semantics | required on the configured target | partial |
+| UCIS interchange | covered for the documented subset | generated projection | target export/import is capability-gated | partial |
 
 | Type | Python Pack/Unpack | Generated SV Pack/Unpack | C++ Codegen | Optional SVX Channel | Failure Mode |
 |---|---|---|---|---|---|

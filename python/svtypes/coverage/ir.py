@@ -81,6 +81,50 @@ class SampleParameterIR:
 
 
 @dataclass(frozen=True, slots=True)
+class CoverageInitCallIR:
+    """One embedded-covergroup construction performed by ``@coverage_init``."""
+
+    covergroup: str
+    actuals: tuple[Any, ...] = ()
+    named_actuals: tuple[tuple[str, Any], ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_name("coverage initializer covergroup", self.covergroup)
+        canonical_value(self.actuals)
+        object.__setattr__(self, "named_actuals", _canonical_options("coverage initializer actual", self.named_actuals))
+
+    def stable_dict(self) -> dict[str, Any]:
+        return {
+            "covergroup": self.covergroup,
+            "actuals": [canonical_value(item) for item in self.actuals],
+            "named_actuals": {name: canonical_value(value) for name, value in self.named_actuals},
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CoverageInitIR:
+    """Restricted, source-only class method that instantiates covergroups."""
+
+    name: str
+    parameters: tuple[SampleParameterIR, ...]
+    calls: tuple[CoverageInitCallIR, ...]
+
+    def __post_init__(self) -> None:
+        _require_name("coverage initializer", self.name)
+        _validate_parameter_names(f"coverage initializer {self.name!r}", self.parameters)
+        if not self.calls:
+            raise ValueError(f"coverage initializer {self.name!r} has no instantiate calls")
+        object.__setattr__(self, "calls", tuple(self.calls))
+
+    def stable_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "parameters": [item.stable_dict() for item in self.parameters],
+            "calls": [item.stable_dict() for item in self.calls],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class CoverageBinIR:
     """One named bin declaration in a point or cross."""
 
@@ -152,6 +196,31 @@ class CrossQueueFunctionIR:
 
 
 @dataclass(frozen=True, slots=True)
+class CrossMemberViewIR:
+    """A cross-private replacement for one declared public point member.
+
+    The contained point retains ordinary point declaration semantics, but this
+    wrapper deliberately has no public point identity.  It only affects the
+    owning cross's effective member classification.
+    """
+
+    name: str
+    point: CoveragePointIR
+
+    def __post_init__(self) -> None:
+        _require_name("cross member view", self.name)
+        if not isinstance(self.point, CoveragePointIR):
+            raise TypeError("coverage cross member view must contain CoveragePointIR")
+        if self.point.name != self.name:
+            raise ValueError(
+                f"coverage cross member view {self.name!r} must contain a point of the same name"
+            )
+
+    def stable_dict(self) -> dict[str, Any]:
+        return {"name": self.name, "point": self.point.stable_dict()}
+
+
+@dataclass(frozen=True, slots=True)
 class CoverageCrossIR:
     """One cross template; queue results remain instance-layout data."""
 
@@ -161,6 +230,7 @@ class CoverageCrossIR:
     iff: Any = None
     options: tuple[tuple[str, Any], ...] = ()
     queue_functions: tuple[CrossQueueFunctionIR, ...] = ()
+    member_views: tuple[CrossMemberViewIR, ...] = ()
 
     def __post_init__(self) -> None:
         _require_name("cross", self.name)
@@ -174,6 +244,13 @@ class CoverageCrossIR:
         object.__setattr__(self, "bins", _canonical_named_items("bin", self.bins))
         object.__setattr__(self, "options", _canonical_options(f"cross {self.name!r}", self.options))
         object.__setattr__(self, "queue_functions", _canonical_named_items("cross queue function", self.queue_functions))
+        views = _canonical_named_items("cross member view", self.member_views)
+        unknown = [view.name for view in views if view.name not in self.members]
+        if unknown:
+            raise ValueError(
+                f"coverage cross {self.name!r} has a view for non-member {unknown[0]!r}"
+            )
+        object.__setattr__(self, "member_views", views)
 
     def stable_dict(self) -> dict[str, Any]:
         return {
@@ -181,6 +258,7 @@ class CoverageCrossIR:
             "iff": canonical_value(self.iff),
             "members": list(self.members),
             "name": self.name,
+            "member_views": [item.stable_dict() for item in self.member_views],
             "options": {key: canonical_value(value) for key, value in sorted(self.options)},
             "queue_functions": [item.stable_dict() for item in self.queue_functions],
         }

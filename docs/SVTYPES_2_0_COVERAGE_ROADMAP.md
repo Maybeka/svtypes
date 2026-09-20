@@ -47,6 +47,15 @@ covergroup**。`cov` 本身迁移为 §2 的默认覆盖组声明。后续扩展
 - 2.0 之前，若新 DSL 无法生成语义等价 SV，应在生成期明确失败；不能悄悄退化成仅 Python
   或仅 SV 行为。
 
+### 后续评审：`Object` 字段的自动覆盖策略
+
+`Object("Child")` 当前不接受 `cov` 参数，且不为对象句柄生成默认空值 coverpoint。被引用的
+`Child` 类型仍独立拥有其自身字段的默认 `svtypes_auto_cov`；采样父对象并不隐式递归采样子对象。
+
+后续可评审 `Object(..., cov: bool = True)`，但必须先冻结其精确语义：该选项是否仅控制对象句柄的
+空值覆盖，或是否引入递归子对象采样。后者会改变 CoverageIR、Python evaluator、覆盖数据库分母、
+SystemVerilog 生成和 Python/SV 对拍契约，不能作为 GUI 或 catalog 的展示性改动实施。
+
 ## 3. 联合契约：声明、IR、数据库、后端
 
 ```text
@@ -78,6 +87,14 @@ concrete tuple queue 只属于实例 bin 布局，绝不进入声明语义摘要
 诊断、报告和 source diff，但**不得**参与声明语义摘要、覆盖组类型 ID、bin ID
 或 merge 判定。这样仅移动/重排源码而不改变覆盖语义时，既有 coverage 数据库仍可合并。
 
+类 `Parameter` 出现在 point 或 cross selector 时，声明模板以
+`{"kind":"parameter_ref","name":...,"type":...}` 保留符号引用。该 selector kind
+属于冻结的 `coverage.ir.v1` 语义：Manifest 若含此构造，必须声明
+`coverage.ir.v1.parameter_ref` capability；不了解该 capability 的消费者必须拒绝，
+不得将其降级为数值常量。Python 在创建具体覆盖组实例时才把已绑定 Parameter
+materialize 为常量；SV renderer 始终发射参数符号。因此这是一项向后兼容的 capability
+扩展，不改变既有 `coverage.ir.v1` selector 的解释。
+
 本文的身份术语固定如下：
 
 | 英文名 | 中文名 | 含义 |
@@ -85,7 +102,7 @@ concrete tuple queue 只属于实例 bin 布局，绝不进入声明语义摘要
 | `covergroup_type_id` | **覆盖组类型 ID** | `sample_type + covergroup` 声明名的稳定身份；同一声明槽位在语义演进前后仍使用它分组与诊断。 |
 | `declaration_semantic_digest` | **声明语义摘要** | 某一完整 coverage 模板定义的规范化摘要；用于判断跨数据库 merge 是否兼容。 |
 | `CoverGroupInstance` | **覆盖组实例** | 宿主类内部 embedded covergroup 成员的一次 `new(...)` 结果；保存 binding、采样状态和 transition 历史。 |
-| `instance_layout_digest` | **实例布局摘要** | 由影响 bins/option 的已绑定 `CoverInput` actual 与 concrete `CrossQueueType` queue 规范化得到；只用于同一逻辑实例的跨 run 布局兼容性校验，不是声明身份或类型级 merge 键。 |
+| `instance_layout_digest` | **实例布局摘要** | 对已绑定 actual 后 materialize 的完整实例布局（point/cross bin、selector、option 与 concrete queue）求摘要；actual 本身只有在改变该布局时才改变摘要。它只用于同一逻辑实例的跨 run 布局兼容性校验，不是声明身份或类型级 merge 键。 |
 | `logical_instance_key` | **逻辑实例键** | 为跨 run per-instance database merge 提供的稳定对齐键；它独立于 SV `option.name` / `set_inst_name()` 的报告名称。 |
 | `instance_id` | **数据库实例标识** | 覆盖率数据库中 per-instance record 的内部唯一标识；它是实现细节，不是用户可配置的名称或键。 |
 
@@ -134,7 +151,7 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
 | 槽位覆盖率数组 | 用 `class cov_a(CovPointArray, source=self.a, length=4):` 作定长声明；对定长数组、动态数组、队列均合法，并在 IR 中展开为 `cov_a[0]` 至 `cov_a[3]`。`sample` 时 `i >= size()` 的槽跳过：不加 hit、不创新 bin/实例。多出的元素不在该声明内。不支持 transition |
 | 容器值域 coverpoint | `class cov_a_values(CovPoint, source=self.a):` 中，若 `self.a` 的静态类型是数组、动态数组或队列，则把当前存在的每个元素值打入同一 point。不支持 transition。packed 向量的同一写法仍采整个积分值，与容器值域不是同一构造 |
 | transition | 仅标量/非数组式 coverpoint：有界定长序列（长度 2..K，**默认 K=8，硬上限 16**）及有上界的连续重复 `[*m:n]`（n 计入 K）。禁止 `[->]`、`[=]`、无上界 `[*]`、transition 再 cross |
-| cross | coverpoint 的笛卡尔组合；固定下标只能引用已声明 `CovPointArray` 的槽位（如 `cov_data[0]`），不引入匿名 point。容器整体值域 point 不可作为成员，声明期报错；可用显式 tuple bins，或 SV 同形的 `CrossQueueType` 函数计算 normal/ignore bin；禁止无上限隐式爆炸 |
+| cross | coverpoint 的笛卡尔组合；固定下标只能引用已声明 `CovPointArray` 的槽位（如 `cov_data[0]`），不引入匿名 point。容器整体值域 point 不可作为成员，声明期报错；可在 `Cross` 体内以与成员同名的 `CovPoint` 完整重设该成员在本 cross 中的定义；它不改变原 point；可用显式 tuple bins，或 SV 同形的 `CrossQueueType` 函数计算 normal/ignore bin；禁止无上限隐式爆炸 |
 | 度量 | bin hit、point/group coverage、weight、goal、`at_least`；零权重不进入 group 聚合 |
 | 生命周期 | 显式手动 sample；不把构造、序列化或 randomize 隐式变成 coverage sample |
 
@@ -210,10 +227,26 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
    singular `TypeBase` 成员作为 actual；不接受宿主 `new()` 参数、值快照、lambda、getter、任意
    Python 对象成员、动态对象或动态容器元素。`ref` 指向的成员在每次 `.sample()` 时读取当前值。
 
+   **覆盖率初始化函数。** 带 `CoverInput` 的宿主类可定义一个受限的类内 `@coverage_init` 方法；该方法的
+   具名参数是覆盖率构造 actual 的唯一显式入口，函数体只允许以可生成 SV 的表达式调用
+   `self.<covergroup>.instantiate(...)`。例如：
+
+   ```python
+   @coverage_init
+   def configure_coverage(self, first: int, last: int):
+       self.cg.instantiate(first, last)
+   ```
+
+   Python 宿主在 `__init__` 内调用此方法，SV 生成器则生成同签名的专用初始化方法；SVX/测试台必须在
+   对象完成初始化或解码后以相同的 SV actual 显式调用它。它不是把任意 Python `__init__` 或 Python
+   运行时值跨进程复制到 SV 的机制。函数只允许参数、常量、宿主静态字段及已支持的受限表达式；禁止任意
+   Python 调用、I/O、随机化、局部可变状态或不透明控制流。一次初始化后覆盖组实例及其 actual 均冻结。
+
    `CoverInput` actual 改变可改变某个 instance 的 bins/option，但不产生新的 covergroup type 或新的
-   声明语义摘要。它形成该覆盖组实例的**实例 bin 布局**：`merge_instances=0` 时类型覆盖率按实例
-   覆盖率的权重汇总；`merge_instances=1` 时按 LRM 的 bin 名并集汇总，重叠
-   同名 bin 的 hit 累加。`type_option` 是 covergroup type 的静态属性，只能取声明期常量，禁止引用
+   声明语义摘要。它形成该覆盖组实例的**实例布局**：即 actual 绑定后 materialize
+   的完整 point/cross bin 名、kind、selector、option 与 concrete queue 内容。该布局进入
+   `instance_layout_digest`，但不是新的声明身份；两个不同 actual 若 materialize 为相同布局，布局摘要
+   也必须相同。`type_option` 是 covergroup type 的静态属性，只能取声明期常量，禁止引用
    `CoverInput`，并在 `.instantiate(...)` 后冻结。嵌套 `sample` 对应 SV 的 `with function sample(input ...)`：只能有输入形参、不得有
    执行语句或返回值，其形参在声明类头与类体中是带类型的 sample value。无嵌套 `sample` 时，point/cross
    声明可直接引用 `self` 字段、`CoverInput` 与 `CoverRef`；覆盖组的 `.sample()` 没有业务值形参。
@@ -222,7 +255,8 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
    缺失、重复、未知或类型不匹配均在宿主构造时失败。没有 `CoverInput` 的覆盖组只允许零参数
    `.instantiate()`。每个 embedded 覆盖组可以完全不实例化；此时它没有覆盖组实例、不会采样、不会
    产生数据库记录，且对它调用 `sample()`、coverage 查询或控制方法必须报明确的未实例化错误，不能
-   自动零参数实例化。`CoverRef` 仍只能由声明引用宿主静态成员，不作为 `.instantiate(...)` actual 传入。
+   自动零参数实例化。`CoverRef` 仍只能由声明引用宿主静态成员，不作为 `.instantiate(...)` actual 传入；
+   因而它也不属于 `@coverage_init` 的参数表。
 
    存在嵌套 `sample` 时，所有 `CovPoint`、`CovPointArray` 与 `Cross` 声明必须全部位于该 `sample`
    函数体内；覆盖组外层只允许 `option`、`type_option`、嵌套 `sample` 与声明期辅助定义。没有嵌套
@@ -273,6 +307,12 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
    后一次写入覆盖前一次；`comment` 写入当前报告注释。两者可在任意 `.sample()` 前后修改，数据库导出
    时只保存当前名称/注释快照，不保存变更历史；先前和后续 hit 始终归属于同一个覆盖组实例。
 
+   **当前 target capability gate：** Python database 保留 `get_inst_coverage` 与
+   `type_option.merge_instances` 的 LRM 同形语义；但配置的 SystemVerilog conformance target
+   不能接受它们的显式 covergroup option 发射。renderer 对二者为缺省 `0` 时不发射该 option，
+   以 target 的同一缺省语义运行；任一非缺省值在生成期以 `SVT-COV-SV-BACKEND` 失败，不得生成
+   静默降级的 SV。该 gate 解除前，这两个非缺省选项不得宣称 target parity 已完成。
+
    **明确不支持的 option / 设置方式：**
 
    - SV 的 `option.strobe` 与 `type_option.strobe`：2.0 没有 event-driven sampling 或 time-slot
@@ -284,6 +324,10 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
      第二个上限。
    - `illegal_bins_error` 及其他 simulator 私有 option：illegal hit 一律作为可报告数据库事实，
      失败策略由 SvTypes test/report policy 决定，不绑定某一仿真器的 fatal/warning 开关。
+     **当前 target capability gate：** 配置 target 在 illegal bin 命中时中止仿真，无法为
+     非零 illegal count 产生完整 observation JSON。编解码同步夹具仍声明 illegal bin，并
+     对拍零 illegal hit；非零 illegal 计数以 Python 单测为证，不得宣称该构造的 target
+     hit 对拍已完成。
    - **泛化过程式 option 设置：**不支持。IEEE 1800 允许一部分实例/类型 option 在运行期赋值，
      但这会要求为不同的 option 维持不同的重算与数据库保留策略；配置 target 的观测为
      `at_least` 接受实例化后赋值却不使其生效、且不支持 `type_option` 的 scope-resolution
@@ -296,8 +340,10 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
    只在 point 未声明 normal/default/transition bins 时生效。freeze 按 LRM 计算
    automatic bins：enum 每个枚举值一个；其他 integral point 创建
    `min(2^M, auto_bin_max)` 个 2-state bins，按值域顺序均匀分配，不能整除的剩余值进入最后一个
-   bin；含 X/Z 的 sample 不进入 automatic bins。canonical 名为 SV 形式 `auto[value]` 或
-   `auto[low:high]`，结果进入 IR/digest；renderer 发射同一确定性分割，不能依赖 simulator 默认。
+   bin；含 X/Z 的 sample 不进入 automatic bins。integral automatic bin 的 canonical 名为 SV
+   形式 `auto[value]` 或 `auto[low:high]`；enum automatic bin 则为 `auto[member]`，并保留
+   enum 类型与成员的符号来源。结果进入 IR/digest；renderer 发射同一确定性分割，不能依赖
+   simulator 默认。
    `ignore_bins` / `illegal_bins` 不阻止 automatic bins，普通 normal、`default_bins` 或
    `transition_bins` 则阻止它。`cross_retain_auto_bins` 是 `CrossOption` 特有的 `0` 或 `1`
    字段，缺省为 `0`，语义见 §5.5，其值进入 CoverageIR 和声明语义摘要。`name = transition_bins[...]` 是标量
@@ -374,7 +420,12 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
    source declaration 不会因环境全局配置而改变声明语义。`name` 本身不是 bin，
    cross 对未定数量 array 使用 `point.name[value]`、对固定数量 array 使用 `point.name[index]` 引用
    一个子 bin。分割数、端点、值顺序和每个展开集合进入 IR、
-   bin identity 和 digest。
+   bin identity 和 digest。静态值域在 declaration freeze 时展开。`CoverInput` 驱动的连续 range 可使用
+   `bins[first:last].split(max_bins=None)`：在 `@coverage_init` actual 绑定后 materialize 为实例布局，
+   Python 和数据库使用展开后的具名 singleton bins，SV 使用同形 `bins name[] = {[first:last]}` 声明。
+   该形式不引入全局截断或静默压缩；其 range 端点必须在初始化时为有序整数。cross 成员局部重设的
+   range selector 遵循 §5.5 的完整 point 语义，它不是 array-bin `.split()` 的别名；不能把静态
+   `.split()` 规则外推为 cross 局部重设或其他动态压缩策略。
 
    `@covergroup` 产生的 declaration 的 `freeze()` 是唯一编译入口：它以确定性 pass 从受限 AST
    捕获每个节点的调用点为 provenance，解析 source、bins 和 members，生成 `CoverageIR`、声明语义摘要
@@ -417,7 +468,8 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
    `CoverGroupOption.per_instance` 见 §5.14，与 SV instance 身份规则独立。
 5. **cross 成员与自动 bin 保留（1.7 已冻结）**：一个 cross 最多 8 个成员；一个 cross 最多
    **65,536** 个 normal cross bin；同一 covergroup type 最多 **1,048,576** 个 normal cross bin。
-   freeze 先以成员可计分 bin（normal 加 `default`）的有限笛卡尔积建立候选 tuple，再应用以下规则。
+   freeze 先以每个成员的有效可计分 bin（normal 加 `default`；存在局部重设时为重设后 point 的
+   对应 bins）的有限笛卡尔积建立候选 tuple，再应用以下规则。
    三项上限均在 Python 与 SV renderer 前检查，超限必须以 `SVT-COV-CROSS-LIMIT` 失败；不得静默
    截断、删减或改变 bin 集合。该资源保护边界不是 SV 语义上限：target 已验证可生成并报告
    1,048,576 个自动 cross bin，但 SvTypes 仍须为 Python core、数据库与生成后端提供确定的预算。
@@ -427,9 +479,57 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
    - 有 cross 内的 `bins[...]` 时，它们是具名 exact tuple。`CrossOption.cross_retain_auto_bins = 0`（SvTypes
      缺省）时，只有这些具名 tuple 可以成为 normal cross bins；`= 1` 时，未被具名 tuple 覆盖的
      候选 tuple 也作为自动 normal bins 保留，遵循 SystemVerilog 的默认保留逻辑。
-   - cross 内的 `ignore_bins[...]` 从以上 normal 候选中移除 exact tuple；它只能按成员的 normal bin 或
-     `default` bin 组成，不能读取 sample 值或调用函数。引用 point 的 ignore 或 illegal bin 的
+   - cross 内的 `ignore_bins[...]` 从以上 normal 候选中移除 exact tuple；它只能按成员有效 point 的
+     normal 或 `default` bin 组成，不能读取 sample 值或调用函数。引用 point 的 ignore 或 illegal bin 的
      cross selector 不属于候选宇宙，必须为 freeze 错误。ignore 优先于具名/自动 normal bin。
+
+   **成员的 cross 局部重设：**`members` 仍是 cross 唯一的成员声明；cross 体内的同名
+   `CovPoint` 不是新成员，而是该成员在**本 cross**中的完整替代定义。它可像普通 `CovPoint`
+   一样声明自己的 `source`、`iff`、normal/default/ignore/illegal bins 以及影响 bin 形状的 option；
+   它们不从外层 point 继承。transition 仍受“transition 不得进入 cross”的全局限制。例如：
+
+   ```python
+   class opcode_mode(Cross, members=(opcode, mode)):
+       class opcode(CovPoint, source=self.raw_opcode, iff=self.valid):
+           compact = bins[0:3]
+           reserved = bins[14:15]
+
+       selected = bins[opcode.compact, mode.read]
+   ```
+
+   内层类名必须与 `members` 中恰好一个成员的声明名相同；漏名、重名、指向非成员，或把它作为
+   `members` 的替代来源，均为 freeze 错误。没有同名内层类时，cross 使用外层 point 原有的可计分
+   bins。存在内层类时，cross 只使用该内层定义进行 `iff` 判断、取值、分类、tuple 构造、显式
+   `bins[...]`/`ignore_bins[...]` selector 解释及自动 bin 展开；外层 point 仍照常独立采样，但它的
+   source、`iff`、bin 命中、分类、option 和覆盖率不再影响此 cross。没有在局部类中出现的语法或
+   option 采用普通 `CovPoint` 的 DSL 默认值，不回退到同名外层 point 的设置。
+
+   `CoverageIR` 在 cross 下保存一个 `CrossMemberViewIR`，它具有普通 point 的完整声明语义，但没有
+   公共 point ID 或独立报告项。Python evaluator 直接按该 IR 计算此 cross 的成员状态；局部
+   `illegal_bins` 的命中作为带 cross 与成员名的 cross-local illegal 诊断/计数保存，而不是伪装成
+   外层 point 的 illegal hit。
+   SV renderer 则为每个局部重设生成稳定命名、私有且不进入公开 manifest/报告的支撑 coverpoint，
+   并令该 cross 引用支撑 point；因此局部 source、`iff`、bins 和分类均保留为实际 SystemVerilog
+   coverpoint 语义，而不是用 `binsof(<outer-point>) intersect ...` 近似。renderer 必须为每个支撑
+   point 同时发射 `option.weight = 0` 与 `type_option.weight = 0`：前者将它排除在 covergroup **实例**
+   coverage aggregate 外，后者将它排除在 **类型/累计** coverage aggregate 外。二者缺一不可，不能
+   以单独的 `weight = 0` 代替。这样生成类的 `get_coverage()` / `get_inst_coverage()` 仍可直接使用
+   原生 covergroup aggregate，并与 §5.14 的公开 point/cross 聚合相同，亦即从所有 SvTypes 公开
+   coverage 结果看，效果等价于该支撑 point 从未存在。
+
+   原始报告或原生数据库仍可能列出私有支撑 point；观测/导出适配层必须按 manifest 过滤它，不能把它
+   作为未知公开 item 报错，也不能让它进入 UCIS projection。验证 fixture 必须覆盖：一个未完全覆盖的
+   私有支撑 point 在 `per_instance = 1` 时不改变 `get_coverage()` 或 `get_inst_coverage()`；原始报告含
+   支撑 point 时，manifest-directed observation 只返回公开项。局部 point 的 `weight`、`goal`、`at_least`
+   等聚合 option 不影响公开
+   group/point coverage；它们在局部重设中必须以声明错误拒绝，避免接受没有可观察语义的配置。
+
+   局部重设是 cross declaration template 的一部分：其成员绑定和完整 point 定义进入该 cross 的
+   semantic definition、ID 与 declaration digest；它不产生新的公共 point ID 或独立数据库计数。
+   `CrossQueueType` 接收的是重设后成员的归一化原始值 tuple，不能引用局部 bin 名；局部重设改变普通
+   cross tuple 的构造与 selector 解释。局部重设暂不支持数组式成员：虽可把固定槽位 `cov_a[i]`
+   作为 `members` 成员，但 Python 类名不能直接表达该槽名，故尝试为其声明局部重设必须明确以
+   declaration error 拒绝，直到专门的槽位语法被冻结。
 
    `CrossQueueType` 返回的 queue 不等同于成员 bin 名的笛卡尔候选。每个以 queue 声明的具名
    `bins[...]` 或 `ignore_bins[...]` 是**一个** cross bin；queue 中的每个 concrete value tuple 只是
@@ -440,9 +540,10 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
    queue ignore bin 优先，命中时按 §5.9 跳过所有 normal cross bin。queue bin 的名字、函数调用形和
    实例化后 tuple 内容分别进入声明模板或实例 bin 布局；后者不进入声明语义摘要。
 
-   自动 bin 的 semantic ID 由覆盖组类型 ID、cross 显式名称和有序 `(member_point_id,
-   member_bin_id)` tuple 规范化导出；其 SV/observation 可见名称由 manifest 映射，不是用户
-   API 或 merge 键。重复 selector、同名 cross bin、同一 tuple 被多个具名 normal cross bin
+   自动 bin 的 semantic ID 由覆盖组类型 ID、cross 显式名称和有序 `(outer_member_point_id,
+   effective_member_bin_key)` tuple 规范化导出；没有局部重设时后者就是 member bin ID，有局部重设时
+   则由该 cross、外层成员和局部 point 的 bin 定义规范化导出。它不是新的公共 point ID。其 SV/observation
+   可见名称由 manifest 映射，不是用户 API 或 merge 键。重复 selector、同名 cross bin、同一 tuple 被多个具名 normal cross bin
    选中，或 normal/ignore selector 的成员、顺序、arity 不匹配，均为 freeze 错误。正常 cross bin 的
    重叠不因其来源是静态 selector 还是 `CrossQueueType` 而改变：均按 SV 的正常 bin 规则分别命中并
    分别计数。生成 SV 时，
@@ -466,14 +567,16 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
    后的用例仍增加 hits，但不再写入来源表。
 9. **cross 计分宇宙与优先级（1.7 已冻结）**：cross 在一次 group `sample()` 中按以下顺序
    计分，规则同时适用于 Python、SV、§5.15 manifest 和 §6 的 bin layout。
-   1. 先求每个成员 point 的 `iff`；任一为假，或 cross 自己的 `iff` 为假，cross 整体跳过，
-      不增加 cross bin hit 或 illegal 记录。
-   2. 对其余成员按 §5.13 分类。任一成员命中 `ignore`，cross 整体跳过；任一成员命中
-      `illegal`，只记录该成员的 illegal hit，cross 整体跳过，**不**另造 cross-illegal bin。
-      因此 illegal 成员永不进入 cross 分子或分母。其后检查实例化已生成的
+   1. 先求每个成员的**有效 point**的 `iff`（有局部重设时为局部 point，否则为外层 point）；任一为假，
+      或 cross 自己的 `iff` 为假，cross 整体跳过，不增加 cross bin hit 或 illegal 记录。
+   2. 对其余有效 point 按 §5.13 分类。任一成员命中 `ignore`，cross 整体跳过；任一成员命中
+      `illegal`，若为外层 point 则记录该 point 的 illegal hit，若为局部 point 则记录 cross-local
+      illegal hit，随后 cross 整体跳过，**不**另造 cross-illegal bin。因此 illegal 成员永不进入
+      cross 分子或分母。其后检查实例化已生成的
       `CrossQueueType` ignore bin；若归一化 sample value tuple 属于其中任一 queue，cross 同样整体跳过。
-   3. 每个成员剩余的所有 normal 命中（包括 `default`）形成笛卡尔积；normal bins 重叠时，
-      每个组合各加一次 hit。对每个组合，若不在存活集合或被 cross `ignore` 选择器排除则跳过；
+   3. 每个有效 point 剩余的所有 normal 命中（包括 `default`）参与笛卡尔积；局部 point 没有
+      可计分命中时，该成员不形成 tuple。
+      normal bins 重叠时，每个组合各加一次 hit。对每个组合，若不在存活集合或被 cross `ignore` 选择器排除则跳过；
       否则命中唯一对应的 cross bin。同一阶段还检查 `CrossQueueType` normal bin；命中其 concrete
       value tuple 的 queue bin 时各加一次 hit，并可与普通 normal tuple bin 重叠。cross 本身没有
       runtime value filter 或 `default` bin。
@@ -490,17 +593,16 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
     `sample_count` +1；每个有效元素/槽仅按命中情况增加 bin hit。槽位 `i >= size()` 或 `iff`
     为假时不加 hit、不加该槽 sample、不创新 bin。target 对拍使用测试专用的用户 sample 调用
     计数器，不把循环 `cg.sample()` 次数作为公开 `sample_count`。
-12. **transition 历史推进（1.8 更新项）**：按 SystemVerilog LRM 的已定义语义实现。LRM 对
-    transition bin 与 bin 级 `iff` 的交互未给出足以消除实现差异的完整规则；1.8 必须以项目目标
-    target 的微型对照测试补全本项，并同步更新本文，使其成为 Python evaluator 与生成 SV 的
-    共同规范。首次 sample 不得命中长度 ≥2 的 transition；每种 `iff`、default、ignore、illegal
-    与 X/Z 情形均必须有 target 对照用例。它不阻塞 1.7 的声明语法冻结，但在该 1.8 证据完成前不得
-    作为已完成的公开 transition 行为承诺。
+12. **transition 历史推进（已用 target 微型对照冻结）**：按 SystemVerilog LRM 的已定义语义实现，并用配置 target 的编解码同步微型夹具把下列规则写成 Python evaluator 与生成 SV 的共同规范。首次 sample 不得命中长度 ≥2 的 transition。SvTypes 2.0 不提供 bin 级 `iff`；coverpoint 级 `iff` 为假时，该次 sample 不推进 transition 历史、不加 hit。同一 coverpoint 上 transition 与 ignore / illegal / `default` 可以共存：先按历史匹配 transition bin，再按当前值走 ignore → illegal → 全部显式 normal → default。2-state transition 项不匹配含 X/Z 的 sample，因此 `0 => 1` 不能经由 X/Z 值完成。illegal 非零 hit 仍受「当前 target 命中即中止」capability gate 约束，对照夹具只声明 illegal bin 并对拍零 hit。
+    **当前 target capability gate：** 显式 4-state value bin 的具名 hit 不出现在配置 target 的 functional coverage report 中；Python 仍按 §5.13 记录。该 gate 解除前不得宣称 4-state value bin 的 target hit 对拍已完成。
 13. **bin 值比较与规范化（1.7 已冻结）**：freeze 从 point 的静态结果类型取得唯一比较域：
     2-state integral 为 `(width, signedness)`，4-state packed 为 `(width, four_state)`，enum
     为其声明的底层 `(width, signedness)` 域。singleton、range endpoint 和 set member 必须在该
-    域内；无类型 Python `int`、不同宽度/符号的 literal、不同 enum 类型、以及会截断或溢出的
-    值均为声明错误。enum literal 与**同一底层宽度及 signedness**的显式 integral literal 都
+    域内。无类型 Python `int` 只要其值落在该域内即可。显式 typed literal 必须与比较域 signedness
+    一致。2-state typed literal 若其值可无损落入比较域，则规范化为该域中的同一位模式（较窄
+    同符号 literal 按零扩展或符号扩展）。会截断、溢出、改变 signedness、把四态值送入二态域、
+    或使四态 literal 宽度大于比较域的写法均为声明错误。不同 enum 类型为声明错误。
+    enum literal 与**同一底层宽度及 signedness**的显式 integral literal 都
     规范化为同一底层位模式，故 `Color.R` 与同型 `0` 相等。range 为闭区间，只允许 2-state
     endpoint 和 2-state sample；4-state singleton/set 采用逐位 4-state 相等，只有显式含
     X/Z 的 bin 才可命中 X/Z sample，range 不匹配含 X/Z 的 sample。
@@ -509,8 +611,10 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
     仅在没有 ignore、illegal 或显式 normal 命中时命中。normal bins 允许重叠且**全部命中**；
     这也适用于由 `Color.R` 和同型 `0` 定义的不同具名 bin，不采用 SV `unique` 或 first-match
     规则。ignore/illegal 内部或彼此重叠不改变其优先级；同一分类的多个 illegal bin 各自记录
-    hit。每 point 至多一个 default bin，且 default 不携带 values。IR 按比较域和规范化值而非
-    Python repr/enum member 名编码；transition 的每一项复用完全相同的比较与分类规则。target
+    hit。每 point 至多一个 default bin，且 default 不携带 values。IR 按比较域和规范化值比较；
+    enum literal 另外保留声明的 enum 类型名和成员名作为不改变比较、摘要或 merge 结果的符号来源，
+    供 SystemVerilog renderer、catalog 与诊断输出 `EnumType::member` / `EnumType.member`。
+    transition 的每一项复用完全相同的比较与分类规则。target
     fixture 必须覆盖 enum/同型整数重叠、normal range/set 重叠、ignore-vs-illegal、default
     residual、X/Z singleton 与 X/Z range 不命中。
 14. **point/group 覆盖率公式**：按 SystemVerilog LRM §19.11 实现，并用 target 对照。
@@ -520,8 +624,8 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
     以 LRM 为公开语义，并把 target 的能力或行为差异记录为 capability gate**；不得把 target
     差异反向写成 SvTypes 语义。
     **`CoverGroupOption.per_instance` 缺省为 0（LRM）。** `merge_instances=0`（缺省）时类型
-    覆盖率是各实例覆盖率的加权平均，类型层没有统一的 point/cross bin 表；`merge_instances=1` 时
-    类型覆盖率才是按 bin 名合并的实例 bin 宇宙。`per_instance=1` 额外保存并报告各实例覆盖率；
+    覆盖率是各实例覆盖率的加权平均，类型层没有统一的 point/cross bin 表。`merge_instances=1`
+    不在当前实现范围；它不是 input 驱动实例布局的设计、实现或验证前置条件。`per_instance=1` 额外保存并报告各实例覆盖率；
     `per_instance=0` 时实现不必在持久化数据库中保存实例 coveritem 数据。Python、SV 和 UCIS export
     必须依此区分类型级百分比与类型级 bin hit，不能在加权平均情形伪造统一 type-bin count。renderer 显式发射相关 option，不依赖
     仿真器缺省或全局覆盖。
@@ -530,13 +634,15 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
     不属于 SvTypes 公开 API、运行时数据库格式或 UCIS 替代品；它的具体启动、数据库读取和报告解析
     均不进入本仓库。1.10 不得以该测试观测接口代替 UCIS XML interchange。
     observation JSON 的稳定测试形状为 `{"items": {label: {"hits": {bin: count},
-    "illegal_hits": {bin: count}}}}`；`ignore` 不在其中。生成期 manifest 提供每个 `label`
+    "illegal_hits": {bin: count}}}, "summary": {"coverage": percentage,
+    "sample_count": count}}`；`ignore` 不在其中。`summary.coverage` 是 target 的 group/type
+    coverage 百分比，`summary.sample_count` 是测试专用的用户 `sample()` 调用次数。生成期 manifest 提供每个 `label`
     的语义映射；per-instance 用例另提供 `logical_instance_key`、实例布局摘要和由 harness 显式给出的
     `target_label`，不得从 handle、对象编号或报告名称推导。
     - **按汇总方式选择对拍证据。** `merge_instances=0`（缺省）时，类型覆盖率是实例覆盖率的
       加权平均，类型层没有统一 bin 表；对拍该百分比与非法命中，并以单实例 fixture 的具名 bin hit
-      证明分类规则。`merge_instances=1` 时，类型覆盖率按 bin 名并集汇总；对拍类型层具名 bin
-      hit、非法命中和 §5.14 覆盖率。两种方式都不要求 target 把类型覆盖率拆成实例覆盖率。
+      证明分类规则。`merge_instances=1` 不在当前范围；它不阻塞 input 驱动实例布局的 fixture。两种方式都不要求 target 把类型覆盖率拆成
+      实例覆盖率。
     - **`CoverGroupOption.per_instance = 1` 的用例按实例覆盖率对拍。** 仅这些用例打开该选项。
       Python 解析后的逻辑实例键与 target observation instance 标签经 observation manifest 一一对应，
       不要求字符串逐字相同。key 缺失、重复注册、一个 key 对应多个 SV 覆盖组实例，或一侧有
@@ -591,7 +697,7 @@ CoverageDatabase
 
 这是**逻辑数据模型**，不是 1.10 前的物理文件 schema。数据库必须保留足以按 LRM 规则报告和
 merge 的信息：`merge_instances=0` 时，类型级公开结果是加权平均，绝不伪造一张 type bin 表；
-`merge_instances=1` 时，类型级结果按 bin 名并集汇总。`per_instance=1` 时另保存可报告的覆盖组
+`per_instance=1` 时另保存可报告的覆盖组
 实例结果及其实例 bin 布局；`per_instance=0` 时实现可以不持久化该公开实例记录，但仍必须保留
 完成受支持 merge 所需的信息。若持久化实例记录，其报告名称/注释为导出时当前快照，只服务展示和
 诊断；它们不参与声明兼容性、实例身份或 merge 对齐。illegal hit 始终是独立的诊断事实，不被解释成
@@ -619,7 +725,7 @@ database 的公开 chunk/schema/version 契约与 UCIS projection/loss-report �
 - digest 相同则认为语义 snapshot 等价。若两侧 snapshot 的规范化语义一致而 provenance
   不同：兼容判定仍通过；provenance 保留先到库的记录，另一侧可写入 merge 诊断，不参与
   是否可合并。规范化语义不一致则失败——不得出现「digest 相同但语义 snapshot 冲突」。
-- `merge_instances=1` 的 type coverage merge 按 bin 名合并类型级命中与非法记录；
+- `merge_instances=1` 的 type coverage merge 当前不在范围；input 驱动实例布局不依赖该能力；
   `merge_instances=0` 的 weighted type summary 不得由 type-bin count 伪造，数据库必须保留计算
   跨库加权汇总所需的内部信息。`CoverGroupOption.per_instance = 1` 时，只有
   `logical_instance_key` 与 `instance_layout_digest` 都相同的公开覆盖组实例记录才能相加；illegal
@@ -658,6 +764,11 @@ UCIS 1.0 定义覆盖数据库抽象、API 和 XML interchange；SvTypes 不在 
 3. UCIS XML → SvTypes database 的受控导入；不能表示的属性保存在 extension/loss report，
    不伪造等价。
 4. 外部 SystemVerilog target 的 UCIS/coverage export 可作为集成验证输入；其私有数据库仍由 target 拥有。
+   **当前 target capability gate：** 配置 target 不一定能发出原生 UCIS 1.0 dump。1.10 的集成验证要求一次
+   target run 的覆盖率计数进入 UCIS 1.0 XML，再由调用者提供冻结实例经 `CoverageDatabase.import_ucis`
+   导回。adapter 在原生 dump 不可用时，把同一 run 的 target 计数投影为 UCIS 1.0（identity 来自
+   manifest/bindings）。这不是 1.9 observation JSON 的替代品，而是 UCIS interchange 夹具；该原生 dump
+   能力恢复后，同一测试应优先消费原生 XML。
 
 1.9 为 Python/SV parity 读取外部 adapter 的规范化 observation JSON；这只是测试观测通道。1.10 的 UCIS XML
 import/export 才是 SvTypes 对外的覆盖率 interchange 能力，不能以 adapter 取代。
@@ -670,7 +781,7 @@ SvTypes 采用独立核心 DB 加适配层、而非直接定义为某个 simulat
 | 里程碑 | 交付 | 完成门槛 |
 |---|---|---|
 | 1.7 设计冻结 | coverage DSL、CoverageIR、bin ID/实例身份、数据库和 UCIS 映射规格；完成 §2 的 `cov` 自动声明迁移边界，并冻结 §5.1、§5.2、§5.5、§5.9、§5.13；交付不可变 IR、自动 `cov` 编译和静态 cross 限额基础 | 冻结条款均有对应的 Python/target fixture 计划；fixture 在承载其运行时或 renderer 能力的后续里程碑成为交付门槛。未冻结构造不实现公开 DSL |
-| 1.8 Python core | CoverageIR、表达式 evaluator、embedded covergroup/point/bins/iff、automatic/array bins、宿主 `__init__` 内的 embedded `.instantiate(...)` `CoverInput` 实例化、静态成员 `CoverRef` binding、定长覆盖率数组与值域 point、有界 transition（非数组式）、内存 DB、有限用例来源、确定性 JSON test snapshot 与可选 sample 日志 | 单元测试覆盖命中、未命中、automatic bins 的 enum/整除/余数/XZ、array bins 的 `split()` / `split(count)` / empty bin、`CoverInput` snapshot 与不同 actual 的实例 bin 布局、`CoverInput` 不改变声明语义摘要、`CoverRef` 当前值读取、embedded covergroup 可不实例化，或仅在宿主 `__init__` 中以 `.instantiate(...)` 构造一次、未实例化成员方法调用失败、覆盖组内置方法、illegal、ignore、goal、数组槽跳过、定长 transition 与 `[*m:n]` 的命中/未命中、数组式声明带 transition 的声明期失败、来源额满、声明语义摘要相同而 provenance 不同的 merge、加权类型汇总与按 bin 名合并的类型结果、`CoverGroupOption.per_instance = 1` 时 illegal 按覆盖组实例分开、实例覆盖率用例下逻辑实例键缺失/重复注册失败、同一逻辑实例键而实例布局摘要不同的 merge 拒绝 |
+| 1.8 Python core | CoverageIR、表达式 evaluator、embedded covergroup/point/bins/iff、automatic/array bins、受限 `@coverage_init` 内的 embedded `.instantiate(...)` `CoverInput` 实例化、静态成员 `CoverRef` binding、定长覆盖率数组与值域 point、有界 transition（非数组式）、内存 DB、有限用例来源、确定性 JSON test snapshot 与可选 sample 日志 | 单元测试覆盖命中、未命中、automatic bins 的 enum/整除/余数/XZ、array bins 的 `split()` / `split(count)` / empty bin、`CoverInput` snapshot 与不同 actual 的实例 bin 布局、`CoverInput` 不改变声明语义摘要、`CoverRef` 当前值读取、embedded covergroup 可不实例化，或仅在宿主 `__init__` 内调用 `@coverage_init` 构造一次、未实例化成员方法调用失败、覆盖组内置方法、illegal、ignore、goal、数组槽跳过、定长 transition 与 `[*m:n]` 的命中/未命中、数组式声明带 transition 的声明期失败、来源额满、声明语义摘要相同而 provenance 不同的 merge、加权类型汇总、`CoverGroupOption.per_instance = 1` 时 illegal 按覆盖组实例分开、实例覆盖率用例下逻辑实例键缺失/重复注册失败、同一逻辑实例键而实例布局摘要不同的 merge 拒绝 |
 | 1.9 cross 与 SV parity | cross、`CrossQueueType` 函数、实例策略、SV renderer、生成覆盖组、observation manifest、Python/SV conformance vectors、编解码同步双侧采样 | 固定 sample 向量下按 manifest 将 target 可观测的具名 bin/illegal 与 Python DB 精确对拍，coverage 百分比按 §5.14 交叉校验；`CrossQueueType` 的实例化后 concrete tuple queue、bin 名和 coverage 必须与生成 SV 相等；再用 SvTypes pack/unpack 把同一批对象同步到两侧，两边同时 `sample()`，大量样本后同样对拍（ignore 只验证未进 named hit/分母）；按 §5.15 的汇总方式选择 type 或 instance 覆盖率对拍；manifest 缺项或 target 多出未映射具名 bin 为失败；生成期拒绝不支持语义。**若 LRM 明确允许而当前 target 不能生成或观测某构造，路线图必须逐项记录 capability gate；Python 语义可交付，但该构造不得宣称 target parity 已完成。** |
 | 1.10 UCIS bridge | 公开二进制 coverage database chunk/schema/version、UCIS XML export/import 子集、loss report、target 导出集成验证 | 二进制库 round-trip 与版本兼容策略、UCIS round-trip、跨 run merge、外部 UCIS 样本导入和不兼容诊断 |
 | 2.0 RC | 性能基准、API/schema 冻结、文档/examples、全量 Python/target 回归 | 无未规划的 2.0 承诺；所有受支持语义有 Python 和 target 证据 |
@@ -715,9 +826,9 @@ ignore/illegal/`default`、以及 1.9 的 cross。比较以具名 bin hit 和 il
 在其对应的 1.8 或 1.9 公开能力交付前通过：
 
 - §5.1–§5.2：同一已冻结 declaration 的 Python evaluator 与 SV renderer 使用同一 typed expression
-  IR/声明语义摘要，且 manifest 正确引用该摘要；宿主 `__init__` 内的 `.instantiate(...)`/静态成员的
-  `CoverInput` 实例化、静态成员 `CoverRef` 当前值、Python 宿主在 `__init__` 中实例化且生成 SV 宿主在
-  `new()` 中执行对应构造、
+  IR/声明语义摘要，且 manifest 正确引用该摘要；受限 `@coverage_init` 的 `CoverInput` actual 映射、
+  Python 宿主在 `__init__` 中调用该方法且 SV 在对象初始化/解码完成后显式调用同签名方法、静态成员
+  `CoverRef` 当前值、
   嵌套 `sample` 签名及调用、覆盖组内置方法、嵌套 `option` / `type_option`、
   automatic bins 的 enum/整除/余数/XZ、`iff`/度量/transition、split 的 canonical 子 bin、
   `repeat(term, m, n)` 的有界展开、`CovPointArray` 的槽名/ID 展开和单槽 cross 引用与 §5.1、§5.7
@@ -726,7 +837,7 @@ ignore/illegal/`default`、以及 1.9 的 cross。比较以具名 bin hit 和 il
   边界接受、各自加一后的 `SVT-COV-CROSS-LIMIT` 拒绝、无静默截断、静态 selector、成员/ cross `iff`、
   ignore、illegal、default、cross 内无 `bins[...]` 时的自动 tuple 名与重叠 normal 的具名 hit 和百分比
   符合 §5.9。
-- §5.13：enum/同型整数、宽度或 signedness 不匹配的拒绝、重叠、分类优先级及 X/Z 的结果符合
+- §5.13：enum/同型整数、同符号无损扩展、异符号或溢出拒绝、重叠、分类优先级及 X/Z 的结果符合
   §5.13。
 - §2：有效 `cov=True` 标量、固定数组、动态数组/队列（value-domain 与 `cov_slots`）和关联数组
   value-domain 均形成同一 `svtypes_auto_cov` CoverageIR；`cov=False` 字段不进入默认组。生成 SV 时
@@ -753,7 +864,7 @@ membership 与 target 对拍属于 §8 的 1.9 cross 交付，不是 1.8 的门�
    `svtypes_auto_cov` CoverageIR；它不是旧 nested collector 的镜像，而是与显式 declaration 共用
    同一后端链。固定数组展开为定长 slot；动态数组/队列默认 value-domain，只有显式 `cov_slots=N`
    才展开 N 个 slot；关联数组只采样 value-domain。不得使用 `max_length`、当前容器长度、对象地址或
-   任意运行时状态决定 declaration shape。
+   任意运行时状态决定声明模板布局。
 2. **声明前端与 CoverageIR。** 增加 coverage 专用前端，编译 `@covergroup` 的受限 AST、类型信息和
    provenance，产出不可变、可规范化的 CoverageIR。此阶段不执行用户函数、不创建命中计数，也不让
    renderer 直接重读 Python 函数体。
@@ -816,17 +927,18 @@ membership 与 target 对拍属于 §8 的 1.9 cross 交付，不是 1.8 的门�
 ### 11.4 embedded 生命周期与实例绑定
 
 `@covergroup` 在类上形成一个 declaration slot，不在类创建、普通对象分配或首次访问时隐式创建
-coverage instance。宿主 `__init__` 中对该同名成员的唯一一次 `.instantiate(*actuals, **named_actuals)`
-才创建 `CoverGroupInstance`；这一 Python 调用映射 SV embedded covergroup 的 `name = new(...)`。实现
-应通过构造期 token/状态机限制该入口，而不是依赖调用栈字符串：
+coverage instance。宿主 `__init__` 中调用受限 `@coverage_init` 方法；其中对同名成员的唯一一次
+`.instantiate(*actuals, **named_actuals)` 才创建 `CoverGroupInstance`，并映射到生成 SV 初始化方法中的
+`name = new(...)`。实现应通过构造期 token/状态机限制 Python 入口，而不是依赖调用栈字符串：
 
 ```text
 declared → host constructing → instantiated → active
                      └──────→ uninstantiated (允许对象构造结束后保留)
 ```
 
-- 对同一 slot 第二次实例化、在 `__init__` 外实例化、从外部 factory 实例化、或在实例化前/未实例化时
-  调用采样/覆盖率查询，均为明确 runtime/declaration 失败；不自动重建、不 lazy instantiate。
+- 对同一 slot 第二次实例化、在 `@coverage_init` 以外或宿主 `__init__` 外实例化、从外部 factory
+  实例化、或在实例化前/未实例化时调用采样/覆盖率查询，均为明确 runtime/declaration 失败；不自动
+  重建、不 lazy instantiate。
 - `CoverInput` actual 在实例化处完成类型检查、不可变 snapshot 与 named/positional 绑定；只有影响
   bins 或冻结 option 的绑定结果进入实例布局 canonical value。`CoverRef` 只能绑定 §5.1 允许的静态、
   单数 `TypeBase` 宿主成员，并在每次 sample 读取其当前值；它不进入 declaration digest，也不因值变化

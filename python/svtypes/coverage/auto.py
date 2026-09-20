@@ -61,7 +61,19 @@ def _object_element(descriptor: Any) -> bool:
 def _automatic_bins(descriptor: Any) -> tuple[CoverageBinIR, ...]:
     """Compile the deterministic automatic bins used by the explicit DSL."""
     if isinstance(descriptor, Enum):
-        return tuple(CoverageBinIR(f"auto[{member.value}]", "normal", {"kind": "constant", "value": member.value}) for member in descriptor._enum_items)
+        return tuple(
+            CoverageBinIR(
+                f"auto[{member.name}]",
+                "normal",
+                {
+                    "kind": "enum_literal",
+                    "member": member.name,
+                    "type_name": type(descriptor).__name__,
+                    "value": member.value,
+                },
+            )
+            for member in descriptor._enum_items
+        )
     if isinstance(descriptor, (Bit, Logic)):
         lower = -(1 << (descriptor.width - 1)) if descriptor.signed else 0
         upper = (1 << (descriptor.width - 1)) - 1 if descriptor.signed else (1 << descriptor.width) - 1
@@ -99,13 +111,6 @@ def auto_coverage_ir(cls: type["SvObject"]) -> CoverageIR | None:
     points: list[CoveragePointIR] = []
     for name, descriptor in cls._SvObject__svtypes_members:
         if isinstance(descriptor, ObjectDescriptor):
-            points.append(
-                _point(
-                    name,
-                    {"kind": "is_null", "path": f"item.{name}"},
-                    None,
-                )
-            )
             continue
         if not isinstance(descriptor, TypeBase):
             continue

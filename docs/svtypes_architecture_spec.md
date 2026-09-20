@@ -213,7 +213,7 @@ Every type carries metadata that drives code generation:
 | `rand` | bool | Randomizable in SV? | `rand` modifier in SV class |
 | `plusarg` | bool | Overridable by +plusargs? | `$value$plusargs` override block |
 | `dump` | bool | Included in print/dump? | Print statement in `display()` |
-| `cov` | bool | Coverage collected? | Coverpoint in covergroup |
+| `cov` | bool | Include this field in deterministic automatic functional coverage | `svtypes_auto_cov` CoverageIR, Python runtime, and generated SystemVerilog; `Object(...)` handles have no default nullness point |
 | `pack_bytes` | bool | Included in serialization? | Packed in `pack()`/`unpack()` |
 | `width` | int (ro) | Bit width (primitives) | Drives SV/C++ type selection |
 

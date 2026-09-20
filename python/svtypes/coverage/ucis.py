@@ -71,22 +71,28 @@ def import_ucis(xml: str, *, defaults: dict[str, Any] | None = None,
         root = ET.fromstring(xml)
     except ET.ParseError as error:
         raise CoverageError("UCIS XML is malformed") from error
-    if root.tag != "UCIS" or root.get("ucisVersion") != "1.0":
+    if _local(root.tag) != "UCIS" or root.get("ucisVersion") != "1.0":
         raise CoverageError("expected UCIS 1.0 XML")
     imported: list[dict[str, Any]] = []
     losses: list[dict[str, str]] = []
-    for cg in root.findall(".//cgInstance"):
-        record: dict[str, Any] = {"name": cg.get("name"), "points": {}, "crosses": {}, "options": {}}
-        options = cg.find("options")
+    for cg in _iter_tag(root, "cgInstance"):
+        cg_id = _find_nested(cg, "cgId")
+        record: dict[str, Any] = {
+            "name": cg.get("name"),
+            "logical_instance_key": cg.get("key"),
+            "covergroup_type_id": None if cg_id is None else cg_id.get("cgName"),
+            "points": {}, "crosses": {}, "options": {},
+        }
+        options = _find_child(cg, "options")
         if options is not None:
             record["options"] = dict(options.attrib)
         for key, value in defaults.items():
             if key not in record["options"]:
                 record["options"][key] = value
                 losses.append({"item": str(record["name"]), "reason": f"SvTypes option {key!r} defaulted during UCIS import"})
-        for point in cg.findall("coverpoint"):
+        for point in _find_children(cg, "coverpoint"):
             record["points"][point.get("name", "")] = _import_bins(point, "coverpointBin")
-        for cross in cg.findall("cross"):
+        for cross in _find_children(cg, "cross"):
             record["crosses"][cross.get("name", "")] = _import_bins(cross, "crossBin")
         imported.append(record)
     return imported, _loss_report(losses)
@@ -111,11 +117,15 @@ def _export_record(root: ET.Element, index: int, document: dict[str, Any], losse
     instance = ET.SubElement(root, "instanceCoverages", name="svtypes", key=str(index))
     ET.SubElement(instance, "id", **_SOURCE_ID)
     metric = ET.SubElement(instance, "covergroupCoverage", weight=str(document.get("options", {}).get("weight", 1)))
-    name = document.get("instance_name") or document.get("logical_instance_key") or document["covergroup_type_id"]
-    cg = ET.SubElement(metric, "cgInstance", name=str(name), key=str(index), excluded="false")
+    # Report name and merge identity are different concepts.  Keep the
+    # mutable report name in ``name`` and carry the stable logical identity in
+    # UCIS' opaque key, never using one as a fallback for the other.
+    name = document.get("instance_name") or document["covergroup_type_id"]
+    logical_key = document.get("logical_instance_key") or str(index)
+    cg = ET.SubElement(metric, "cgInstance", name=str(name), key=str(logical_key), excluded="false")
     options, type_options = document.get("options", {}), document.get("type_options", {})
     ET.SubElement(cg, "options", weight=str(options.get("weight", 1)), goal=str(options.get("goal", 100)),
-                  comment=str(document.get("comment", "")), at_least="1", detect_overlap="false", auto_bin_max="64",
+                  comment=str(document.get("comment", "")), at_least=str(options.get("at_least", 1)), detect_overlap=str(bool(options.get("detect_overlap", 0))).lower(), auto_bin_max=str(options.get("auto_bin_max", 64)),
                   cross_num_print_missing="0", per_instance=str(bool(options.get("per_instance", 0))).lower(),
                   merge_instances=str(bool(type_options.get("merge_instances", 0))).lower())
     cg_id = ET.SubElement(cg, "cgId", cgName=document["covergroup_type_id"], moduleName="SvTypes")
@@ -190,7 +200,7 @@ def _append_point_bin(parent: ET.Element, index: int, point: str, source: dict[s
 def _integer_ranges(selector: Any) -> list[tuple[int, int]] | None:
     if not isinstance(selector, dict):
         return None
-    if selector.get("kind") == "constant" and isinstance(selector.get("value"), int) and not isinstance(selector["value"], bool):
+    if selector.get("kind") in {"constant", "enum_literal"} and isinstance(selector.get("value"), int) and not isinstance(selector["value"], bool):
         return [(selector["value"], selector["value"])]
     if selector.get("kind") == "range":
         lower, upper = selector.get("lower"), selector.get("upper")
@@ -207,10 +217,36 @@ def _ucis_bin_kind(kind: str) -> str:
     return {"normal": "default", "ignore": "ignore", "illegal": "illegal"}[kind]
 
 
+def _local(tag: str) -> str:
+    return tag.split("}", 1)[-1]
+
+
+def _find_child(parent: ET.Element, name: str) -> ET.Element | None:
+    for child in parent:
+        if _local(child.tag) == name:
+            return child
+    return None
+
+
+def _find_children(parent: ET.Element, name: str) -> list[ET.Element]:
+    return [child for child in parent if _local(child.tag) == name]
+
+
+def _iter_tag(parent: ET.Element, name: str) -> list[ET.Element]:
+    return [element for element in parent.iter() if _local(element.tag) == name]
+
+
+def _find_nested(parent: ET.Element, name: str) -> ET.Element | None:
+    for element in parent.iter():
+        if _local(element.tag) == name:
+            return element
+    return None
+
+
 def _import_bins(parent: ET.Element, tag: str) -> dict[str, int]:
     result: dict[str, int] = {}
-    for bin_ in parent.findall(tag):
-        contents = bin_.find(".//contents")
+    for bin_ in _find_children(parent, tag):
+        contents = _find_nested(bin_, "contents")
         result[bin_.get("name", "")] = int(contents.get("coverageCount", "0")) if contents is not None else 0
     return result
 

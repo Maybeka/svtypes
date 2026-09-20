@@ -149,3 +149,52 @@ h = Header()
 h.id.value = 100
 h.length.value = 20
 ```
+
+---
+
+## Functional coverage
+
+`@covergroup` declares a static functional-coverage template on an `SvObject`.
+Use `CovPoint` and `Cross` nested classes to declare coverpoints, crosses, and
+their `bins` / `ignore_bins` / `illegal_bins` / `transition_bins`.
+
+```python
+from svtypes import Bit, CovPoint, SvObject, bins, covergroup
+
+class Packet(SvObject):
+    opcode = Bit(2)
+
+    @covergroup
+    def cg(self):
+        class opcode_cp(CovPoint, source=self.opcode):
+            read = bins[0]
+            write = bins[1]
+```
+
+`CoverInput[T]` and `CoverRef[T]` provide typed covergroup constructor
+formals. Instantiate embedded covergroups from the class's single
+`@coverage_init` method. Tools materialize one declaration directly from its
+CoverInput signature, without reading initializer actuals:
+
+```python
+layout = preview_coverage_layout(Packet, "cg", first=2, last=5)
+```
+
+`CoverRef` remains declaration-bound and is never a tool input. Class
+`Parameter` references remain symbolic as `parameter_ref` in CoverageIR and
+Design Manifest selectors; a Python instance layout materializes the bound
+value as a constant, while generated SystemVerilog retains the parameter name.
+
+Automatic `cov=True` coverage is compiled into the same CoverageIR pipeline as
+an explicit covergroup. Scalar and container value domains receive deterministic
+automatic bins; an `Object(...)` handle field does not receive a default
+nullness coverpoint.
+
+`instance.get_coverage()` reports type coverage, while
+`instance.get_inst_coverage()` reports the individual covergroup instance.
+`instance.sample_count` records accepted samples and
+`instance.has_illegal_hits()` reports whether an illegal bin was hit.
+
+Use `CoverageDatabase.import_ucis()` only with explicit bindings to frozen
+declarations. UCIS is an interchange projection with a documented loss report,
+not a replacement for the SvTypes coverage database.

@@ -9,6 +9,10 @@ MAX_CROSS_MEMBERS = 8
 MAX_NORMAL_CROSS_BINS = 65_536
 MAX_NORMAL_CROSS_BINS_PER_COVERGROUP = 1_048_576
 MAX_CROSS_QUEUE_TUPLES = 65_536
+# The evaluator retains exactly this many values per scalar transition point.
+# Freeze rejects longer transition declarations so they cannot be permanently
+# unreachable merely because runtime history is bounded.
+MAX_TRANSITION_SEQUENCE = 16
 
 
 def validate_cross_normal_bin_count(

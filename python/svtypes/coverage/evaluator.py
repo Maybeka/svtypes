@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..errors import CoverageError
+from ..logic import LogicValue
 from .ir import CoverageBinIR, CoverageCrossIR, CoverageIR, CoveragePointIR
 
 
@@ -39,7 +40,7 @@ def eval_expr(expression: Any, context: dict[str, Any]) -> Any:
             return [int(item is None) for item in value.value]
         if kind == "assoc_nullness":
             return [int(item is None) for item in value.value.values()]
-    if kind == "constant":
+    if kind in {"constant", "enum_literal", "parameter_literal"}:
         return expression["value"]
     if kind == "name":
         try:
@@ -92,11 +93,23 @@ def eval_expr(expression: Any, context: dict[str, Any]) -> Any:
 def _matches_selector(value: Any, selector: Any, context: dict[str, Any]) -> bool:
     if selector is None:
         return False
-    if getattr(value, "x_mask", 0) or getattr(value, "z_mask", 0):
-        return False
     kind = selector["kind"]
     if kind == "values":
         return any(_matches_selector(value, item, context) for item in selector["items"])
+    has_xz = bool(getattr(value, "x_mask", 0) or getattr(value, "z_mask", 0))
+    # A range is a 2-state ordering operation.  Explicit singleton/set bins,
+    # however, retain four-state equality so ``bins[\"1x\"]`` can describe a
+    # Logic value exactly rather than silently becoming unmatchable.
+    if has_xz:
+        if kind == "range":
+            return False
+        target = eval_expr(selector, context)
+        if isinstance(target, str):
+            try:
+                target = LogicValue.from_string(target)
+            except ValueError:
+                return False
+        return value == target
     if kind == "range":
         lower = eval_expr(selector["lower"], context) if selector["lower"] is not None else None
         upper = eval_expr(selector["upper"], context) if selector["upper"] is not None else None
@@ -143,8 +156,11 @@ class CoverageRuntime:
     counters: dict[str, PointCounters] = field(init=False)
     histories: dict[str, list[Any]] = field(init=False)
     queue_value_sets: dict[tuple[str, str], set[tuple[Any, ...]]] = field(init=False)
+    cross_local_illegal_hits: dict[tuple[str, str, str], int] = field(init=False)
+    cross_local_illegal_source_ids: dict[tuple[str, str, str], list[str]] = field(init=False)
     enabled: bool = field(init=False, default=True)
     source_limit: int = 3
+    sample_count: int = 0
 
     def __post_init__(self) -> None:
         self.counters = {
@@ -158,10 +174,16 @@ class CoverageRuntime:
             for bin_ in cross.bins
             if isinstance(bin_.selector, dict) and bin_.selector.get("kind") == "cross_queue_values"
         }
+        self.cross_local_illegal_hits = {}
+        self.cross_local_illegal_source_ids = {}
 
     def sample(self, context: dict[str, Any], *, case_id: str | None = None) -> None:
         if not self.enabled:
             return
+        # This is the covergroup-instance count: one increment per public
+        # sample call, independent of how many point slots/container values
+        # are classified by that call.
+        self.sample_count += 1
         classified: dict[str, tuple[str, ...] | None] = {}
         for point in self.ir.points:
             classified[point.name] = self._sample_point(point, context, case_id)
@@ -173,6 +195,22 @@ class CoverageRuntime:
 
     def stop(self) -> None:
         self.enabled = False
+
+    def has_illegal_hits(self) -> bool:
+        """Whether this runtime has observed any illegal bin."""
+        return bool(self.cross_local_illegal_hits) or any(
+            counter.illegal_hits for counter in self.counters.values()
+        )
+
+    def cross_local_illegal_snapshot(self) -> dict[str, dict[str, dict[str, Any]]]:
+        """Return diagnostics for illegal bins belonging only to a cross view."""
+        result: dict[str, dict[str, dict[str, Any]]] = {}
+        for (cross, member, bin_name), hits in sorted(self.cross_local_illegal_hits.items()):
+            result.setdefault(cross, {}).setdefault(member, {})[bin_name] = {
+                "hits": hits,
+                "source_ids": list(self.cross_local_illegal_source_ids.get((cross, member, bin_name), ())),
+            }
+        return result
 
     def _sample_point(self, point: CoveragePointIR, context: dict[str, Any], case_id: str | None) -> tuple[str, ...] | None:
         counters = self.counters[point.name]
@@ -200,7 +238,6 @@ class CoverageRuntime:
                 if any(len(history) >= len(sequence) and history[-len(sequence):] == sequence for sequence in sequences):
                     counters.hits[bin_.name] += 1
                     _record_source(counters.source_ids, bin_.name, case_id, self.source_limit)
-            return None
         ignored = [bin_ for bin_ in point.bins if bin_.kind == "ignore" and _matches_selector(value, bin_.selector, context)]
         if ignored:
             return None
@@ -232,14 +269,20 @@ class CoverageRuntime:
     ) -> None:
         if cross.iff is not None and not bool(eval_expr(cross.iff, context)):
             return
+        effective_classified = dict(classified)
+        effective_points = {point.name: point for point in self.ir.points}
+        for view in cross.member_views:
+            effective_points[view.name] = view.point
+            effective_classified[view.name] = self._sample_cross_member(
+                cross, view.point, context, case_id
+            )
         # A cross is eligible only when every member has contributed a normal
         # or default point bin. ``None`` denotes iff/ignore/illegal/transition
         # suppression; an empty tuple denotes an uncovered point value.
-        if any(not classified.get(member) for member in cross.members):
+        if any(not effective_classified.get(member) for member in cross.members):
             return
-        points = {point.name: point for point in self.ir.points}
         try:
-            values = {member: eval_expr(points[member].expression, context) for member in cross.members}
+            values = {member: eval_expr(effective_points[member].expression, context) for member in cross.members}
         except IndexError:
             return
         counters = self.counters[cross.name]
@@ -247,18 +290,50 @@ class CoverageRuntime:
         ignored = [
             bin_ for bin_ in cross.bins
             if bin_.kind == "ignore" and _matches_cross_selector(
-                bin_.selector, classified, values, self.queue_value_sets.get((cross.name, bin_.name))
+                bin_.selector, effective_classified, values, self.queue_value_sets.get((cross.name, bin_.name))
             )
         ]
         if ignored:
             return
         for bin_ in cross.bins:
             if bin_.kind != "normal" or not _matches_cross_selector(
-                bin_.selector, classified, values, self.queue_value_sets.get((cross.name, bin_.name))
+                bin_.selector, effective_classified, values, self.queue_value_sets.get((cross.name, bin_.name))
             ):
                 continue
             counters.hits[bin_.name] += 1
             _record_source(counters.source_ids, bin_.name, case_id, self.source_limit)
+
+    def _sample_cross_member(
+        self,
+        cross: CoverageCrossIR,
+        point: CoveragePointIR,
+        context: dict[str, Any],
+        case_id: str | None,
+    ) -> tuple[str, ...] | None:
+        """Classify a private cross member without creating public point hits."""
+        if point.iff is not None and not bool(eval_expr(point.iff, context)):
+            return None
+        try:
+            value = eval_expr(point.expression, context)
+        except IndexError:
+            return None
+        ignored = [bin_ for bin_ in point.bins if bin_.kind == "ignore" and _matches_selector(value, bin_.selector, context)]
+        if ignored:
+            return None
+        illegal = [bin_ for bin_ in point.bins if bin_.kind == "illegal" and _matches_selector(value, bin_.selector, context)]
+        if illegal:
+            for bin_ in illegal:
+                key = (cross.name, point.name, bin_.name)
+                self.cross_local_illegal_hits[key] = self.cross_local_illegal_hits.get(key, 0) + 1
+                ids = self.cross_local_illegal_source_ids.setdefault(key, [])
+                if case_id is not None and case_id not in ids and len(ids) < self.source_limit:
+                    ids.append(case_id)
+            return None
+        normal = [bin_ for bin_ in point.bins if bin_.kind == "normal" and _matches_selector(value, bin_.selector, context)]
+        if normal:
+            return tuple(bin_.name for bin_ in normal)
+        defaults = [bin_ for bin_ in point.bins if bin_.kind == "default"]
+        return (defaults[0].name,) if defaults else ()
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -315,8 +390,13 @@ class CoverageRuntime:
         goal = int(options.get("goal", 100))
         normal = [
             item for item in point.bins
-            if item.kind in {"normal", "default"}
-            and not (isinstance(item.selector, dict) and item.selector.get("kind") == "values" and not item.selector.get("items"))
+            if item.kind in {"normal", "default", "transition"}
+            and not (
+                item.kind != "transition"
+                and isinstance(item.selector, dict)
+                and item.selector.get("kind") == "values"
+                and not item.selector.get("items")
+            )
         ]
         if not normal:
             return 100.0

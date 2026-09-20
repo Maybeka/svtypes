@@ -7,6 +7,8 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from ..logic import LogicValue
+
 
 def canonical_value(value: Any) -> Any:
     """Return a JSON-compatible, recursively canonical representation.
@@ -17,6 +19,8 @@ def canonical_value(value: Any) -> Any:
     """
     if value is None or isinstance(value, (bool, int, str)):
         return value
+    if isinstance(value, LogicValue):
+        return {"$logic": {"width": value.width, "value": value.value_mask, "x": value.x_mask, "z": value.z_mask}}
     if isinstance(value, tuple):
         return [canonical_value(item) for item in value]
     if isinstance(value, list):

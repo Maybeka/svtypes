@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
 from ..errors import CoverageError
 from .persistence import decode_database, encode_database, read_database, write_database
@@ -109,6 +109,73 @@ class CoverageDatabase:
         if int(current.get("source_limit", 3)) != int(baseline.get("source_limit", 3)):
             raise CoverageError(f"coverage baseline source limit mismatch for {type_id}")
         instance.runtime.restore_counter_snapshot(deepcopy(baseline["points"]))
+        instance.runtime.sample_count = int(baseline.get("sample_count", 0))
+
+    def import_ucis(self, xml: str, *, bindings: Mapping[str, Any], defaults: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Import losslessly bindable UCIS records into this database.
+
+        UCIS does not carry SvTypes' declaration digest or instance-layout
+        digest.  The caller must therefore provide the live frozen instance
+        for each UCIS logical-instance key.  Any missing or incompatible item
+        fails instead of guessing an identity or silently creating a partial
+        baseline.
+        """
+        from .ucis import import_ucis
+
+        records, report = import_ucis(xml, defaults=defaults)
+        for external in records:
+            key = external.get("logical_instance_key")
+            if not isinstance(key, str) or not key:
+                raise CoverageError("UCIS record has no logical instance key")
+            target = bindings.get(key)
+            if target is None:
+                raise CoverageError(f"UCIS record {key!r} has no declared instance binding")
+            instance = getattr(target, "instance", target)
+            document = deepcopy(instance.snapshot_document())
+            if external.get("covergroup_type_id") != document["covergroup_type_id"]:
+                raise CoverageError(f"UCIS record {key!r} covergroup type mismatch")
+            imported = {**external["points"], **external["crosses"]}
+            expected = {**document["point_definitions"], **document["cross_definitions"]}
+            extra_items = set(imported).difference(expected)
+            if extra_items:
+                raise CoverageError(
+                    f"UCIS record {key!r} has coverage items absent from the bound instance: {sorted(extra_items)}"
+                )
+            bin_kinds = {
+                item["name"]: {bin_["name"]: bin_["kind"] for bin_ in item.get("bins", [])}
+                for collection in ("points", "crosses")
+                for item in document.get("definition", {}).get(collection, [])
+            }
+            for name, definition in expected.items():
+                kinds = bin_kinds.get(name, {})
+                bins = imported.get(name, {})
+                extra = set(bins).difference(kinds)
+                if extra:
+                    raise CoverageError(f"UCIS record {key!r} has unknown bins for {name!r}: {sorted(extra)}")
+                hits = {bin_name: 0 for bin_name in definition["normal_bins"]}
+                illegal: dict[str, int] = {}
+                for bin_name, count in bins.items():
+                    kind = kinds.get(bin_name)
+                    if kind in {"normal", "default"}:
+                        hits[bin_name] = count
+                    elif kind == "illegal":
+                        illegal[bin_name] = count
+                counter = document["points"][name]
+                counter["hits"] = dict(sorted(hits.items()))
+                counter["illegal_hits"] = dict(sorted(illegal.items()))
+                counter["source_ids"] = {}
+                counter["illegal_source_ids"] = {}
+                counter["samples"] = 0
+            document["sample_count"] = 0
+
+            class ImportedSnapshot:
+                logical_instance_key = key
+
+                def snapshot_document(self) -> dict[str, Any]:
+                    return document
+
+            self.record(ImportedSnapshot(), logical_instance_key=key)
+        return report
 
     def snapshot_document(self) -> dict[str, Any]:
         return {
@@ -188,6 +255,14 @@ class CoverageDatabase:
             return 100.0
         return sum(value * weight for value, weight in weighted) / sum(weight for _, weight in weighted)
 
+    def has_illegal_hits(self) -> bool:
+        """Return whether any recorded coverage item has an illegal hit."""
+        return any(
+            bool(counter.get("illegal_hits", {}))
+            for record in self._records.values()
+            for counter in record.document.get("points", {}).values()
+        )
+
 
 def _merge_record_documents(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     """Merge counters from equivalent, independently sampled instances."""
@@ -213,6 +288,7 @@ def _merge_record_documents(left: dict[str, Any], right: dict[str, Any]) -> dict
                         target.append(source_id)
             left_counter[field] = dict(sorted(merged_sources.items()))
         left_counter["samples"] = left_counter.get("samples", 0) + right_counter.get("samples", 0)
+    result["sample_count"] = int(left.get("sample_count", 0)) + int(right.get("sample_count", 0))
     return result
 
 

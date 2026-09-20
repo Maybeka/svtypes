@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UCIS ucisVersion="1.0" writtenBy="external-tool">
+  <instanceCoverages name="external" key="0">
+    <covergroupCoverage>
+      <cgInstance name="ext.pkt" key="dut.pkt" excluded="false">
+        <cgId cgName="__COVERGROUP_TYPE_ID__" moduleName="external"/>
+        <coverpoint name="code_cp">
+          <coverpointBin name="low" type="user">
+            <range from="0" to="0">
+              <contents coverageCount="1"/>
+            </range>
+          </coverpointBin>
+          <coverpointBin name="unknown_bin" type="user">
+            <range from="7" to="7">
+              <contents coverageCount="1"/>
+            </range>
+          </coverpointBin>
+        </coverpoint>
+      </cgInstance>
+    </covergroupCoverage>
+  </instanceCoverages>
+</UCIS>
