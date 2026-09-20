@@ -1,0 +1,13 @@
+{
+  "capabilities": [],
+  "coverage": {"covergroups": []},
+  "design": {
+    "manifest_digest": "686c6b6ab75a653de8437be781b0739f8b3f8ef5b02e2e945806db766db35828",
+    "name": "fixture"
+  },
+  "diagnostics": [],
+  "format": "svtypes.design-manifest/v1",
+  "producer": {"bridge_version": "0.1.0", "svtypes_version": "1.2.0"},
+  "provenance": [],
+  "types": [{"unified_type_name": "fixture.Packet"}]
+}

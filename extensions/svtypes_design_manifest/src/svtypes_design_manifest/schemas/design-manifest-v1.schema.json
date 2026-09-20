@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://svtypes.dev/schemas/design-manifest-v1.schema.json",
+  "title": "SvTypes Design Manifest v1",
+  "type": "object",
+  "required": ["format", "producer", "design", "types", "coverage", "capabilities", "provenance", "diagnostics"],
+  "properties": {
+    "format": {"const": "svtypes.design-manifest/v1"},
+    "producer": {
+      "type": "object",
+      "required": ["bridge_version", "svtypes_version"],
+      "properties": {"bridge_version": {"type": "string", "minLength": 1}, "svtypes_version": {"type": "string", "minLength": 1}}
+    },
+    "design": {
+      "type": "object",
+      "required": ["name", "manifest_digest"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "manifest_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "types": {"type": "array", "items": {"type": "object"}},
+    "capabilities": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "coverage": {
+      "type": "object",
+      "required": ["covergroups"],
+      "properties": {
+        "covergroups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["covergroup_type_id", "declaration_semantic_digest", "definition", "owner_type"],
+            "properties": {
+              "covergroup_type_id": {"type": "string", "minLength": 1},
+              "declaration_semantic_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "definition": {"type": "object"},
+              "owner_type": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      }
+    },
+    "provenance": {"type": "array", "items": {"type": "object"}},
+    "diagnostics": {"type": "array", "items": {"type": "object"}}
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://svtypes.dev/schemas/coverage-proposal-v1.schema.json",
+  "title": "SvTypes Coverage Proposal v1",
+  "type": "object",
+  "required": ["format", "catalog_digest", "preconditions", "operations", "rationale", "edits", "proposal_digest"],
+  "properties": {
+    "format": {"const": "svtypes.coverage-proposal/v1"},
+    "catalog_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "preconditions": {"type": "object"},
+    "operations": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+    "rationale": {"type": "string", "minLength": 1},
+    "edits": {"type": "array", "items": {"type": "object"}},
+    "proposal_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

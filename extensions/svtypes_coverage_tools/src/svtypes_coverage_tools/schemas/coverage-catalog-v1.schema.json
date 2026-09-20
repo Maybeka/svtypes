@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://svtypes.dev/schemas/coverage-catalog-v1.schema.json",
+  "title": "SvTypes Coverage Catalog v1",
+  "type": "object",
+  "required": ["format", "design_manifest_digest", "groups", "type_hierarchy", "catalog_digest", "diagnostics"],
+  "properties": {
+    "format": {"const": "svtypes.coverage-catalog/v1"},
+    "design_manifest_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "groups": {"type": "array", "items": {"type": "object"}},
+    "type_hierarchy": {
+      "type": "object",
+      "required": ["roots", "nodes"],
+      "properties": {
+        "roots": {"type": "array", "items": {"type": "string"}},
+        "nodes": {"type": "array", "items": {"type": "object"}}
+      }
+    },
+    "catalog_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "diagnostics": {"type": "array", "items": {"type": "object"}}
+  }
+}
