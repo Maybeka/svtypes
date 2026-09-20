@@ -40,6 +40,21 @@ def _validate_element_template(codec: TypeBase, location: str) -> None:
         )
 
 
+def _sv_collection_element_decl(codec: Any, name: str) -> str:
+    """Render an unpacked element type without duplicating its qualifier.
+
+    The enclosing collection owns the ``rand``/``randc`` declaration
+    qualifier.  This matters for ``Object(..., rand=True)``: its descriptor
+    also uses that flag for recursive graph randomization, but an unpacked
+    declaration must still contain exactly one qualifier.
+    """
+
+    declaration = codec.sv_decl(name)
+    if declaration.startswith("randc "):
+        return declaration.removeprefix("randc ")
+    return declaration.removeprefix("rand ")
+
+
 class Array(CollectionBase, Generic[T], metaclass=_ArrayMeta):
     """Fixed-size SystemVerilog array.
 
@@ -155,7 +170,7 @@ class Array(CollectionBase, Generic[T], metaclass=_ArrayMeta):
         return vals, offset
 
     def sv_decl(self, name: str) -> str:
-        return self._elem_template.sv_decl(f"{name} [{self._size}]")
+        return _sv_collection_element_decl(self._elem_template, f"{name} [{self._size}]")
 
     def cpp_decl(self, name: str) -> str:
         base_t = _cpp_container_elem_type(self._elem_template)
@@ -216,6 +231,19 @@ class DynArray(CollectionBase, Generic[T]):
         self._elements: list[T] = []
 
     @property
+    def rand(self):
+        """Expose the declaration's random qualifier for its element type.
+
+        ``DynArray(Object(..., rand=True))`` represents ``rand Child a[]``;
+        like ``Array``, its container is therefore a random variable even
+        when no redundant outer ``rand=True`` policy was supplied.
+        """
+
+        if self.field_options.rand is None:
+            return bool(getattr(self._elem_template, "rand", False))
+        return self.field_options.rand
+
+    @property
     def value(self) -> list[Any]:
         from .object import ObjectDescriptor
         if isinstance(self._elem_template, ObjectDescriptor):
@@ -262,7 +290,15 @@ class DynArray(CollectionBase, Generic[T]):
             )
         del self._elements[size:]
         while len(self._elements) < size:
-            self._elements.append(copy.deepcopy(self._elem_template))
+            # New slots of a class-handle dynamic array or queue default to
+            # null.  randomize() resizes the collection but never constructs
+            # the pointed-to objects.
+            from .object import ObjectDescriptor
+
+            if isinstance(self._elem_template, ObjectDescriptor):
+                self._elements.append(None)
+            else:
+                self._elements.append(copy.deepcopy(self._elem_template))
         self._bind_mode_elements()
 
     def _bind_mode_elements(self) -> None:
@@ -302,7 +338,7 @@ class DynArray(CollectionBase, Generic[T]):
         return vals, offset
 
     def sv_decl(self, name: str) -> str:
-        return self._elem_template.sv_decl(f"{name} []")
+        return _sv_collection_element_decl(self._elem_template, f"{name} []")
 
     def cpp_decl(self, name: str) -> str:
         base_t = _cpp_container_elem_type(self._elem_template)
@@ -339,7 +375,7 @@ class DynArray(CollectionBase, Generic[T]):
 class Queue(DynArray[T]):
     """Queue: type name [$]"""
     def sv_decl(self, name: str) -> str:
-        return self._elem_template.sv_decl(f"{name} [$]")
+        return _sv_collection_element_decl(self._elem_template, f"{name} [$]")
 
     def push_back(self, val: Any):
         if len(self._elements) >= self._max_length:
@@ -477,7 +513,7 @@ class AssocArray(CollectionBase, Generic[K, V]):
 
     def sv_decl(self, name: str) -> str:
         key_base_decl = self._key_template.sv_decl("")
-        return self._val_template.sv_decl(f"{name} [{key_base_decl.strip()}]")
+        return _sv_collection_element_decl(self._val_template, f"{name} [{key_base_decl.strip()}]")
 
     def cpp_decl(self, name: str) -> str:
         val_base_t = _cpp_container_elem_type(self._val_template)

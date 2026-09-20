@@ -37,11 +37,12 @@ from .sample import (
 _inline_cache: dict[tuple[int, type], ConstraintIR] = {}
 
 
-@dataclass(frozen=True)
+@dataclass
 class _GraphNode:
     path: str
     obj: Any
     cls: type
+    active: bool = True
 
 
 @dataclass
@@ -200,21 +201,28 @@ def _collect_random_graph(root: Any, root_cls: type, extra: ConstraintIR | None)
 
     A random class handle may occur directly on an object or as an existing
     element of any unpacked collection.  The traversal never allocates a
-    handle: null entries, and descriptor templates used as Python's placeholder
-    for newly resized collections, are deliberately skipped.
+    handle: null entries are deliberately skipped.
     """
 
     nodes: list[_GraphNode] = []
-    identities: dict[int, str] = {}
+    identities: dict[int, _GraphNode] = {}
     aliases: dict[str, str] = {}
 
-    def visit(obj: Any, cls: type, path: str) -> None:
+    def visit(obj: Any, cls: type, path: str, active: bool = True) -> None:
         existing = identities.get(id(obj))
         if existing is not None:
-            aliases[path] = existing
+            aliases[path] = existing.path
+            if active and not existing.active:
+                existing.active = True
+                visit_members(existing.obj, existing.cls, existing.path, True)
             return
-        identities[id(obj)] = path
-        nodes.append(_GraphNode(path, obj, cls))
+
+        node = _GraphNode(path, obj, cls, active)
+        identities[id(obj)] = node
+        nodes.append(node)
+        visit_members(obj, cls, path, active)
+
+    def visit_members(obj: Any, cls: type, path: str, active: bool) -> None:
         for name, desc in getattr(cls, "_SvObject__svtypes_members", ()):
             member_path = _with_prefix(path, name)
             from ..object import ObjectDescriptor
@@ -226,9 +234,21 @@ def _collect_random_graph(root: Any, root_cls: type, extra: ConstraintIR | None)
                 # child on demand, whereas SV randomize never does so.
                 child = obj.__dict__.get(desc._cache_key)
                 if child is not None:
-                    visit(child, child.__class__, member_path)
+                    visit(
+                        child,
+                        child.__class__,
+                        member_path,
+                        active and _effective_rand_mode(obj, name) == 1,
+                    )
                 continue
-            _visit_rand_container_handles(getattr(obj, name), desc, member_path, visit)
+            _visit_rand_container_handles(
+                getattr(obj, name),
+                desc,
+                member_path,
+                name,
+                visit,
+                lambda local_path: active and _effective_rand_mode(obj, local_path) == 1,
+            )
 
     visit(root, root_cls, "")
     leaves: list[tuple[str, Any, bool]] = []
@@ -237,10 +257,11 @@ def _collect_random_graph(root: Any, root_cls: type, extra: ConstraintIR | None)
     for node in nodes:
         for local_path, desc, declared_rand in iter_object_leaves(node.obj, node.cls):
             path = _with_prefix(node.path, local_path)
-            leaves.append((path, desc, declared_rand))
+            leaves.append((path, desc, declared_rand and node.active))
             owners[path] = (node.obj, local_path)
-        for ir in _enabled_irs(node.obj, node.cls, extra if node.path == "" else None):
-            irs.append(_prefix_ir(ir, node.path))
+        if node.active:
+            for ir in _enabled_irs(node.obj, node.cls, extra if node.path == "" else None):
+                irs.append(_prefix_ir(ir, node.path))
     remapped = [_remap_graph_ir(ir, aliases) for ir in irs]
     null_path = None
     for ir in remapped:
@@ -270,17 +291,53 @@ def _refresh_graph_leaves(graph: _RandomGraph) -> None:
     for node in graph.nodes:
         for local_path, desc, declared_rand in iter_object_leaves(node.obj, node.cls):
             path = _with_prefix(node.path, local_path)
-            leaves.append((path, desc, declared_rand))
+            leaves.append((path, desc, declared_rand and node.active))
             owners[path] = (node.obj, local_path)
     graph.leaves = leaves
     graph.owners = owners
+    # A size solve can add new null handle entries.  They are valid unless a
+    # subsequently expanded constraint dereferences one; report that as the
+    # normal null-handle failure, not as a missing solver leaf.
+    graph.null_path = None
+    for ir in graph.irs:
+        for var in ir.vars:
+            if var.kind not in {"field", "unpacked"}:
+                continue
+            graph.null_path = _null_handle_path(graph.root, var.path)
+            if graph.null_path is not None:
+                return
+
+
+def _snapshot_collection_elements(collection: Any) -> list[Any]:
+    """Snapshot collection contents without copying class-handle identity."""
+
+    from ..object import ObjectDescriptor
+
+    if isinstance(collection._elem_template, ObjectDescriptor):
+        return list(collection._elements)
+    return copy.deepcopy(collection._elements)
+
+
+def _restore_collection_elements(collection: Any, elements: list[Any]) -> None:
+    """Restore a collection snapshot while retaining handle identities."""
+
+    from ..object import ObjectDescriptor
+
+    collection._elements = (
+        list(elements)
+        if isinstance(collection._elem_template, ObjectDescriptor)
+        else copy.deepcopy(elements)
+    )
+    collection._bind_mode_elements()
 
 
 def _visit_rand_container_handles(
     value: Any,
     desc: Any,
     path: str,
-    visit: Callable[[Any, type, str], None],
+    local_path: str,
+    visit: Callable[[Any, type, str, bool], None],
+    mode_active: Callable[[str], bool],
 ) -> None:
     """Visit allocated ``rand Object`` elements below one collection member."""
 
@@ -289,24 +346,39 @@ def _visit_rand_container_handles(
 
     if isinstance(desc, ObjectDescriptor):
         if desc.rand and isinstance(value, SvObject):
-            visit(value, value.__class__, path)
+            visit(value, value.__class__, path, mode_active(local_path))
         return
     if isinstance(desc, Array):
         for index, element in enumerate(value._elements):
             _visit_rand_container_handles(
-                element, desc._elem_template, f"{path}[{index}]", visit
+                element,
+                desc._elem_template,
+                f"{path}[{index}]",
+                f"{local_path}[{index}]",
+                visit,
+                mode_active,
             )
         return
     if isinstance(desc, (DynArray, Queue)):
         for index, element in enumerate(value._elements):
             _visit_rand_container_handles(
-                element, desc._elem_template, f"{path}[{index}]", visit
+                element,
+                desc._elem_template,
+                f"{path}[{index}]",
+                f"{local_path}[{index}]",
+                visit,
+                mode_active,
             )
         return
     if isinstance(desc, AssocArray):
         for key, element in value._elements.items():
             _visit_rand_container_handles(
-                element, desc._val_template, assoc_path(path, key), visit
+                element,
+                desc._val_template,
+                assoc_path(path, key),
+                assoc_path(local_path, key),
+                visit,
+                mode_active,
             )
 
 
@@ -379,7 +451,8 @@ def randomize_object(obj: Any, extra: ConstraintIR | None = None) -> bool:
     _, seed = ctx.consume_call()
     stream = BitStream(seed)
     graph = _collect_random_graph(obj, cls, extra)
-    for node in graph.nodes:
+    active_nodes = [node for node in graph.nodes if node.active]
+    for node in active_nodes:
         node.obj.pre_randomize()
     try:
         ok = _solve(obj, cls, stream, extra, graph=graph)
@@ -388,7 +461,7 @@ def randomize_object(obj: Any, extra: ConstraintIR | None = None) -> bool:
     except ConstraintError:
         raise
     if ok:
-        for node in reversed(graph.nodes):
+        for node in reversed(active_nodes):
             node.obj.post_randomize()
     return ok
 
@@ -527,12 +600,25 @@ def _layered_dynamic_roots(cls: type, batches: tuple[Any, ...]) -> tuple[str, ..
 def _current_dynamic_element_paths(
     obj: Any, cls: type, roots: tuple[str, ...]
 ) -> set[str]:
+    from ..collection import DynArray, Queue
+    from ..object import ObjectDescriptor
+
     prefixes = tuple(f"{root}[" for root in roots)
-    return {
+    paths = {
         path
         for path, _desc, _declared in iter_object_leaves(obj, cls)
         if path.startswith(prefixes)
     }
+    members = dict(getattr(cls, "_SvObject__svtypes_members", ()))
+    for root in roots:
+        desc = members.get(root)
+        if not isinstance(desc, (DynArray, Queue)) or not isinstance(
+            desc._elem_template, ObjectDescriptor
+        ):
+            continue
+        collection = getattr(obj, root)
+        paths.update(f"{root}[{index}]" for index in range(collection.size()))
+    return paths
 
 
 def _snapshot_dynamic_element_modes(
@@ -801,7 +887,9 @@ def _solve_dynamic_collections(
 
     static_snapshot = snapshot_leaves(obj, [path for path, _, _ in all_leaves])
     collection_snapshot = {
-        str(var.path): copy.deepcopy(resolve_attr(obj, str(var.path).removeprefix("@size:"))._elements)
+        str(var.path): _snapshot_collection_elements(
+            resolve_attr(obj, str(var.path).removeprefix("@size:"))
+        )
         for var in size_vars.values()
     }
     try:
@@ -833,7 +921,7 @@ def _solve_dynamic_collections(
 
         candidates: list[dict[str, int]] = [{}]
         if active_sizes:
-            size_irs = [_dynamic_size_ir(ir) for ir in enabled]
+            size_irs = [_dynamic_size_ir(ir, dynamic_roots) for ir in enabled]
             assumptions: list[Expr] = []
             for path, collection in active_sizes:
                 size_expr = Expr("size", (path.removeprefix("@size:"), path), bv(32, False))
@@ -866,7 +954,9 @@ def _solve_dynamic_collections(
                 return True
             restore_leaves(obj, static_snapshot)
             for key, elements in collection_snapshot.items():
-                resolve_attr(obj, key.removeprefix("@size:"))._elements = copy.deepcopy(elements)
+                _restore_collection_elements(
+                    resolve_attr(obj, key.removeprefix("@size:")), elements
+                )
             if graph is not None:
                 _refresh_graph_leaves(graph)
 
@@ -878,7 +968,9 @@ def _solve_dynamic_collections(
     except Exception:
         restore_leaves(obj, static_snapshot)
         for key, elements in collection_snapshot.items():
-            resolve_attr(obj, key.removeprefix("@size:"))._elements = elements
+            _restore_collection_elements(
+                resolve_attr(obj, key.removeprefix("@size:")), elements
+            )
         if graph is not None:
             _refresh_graph_leaves(graph)
         raise
@@ -897,7 +989,9 @@ def _unsat_status(irs: list[ConstraintIR]) -> RandomizeStatus:
     return RandomizeStatus(False, "unsat", active_constraints=_constraint_names(irs))
 
 
-def _dynamic_size_ir(ir: ConstraintIR) -> ConstraintIR:
+def _dynamic_size_ir(
+    ir: ConstraintIR, dynamic_roots: set[str] | None = None
+) -> ConstraintIR:
     """Drop element-dependent statements from the dynamic-size solve pass.
 
     A constant index such as ``data[0]`` is as unavailable before resizing as
@@ -906,11 +1000,12 @@ def _dynamic_size_ir(ir: ConstraintIR) -> ConstraintIR:
     complete constraint set for the element solve.
     """
 
-    dynamic_roots = {
-        var.path.removeprefix("@size:")
-        for var in ir.vars
-        if var.kind == "size"
-    }
+    if dynamic_roots is None:
+        dynamic_roots = {
+            var.path.removeprefix("@size:")
+            for var in ir.vars
+            if var.kind == "size"
+        }
 
     def is_runtime_element_path(path: str) -> bool:
         return any(path.startswith(f"{root}[") for root in dynamic_roots)

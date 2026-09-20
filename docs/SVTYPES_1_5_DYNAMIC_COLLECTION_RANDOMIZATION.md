@@ -99,6 +99,10 @@ class LayeredPacket(SvObject):
 关闭；这个逐元素查询结果是唯一依据。随后分层入口开启容器整体 mode 以允许尺寸随机，并按
 逐元素快照恢复。容器整体 mode 本身不恢复。
 
+这同样适用于 `DynArray(Object(..., rand=True))` 与 `Queue(Object(..., rand=True))`。
+此时元素 mode 控制的是数组槽位中的 handle：关闭的非空 handle 不会把 referent 的随机
+变量、约束或 hooks 带入该批次；新增槽位为 active 的 null handle，因而不会分配对象。
+
 同一实现同时用于 Python 与生成的 SV；生成代码只对 `data[i]` 发出合法的
 `rand_mode` 调用。
 
@@ -110,7 +114,7 @@ class LayeredPacket(SvObject):
 
 - Python：尺寸约束、动态数组和队列的 `foreach`、未约束尺寸保持、失败恢复、关联数组
   拒绝路径、unpacked `unique` 展开、父对象 `randomize()` 对子对象动态数组/队列 `unique`
-  的图随机化，以及分层随机下既有元素的逐元素 mode 保存/恢复。
+  的图随机化，以及标量与 handle 元素在分层随机下的逐元素 mode 保存/恢复。
 - target：同一组 `size()` + `foreach` 源约束在动态数组与队列上各随机 32 次，并检查尺寸
   与每个元素；`unique {array}`、`unique {tag, data}` 与 `unique {queue}` 检查互异；分层随机
   回归还检查动态数组元素关闭、层内随机和恢复后的 mode。

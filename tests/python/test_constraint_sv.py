@@ -84,6 +84,36 @@ class TargetContainerHandleParent(SvObject):
         self.target == self.dynamic[0].data + 1
 
 
+@svobj(registry=target_handle_pkg)
+class TargetResizableHandleParent(SvObject):
+    dynamic = DynArray(Object("TargetHandleChild", registry=target_handle_pkg, rand=True), max_length=4)
+    queue = Queue(Object("TargetHandleChild", registry=target_handle_pkg, rand=True), max_length=4)
+
+    @constraint
+    def sized(self):
+        self.dynamic.size() == 3
+        self.queue.size() == 3
+
+
+@svobj(registry=target_handle_pkg)
+class TargetLayeredHandleParent(SvObject):
+    dynamic = DynArray(Object("TargetHandleChild", registry=target_handle_pkg, rand=True), max_length=2)
+    low = Bit(1)
+
+    @constraint
+    def low_legal(self):
+        self.low == 1
+
+    @rand_layer(10)
+    def handles(self):
+        self.dynamic
+
+    @rand_layer(5)
+    def lower(self):
+        self.low
+        self.low_legal
+
+
 class CPacket(SvObject):
     addr = Bit(32)
     length = Bit(16)
@@ -708,6 +738,98 @@ endmodule
     print(log)
     assert result.returncode == 0, log
     assert "SVTYPES_RAND_HANDLE_CONTAINER_PASS" in log, log
+
+
+@pytest.mark.remote_sv
+def test_remote_sv_rand_handle_dynamic_collections_resize_without_allocation():
+    """Resizing rand handle collections retains objects and adds null slots."""
+    host = os.environ["SVTYPES_REMOTE_SV_HOST"]
+    reachable = subprocess.run(
+        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
+        capture_output=True,
+        text=True,
+    )
+    if reachable.returncode != 0:
+        pytest.skip(f"remote target host {host} is not reachable")
+
+    out = Path(__file__).resolve().parents[2] / ".tmp" / "rand_handle_resize_sv"
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "rand_handle_resize_sv_test.sv").write_text(
+        "\n".join(
+            [
+                "package rand_handle_resize_sv_test;",
+                "  import svtypes_pkg::*;",
+                TargetHandleChild.to_sv_obj(level=1),
+                TargetResizableHandleParent.to_sv_obj(level=1),
+                TargetLayeredHandleParent.to_sv_obj(level=1),
+                "endpackage",
+                "",
+            ]
+        )
+    )
+    (out / "tb.sv").write_text(
+        """`timescale 1ns/1ps
+module tb;
+  import svtypes_pkg::*;
+  import rand_handle_resize_sv_test::*;
+
+  class HookChild extends TargetHandleChild;
+    int pre_count;
+    int post_count;
+    function void pre_randomize(); pre_count++; endfunction
+    function void post_randomize(); post_count++; endfunction
+  endclass
+
+  initial begin
+    TargetResizableHandleParent p;
+    TargetHandleChild dynamic, queued;
+    TargetLayeredHandleParent layered;
+    HookChild child;
+    p = new(); dynamic = new(); queued = new();
+    p.dynamic = new[1]; p.dynamic[0] = dynamic;
+    p.queue.push_back(queued);
+    repeat (32) begin
+      if (!p.randomize()) $fatal(1, "rand handle resize unsat");
+      if (p.dynamic.size() != 3 || p.queue.size() != 3)
+        $fatal(1, "rand handle resize size constraint");
+      if (p.dynamic[0] != dynamic || p.queue[0] != queued)
+        $fatal(1, "rand handle resize did not retain handle");
+      if (p.dynamic[1] != null || p.dynamic[2] != null ||
+          p.queue[1] != null || p.queue[2] != null)
+        $fatal(1, "rand handle resize allocated object");
+      if (dynamic.data > 10 || queued.data > 10)
+        $fatal(1, "rand handle resize child constraint violated");
+    end
+    dynamic.data = 99; queued.data = 99;
+    p.dynamic.rand_mode(0); p.queue.rand_mode(0);
+    if (!p.randomize()) $fatal(1, "disabled rand handle collection unsat");
+    if (dynamic.data != 99 || queued.data != 99)
+      $fatal(1, "disabled rand handle collection randomized child");
+    layered = new();
+    child = new(); child.data = 99;
+    layered.dynamic = new[1]; layered.dynamic[0] = child;
+    if (!layered.layered_randomize()) $fatal(1, "layered rand handle dynamic unsat");
+    if (child.data > 10 || child.pre_count != 1 || child.post_count != 1)
+      $fatal(1, "layered rand handle dynamic mode failure");
+    $display("SVTYPES_RAND_HANDLE_RESIZE_PASS");
+    $finish;
+  end
+endmodule
+"""
+    )
+    remote = (
+        "bash -ilc '"
+        "cd $SVTYPES_REMOTE_SV_ROOT/.tmp/rand_handle_resize_sv && "
+        "$SVTYPES_REMOTE_SV_RUNNER compile "
+        "rand_handle_resize_sv_test.sv tb.sv && $SVTYPES_REMOTE_SV_RUNNER run'"
+    )
+    result = _run_remote(host, remote)
+    log = result.stdout + result.stderr
+    print(log)
+    assert result.returncode == 0, log
+    assert "SVTYPES_RAND_HANDLE_RESIZE_PASS" in log, log
 
 
 @pytest.mark.remote_sv

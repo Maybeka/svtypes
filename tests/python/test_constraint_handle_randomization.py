@@ -10,6 +10,7 @@ from svtypes import (
     SvObject,
     constraint,
     get_package,
+    rand_layer,
     svobj,
 )
 
@@ -131,6 +132,27 @@ class ContainerCrossHandleParent(SvObject):
     @constraint
     def cross_legal(self):
         self.target == self.dynamic[0].data + 1
+
+
+@svobj(registry=handle_pkg)
+class ResizableHandleContainers(SvObject):
+    dynamic = DynArray(Object("HandleChild", registry=handle_pkg, rand=True), max_length=4)
+    queue = Queue(Object("HandleChild", registry=handle_pkg, rand=True), max_length=4)
+
+    @constraint
+    def sized(self):
+        self.dynamic.size() == 3
+        self.queue.size() == 3
+
+
+@svobj(registry=handle_pkg)
+class NullAfterHandleResize(SvObject):
+    dynamic = DynArray(Object("HandleChild", registry=handle_pkg, rand=True), max_length=2)
+
+    @constraint
+    def invalid_access(self):
+        self.dynamic.size() == 1
+        self.dynamic[0].data <= 10
 
 
 def test_rand_handle_joins_parent_and_child_constraints_and_hooks():
@@ -283,3 +305,103 @@ def test_shared_container_handle_is_solved_once_by_identity():
     assert parent.randomize()
     assert child.data.value <= 10
     assert (child.pre_count, child.post_count) == (1, 1)
+
+
+def test_handle_dynamic_array_and_queue_resize_without_allocating_children():
+    parent = ResizableHandleContainers()
+    dynamic_child = HandleChild()
+    queued_child = HandleChild()
+    dynamic_child.data.value = 99
+    queued_child.data.value = 99
+    parent.dynamic.value = [dynamic_child]
+    parent.queue.value = [queued_child]
+
+    assert parent.randomize()
+    assert parent.dynamic.value == [dynamic_child, None, None]
+    assert parent.queue.value == [queued_child, None, None]
+    assert dynamic_child.data.value <= 10
+    assert queued_child.data.value <= 10
+    assert (dynamic_child.pre_count, dynamic_child.post_count) == (1, 1)
+    assert (queued_child.pre_count, queued_child.post_count) == (1, 1)
+
+
+def test_rand_handle_dynamic_collection_renders_one_rand_qualifier():
+    code = ResizableHandleContainers.to_sv_obj()
+
+    assert "rand HandleChild dynamic [];" in code
+    assert "rand HandleChild queue [$];" in code
+    assert "rand rand HandleChild" not in code
+
+
+def test_disabled_handle_collections_exclude_children_constraints_and_hooks():
+    parent = ResizableHandleContainers()
+    dynamic_child = HandleChild()
+    queued_child = HandleChild()
+    dynamic_child.data.value = 99
+    queued_child.data.value = 99
+    parent.dynamic.value = [dynamic_child, None, None]
+    parent.queue.value = [queued_child, None, None]
+    parent.dynamic.rand_mode(0)
+    parent.queue.rand_mode(0)
+
+    assert parent.randomize()
+    assert dynamic_child.data.value == 99
+    assert queued_child.data.value == 99
+    assert (dynamic_child.pre_count, dynamic_child.post_count) == (0, 0)
+    assert (queued_child.pre_count, queued_child.post_count) == (0, 0)
+
+
+def test_layered_randomize_controls_existing_dynamic_handle_elements():
+    class LayeredParent(SvObject):
+        dynamic = DynArray(Object("HandleChild", registry=handle_pkg, rand=True), max_length=2)
+        low = Bit(1)
+
+        @constraint
+        def low_legal(self):
+            self.low == 1
+
+        @rand_layer(10)
+        def handles(self):
+            self.dynamic
+
+        @rand_layer(5)
+        def lower(self):
+            self.low
+            self.low_legal
+
+    parent = LayeredParent()
+    child = HandleChild()
+    child.data.value = 99
+    parent.dynamic.value = [child]
+
+    assert parent.layered_randomize()
+    assert child.data.value <= 10
+    # The higher-priority handle layer is the only batch that visits child.
+    assert (child.pre_count, child.post_count) == (1, 1)
+
+
+def test_shared_handle_remains_active_through_an_enabled_container_path():
+    class SharedModeParent(SvObject):
+        left = DynArray(Object("HandleChild", registry=handle_pkg, rand=True), max_length=1)
+        right = Queue(Object("HandleChild", registry=handle_pkg, rand=True), max_length=1)
+
+    parent = SharedModeParent()
+    child = HandleChild()
+    child.data.value = 99
+    parent.left.value = [child]
+    parent.right.value = [child]
+    parent.left.rand_mode(0)
+
+    assert parent.randomize()
+    assert child.data.value <= 10
+    assert (child.pre_count, child.post_count) == (1, 1)
+
+
+def test_new_null_handle_from_size_randomization_reports_dereference():
+    parent = NullAfterHandleResize()
+
+    assert not parent.randomize()
+    assert parent.svtypes_randomize_status.reason == "null_handle"
+    assert parent.svtypes_randomize_status.state_path == "dynamic[0]"
+    # A failed attempt restores the pre-call collection exactly.
+    assert parent.dynamic.value == []
