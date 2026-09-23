@@ -128,10 +128,21 @@ class TypeBase:
 
     @property
     def value(self):
+        from .external_storage import external_binding
+
+        binding = external_binding(self)
+        if binding is not None:
+            return binding.read_value()
         return self._value
 
     @value.setter
     def value(self, val):
+        from .external_storage import external_binding
+
+        binding = external_binding(self)
+        if binding is not None:
+            binding.write_value(val)
+            return
         self._value = self._normalize(val)
 
 

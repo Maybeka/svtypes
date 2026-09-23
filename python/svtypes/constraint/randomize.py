@@ -447,6 +447,16 @@ def _require_actual(obj: Any) -> type:
 
 def randomize_object(obj: Any, extra: ConstraintIR | None = None) -> bool:
     cls = _require_actual(obj)
+    # External storage is observable: a solver must never expose trial
+    # assignments.  Solve an ordinary detached clone, then publish each bound
+    # root once after SAT.  The common local path stays allocation-free.
+    if getattr(obj, "_SvObject__svtypes_external_storage", None) is not None:
+        detached = copy.deepcopy(obj)
+        ok = randomize_object(detached, extra=extra)
+        if ok:
+            obj.value = detached
+        obj._SvObject__svtypes_randomize_status = detached._SvObject__svtypes_randomize_status
+        return ok
     ctx = current_context()
     _, seed = ctx.consume_call()
     stream = BitStream(seed)

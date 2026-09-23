@@ -19,6 +19,7 @@ STABLE_CAPABILITIES = (
     "svtypes.codec-context.v1",
     "svtypes.constraint-ir.v1",
     "svtypes.constraint-sample.v1",
+    "svtypes.external-field-storage.v1",
     "svtypes.record-schema.v1",
     "svtypes.remote-reference.v1",
 )

@@ -45,6 +45,14 @@ class ResourceLimitError(DecodeError):
     """A decoder resource limit was exceeded."""
 
 
+class ExternalStorageError(SvTypesError):
+    """An externally bound field could not be read, written, or validated."""
+
+
+class ExternalStorageClosedError(ExternalStorageError):
+    """A temporary external value binding has already been closed."""
+
+
 class ConstraintError(SvTypesError):
     """A constrained-random declaration or runtime operation is invalid."""
 

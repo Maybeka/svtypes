@@ -126,6 +126,11 @@ class Array(CollectionBase, Generic[T], metaclass=_ArrayMeta):
 
     @property
     def value(self) -> list[Any]:
+        from .external_storage import collection_view, external_binding
+
+        binding = external_binding(self)
+        if binding is not None:
+            return collection_view(binding)  # type: ignore[return-value]
         from .object import ObjectDescriptor
         if isinstance(self._elem_template, ObjectDescriptor):
             return list(self._elements)
@@ -133,6 +138,12 @@ class Array(CollectionBase, Generic[T], metaclass=_ArrayMeta):
 
     @value.setter
     def value(self, vals: list[Any]):
+        from .external_storage import external_binding
+
+        binding = external_binding(self)
+        if binding is not None:
+            binding.write_value(vals)
+            return
         if len(vals) != self._size:
             raise ValueError(f"Array size mismatch: expected {self._size}, got {len(vals)}")
         from .object import ObjectDescriptor, SvObject
@@ -146,6 +157,12 @@ class Array(CollectionBase, Generic[T], metaclass=_ArrayMeta):
                 self._elements[i].value = v
 
     def __getitem__(self, i: int) -> T:
+        from .external_storage import _set_external_binding, external_binding
+
+        binding = external_binding(self)
+        if binding is not None:
+            child = copy.deepcopy(self._elem_template)
+            return _set_external_binding(child, binding.child_index(i))
         return self._elements[i]
 
     def __len__(self):
@@ -245,6 +262,11 @@ class DynArray(CollectionBase, Generic[T]):
 
     @property
     def value(self) -> list[Any]:
+        from .external_storage import collection_view, external_binding
+
+        binding = external_binding(self)
+        if binding is not None:
+            return collection_view(binding)  # type: ignore[return-value]
         from .object import ObjectDescriptor
         if isinstance(self._elem_template, ObjectDescriptor):
             return list(self._elements)
@@ -252,6 +274,12 @@ class DynArray(CollectionBase, Generic[T]):
 
     @value.setter
     def value(self, vals: list[Any]):
+        from .external_storage import external_binding
+
+        binding = external_binding(self)
+        if binding is not None:
+            binding.write_value(vals)
+            return
         if not isinstance(vals, list):
             raise ValueError(f"Expected list, got {type(vals)}")
         if len(vals) > self._max_length:
@@ -273,9 +301,20 @@ class DynArray(CollectionBase, Generic[T]):
         self._bind_mode_elements()
 
     def __getitem__(self, i: int) -> T:
+        from .external_storage import _set_external_binding, external_binding
+
+        binding = external_binding(self)
+        if binding is not None:
+            child = copy.deepcopy(self._elem_template)
+            return _set_external_binding(child, binding.child_index(i))
         return self._elements[i]
 
     def __len__(self):
+        from .external_storage import external_binding
+
+        binding = external_binding(self)
+        if binding is not None:
+            return len(binding.read_value())
         return len(self._elements)
 
     def size(self) -> int:
@@ -378,6 +417,12 @@ class Queue(DynArray[T]):
         return _sv_collection_element_decl(self._elem_template, f"{name} [$]")
 
     def push_back(self, val: Any):
+        from .external_storage import FieldOperation, external_binding
+
+        binding = external_binding(self)
+        if binding is not None:
+            binding.write_operation(FieldOperation.APPEND, val)
+            return
         if len(self._elements) >= self._max_length:
             raise EncodeError(
                 f"Queue length would exceed encoder limit {self._max_length}"
@@ -395,6 +440,16 @@ class Queue(DynArray[T]):
         self._bind_mode_elements()
 
     def pop_front(self) -> Any:
+        from .external_storage import FieldOperation, external_binding
+
+        binding = external_binding(self)
+        if binding is not None:
+            values = binding.read_value()
+            if not values:
+                raise IndexError("pop from empty queue")
+            result = values[0]
+            binding.child_index(0).write_operation(FieldOperation.POP)
+            return result
         if not self._elements:
             raise IndexError("pop from empty queue")
         elem = self._elements.pop(0)
@@ -440,6 +495,11 @@ class AssocArray(CollectionBase, Generic[K, V]):
 
     @property
     def value(self) -> dict[Any, Any]:
+        from .external_storage import collection_view, external_binding
+
+        binding = external_binding(self)
+        if binding is not None:
+            return collection_view(binding)  # type: ignore[return-value]
         from .object import ObjectDescriptor
         if isinstance(self._val_template, ObjectDescriptor):
             return dict(self._elements)
@@ -447,6 +507,12 @@ class AssocArray(CollectionBase, Generic[K, V]):
 
     @value.setter
     def value(self, vals: dict[Any, Any]):
+        from .external_storage import external_binding
+
+        binding = external_binding(self)
+        if binding is not None:
+            binding.write_value(vals)
+            return
         if not isinstance(vals, dict):
             raise ValueError(f"Expected dict, got {type(vals)}")
         if len(vals) > self._max_length:
@@ -468,9 +534,20 @@ class AssocArray(CollectionBase, Generic[K, V]):
                 self._elements[k] = new_val_elem
 
     def __getitem__(self, key: Any) -> V:
+        from .external_storage import _set_external_binding, external_binding
+
+        binding = external_binding(self)
+        if binding is not None:
+            child = copy.deepcopy(self._val_template)
+            return _set_external_binding(child, binding.child_key(key))
         return self._elements[key]
 
     def __len__(self):
+        from .external_storage import external_binding
+
+        binding = external_binding(self)
+        if binding is not None:
+            return len(binding.read_value())
         return len(self._elements)
 
     def size(self) -> int:

@@ -48,11 +48,26 @@ from .errors import (
     DeclarationError,
     DecodeError,
     EncodeError,
+    ExternalStorageClosedError,
+    ExternalStorageError,
     LayeredRandomizationPriorityWarning,
     RegistryError,
     ResourceLimitError,
     SvTypesError,
     UnsupportedTypeError,
+)
+from .external_storage import (
+    ExternalFieldStorage,
+    ExternalValueBinding,
+    FieldDescriptor,
+    FieldIdentity,
+    FieldIndex,
+    FieldKey,
+    FieldMember,
+    FieldOperation,
+    FieldPath,
+    MemoryExternalFieldStorage,
+    bind_external_value,
 )
 from .constraint import (
     CONSTRAINT_IR_VERSION,

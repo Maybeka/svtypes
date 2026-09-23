@@ -116,6 +116,38 @@ record name and ordered fields.
 - **Strict Access**: `SvObject.__setattr__` blocks direct assignment (e.g., `obj.x = 10` is banned), forcing the use of `obj.x.value = 10`.
 - **Constrained random**: `@constraint` declares predicates. `@rand_layer(priority)` groups rand members and constraints, including fixed unpacked-array elements such as `self.words[0]`, or a complete `DynArray` / `Queue` member. Dynamic containers are handled per current element: entry-disabled elements stay disabled, and elements created during a layered call remain enabled. `layered_randomize()` solves those groups from high priority to low, with unlisted members in implicit `builtin` (priority 0). Python returns `bool`; generated SV is `virtual function int layered_randomize()`. `randomize()` / `randomize_with()` / `layered_randomize()` cannot be overridden. Users may override `pre_randomize()` / `post_randomize()`.
 
+### 5.2 External field storage
+
+`SvObject.bind_external_storage(storage, field_keys)` binds selected fields of
+one object instance to an `ExternalFieldStorage`.  Keys are opaque to
+SvTypes; the mapping is keyed by `FieldIdentity(declaring_type, name)` so an
+inherited declaration cannot be confused with an equally named field.  Every
+unbound field of that instance, and every field of every other instance,
+continues to use ordinary local storage.
+
+The backend receives a `FieldDescriptor`, an immutable typed `FieldPath`, a
+`FieldOperation`, and already-normalized SvTypes bytes.  It never receives a
+facade value or needs to reproduce SvTypes encoding.  Reads have no implicit
+writable cache; indexed collection writes and associative-key writes are leaf
+operations.  `MemoryExternalFieldStorage` is a standalone reference backend
+for tests and simple embedders.
+
+```python
+storage.seed("packet.count", Packet.__dict__["count"], 3)
+packet.bind_external_storage(
+    storage,
+    {FieldIdentity(Packet, "count"): "packet.count"},
+)
+assert packet.count.value == 3
+packet.count.value = 0x103  # Bit width normalization still applies
+```
+
+`bind_external_value(descriptor, storage, key)` offers the same semantics for
+a temporary value root.  `close()` invalidates the root and every derived
+collection view.  External randomization solves a detached value snapshot and
+publishes each bound root only after success; an unsuccessful solve leaves the
+backend unchanged.
+
 ---
 
 ## Type Mapping Summary

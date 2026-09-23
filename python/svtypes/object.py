@@ -4,6 +4,7 @@ import copy
 import functools
 import struct
 from typing import Any, TypeVar, Callable, overload
+from collections.abc import Mapping
 
 from .base import TypeBase, UserDefinedType
 from .enum import Enum
@@ -337,6 +338,11 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         self.__svtypes_layered_randomize_status = None
         self.__svtypes_layered_randomize_active = False
         self.__svtypes_layered_randomize_priority = 0
+        # The mapping is intentionally per instance.  Class descriptors remain
+        # immutable templates and can therefore serve local and external
+        # owners concurrently.
+        self.__svtypes_external_storage = None
+        self.__svtypes_external_field_keys: dict[Any, object] = {}
         from .coverage.declaration import bind_covergroups
 
         bind_covergroups(self)
@@ -362,7 +368,16 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 if desc._cache_key in self.__dict__:
                     setattr(copied, name, copy.deepcopy(getattr(self, name), memo))
                 continue
-            getattr(copied, name).value = copy.deepcopy(getattr(self, name).value, memo)
+            source_value = getattr(self, name).value
+            from .collection import AssocArray, CollectionBase
+
+            # External collection views are live protocol objects, not values
+            # that may be copied into a detached randomization/decode clone.
+            if isinstance(desc, AssocArray):
+                source_value = dict(source_value)
+            elif isinstance(desc, CollectionBase):
+                source_value = list(source_value)
+            getattr(copied, name).value = copy.deepcopy(source_value, memo)
         rand_modes = getattr(self, "_SvObject__svtypes_rand_modes", None)
         if rand_modes is not None:
             copied.__svtypes_rand_modes = dict(rand_modes)
@@ -488,7 +503,33 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         members = object.__getattribute__(self, '_SvObject__svtypes_members')
         for m_name, m_attr in members:
             if m_name == name:
+                from .external_storage import (
+                    FieldDescriptor,
+                    FieldIdentity,
+                    _ExternalBinding,
+                    _bind_loaded_object,
+                    _set_external_binding,
+                )
+
+                parent_binding = getattr(self, "_svtypes_external_binding", None)
+                root_binding = None
+                if parent_binding is not None:
+                    root_binding = parent_binding.child_member(m_name)
+                else:
+                    try:
+                        storage = object.__getattribute__(self, "_SvObject__svtypes_external_storage")
+                        keys = object.__getattribute__(self, "_SvObject__svtypes_external_field_keys")
+                    except AttributeError:
+                        storage, keys = None, {}
+                    if storage is not None:
+                        identity = self._svtypes_field_identity(m_name, m_attr)
+                        if identity in keys:
+                            root_binding = _ExternalBinding(
+                                storage, keys[identity], FieldDescriptor(m_attr, identity)
+                            )
                 if isinstance(m_attr, ObjectDescriptor):
+                    if root_binding is not None:
+                        return _bind_loaded_object(root_binding.read_value(), root_binding)
                     return object.__getattribute__(self, name)
                 # Return instance-specific clone of the member
                 storage_key = m_attr._storage_key
@@ -508,9 +549,58 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                     from .constraint.modes import bind_runtime_field
 
                     bind_runtime_field(getattr(self, storage_key), self, m_name, m_attr)
-                return getattr(self, storage_key)
+                field = getattr(self, storage_key)
+                _set_external_binding(field, root_binding)
+                return field
 
         return object.__getattribute__(self, name)
+
+    def _svtypes_field_identity(self, name: str, descriptor: Any):
+        """Return the unique declaration owning an effective inherited field."""
+        from .external_storage import FieldIdentity
+
+        matches = []
+        for cls in type(self).mro():
+            if cls in (SvObject, SvStruct, object):
+                continue
+            candidate = cls.__dict__.get(name)
+            if candidate is not None and isinstance(candidate, (TypeBase, ObjectDescriptor)):
+                matches.append((cls, candidate))
+        if len(matches) != 1 or matches[0][1] is not descriptor:
+            raise DeclarationError(
+                f"external storage cannot bind ambiguous inherited field {type(self).__name__}.{name}"
+            )
+        return FieldIdentity(matches[0][0], name)
+
+    def bind_external_storage(self, storage: Any, field_keys: Mapping[Any, object]) -> None:
+        """Atomically bind selected effective fields to an external backend."""
+        from .external_storage import ExternalFieldStorage, FieldIdentity
+
+        if not isinstance(storage, ExternalFieldStorage):
+            raise TypeError("storage must implement ExternalFieldStorage.read/write")
+        if not isinstance(field_keys, Mapping):
+            raise TypeError("field_keys must be a mapping from FieldIdentity to opaque backend keys")
+        effective: dict[Any, Any] = {}
+        for name, descriptor in self.__svtypes_members:
+            identity = self._svtypes_field_identity(name, descriptor)
+            effective[identity] = descriptor
+        requested = dict(field_keys)
+        for identity in requested:
+            if not isinstance(identity, FieldIdentity):
+                raise TypeError("external storage field keys must use FieldIdentity")
+            if identity not in effective:
+                raise DeclarationError(
+                    f"{identity.declaring_type.__name__}.{identity.name} is not an effective field of "
+                    f"{type(self).__name__}"
+                )
+        # Publish only after every key and inheritance identity has validated.
+        object.__setattr__(self, "_SvObject__svtypes_external_storage", storage)
+        object.__setattr__(self, "_SvObject__svtypes_external_field_keys", requested)
+
+    def unbind_external_storage(self) -> None:
+        """Atomically restore ordinary local-field access for this owner."""
+        object.__setattr__(self, "_SvObject__svtypes_external_storage", None)
+        object.__setattr__(self, "_SvObject__svtypes_external_field_keys", {})
 
     def __setattr__(self, name, value):
         if name.startswith('_'):
@@ -1886,6 +1976,21 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
     @staticmethod
     def _assign_unpacked_field(obj: "SvObject", name: str, desc: Any, value: Any) -> None:
         from .collection import AssocArray, DynArray, Queue, Array
+        from .external_storage import FieldDescriptor, _ExternalBinding, is_externally_bound
+
+        # Handle every root kind, including ObjectDescriptor and nested
+        # SvObject, before their historical fast paths assign private caches.
+        # Decoding into an externally bound owner is one root ``set``.
+        try:
+            storage = object.__getattribute__(obj, "_SvObject__svtypes_external_storage")
+            keys = object.__getattribute__(obj, "_SvObject__svtypes_external_field_keys")
+        except AttributeError:
+            storage, keys = None, {}
+        if storage is not None:
+            identity = obj._svtypes_field_identity(name, desc)
+            if identity in keys:
+                _ExternalBinding(storage, keys[identity], FieldDescriptor(desc, identity)).write_value(value)
+                return
 
         if isinstance(desc, ObjectDescriptor):
             setattr(obj, name, value)
@@ -1894,6 +1999,12 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             object.__setattr__(obj, desc._storage_key, value)
             return
         field = getattr(obj, name)
+        # ``from_bytes`` must not silently mutate a stale local collection
+        # shadow when this owner is externally bound.  A single root set also
+        # gives a backend the documented all-or-nothing field update.
+        if is_externally_bound(field):
+            field.value = value
+            return
         if isinstance(desc, Array):
             for index, item in enumerate(value):
                 elem_desc = desc._elem_template
@@ -2128,6 +2239,12 @@ class SvStruct(SvObject):
 
     @value.setter
     def value(self, val: "SvStruct") -> None:
+        from .external_storage import external_binding
+
+        binding = external_binding(self)
+        if binding is not None:
+            binding.write_value(val)
+            return
         if not isinstance(val, self.__class__):
             raise TypeError(f"Expected {self.__class__.__name__}, got {type(val)}")
         for name, desc in self._SvObject__svtypes_members:
