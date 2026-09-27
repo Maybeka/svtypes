@@ -7,7 +7,7 @@ from svtypes import RemoteRef, RemoteRefValue, SvObject, unified_type_name
 
 
 def test_remote_ref_has_frozen_nullable_eight_byte_contract():
-    codec = RemoteRef("acme.Device")
+    codec = RemoteRef["acme.Device"]()
     null = RemoteRefValue("acme.Device", 0)
     value = RemoteRefValue("acme.Device", 0x0102030405060708)
 
@@ -19,7 +19,7 @@ def test_remote_ref_has_frozen_nullable_eight_byte_contract():
 
 
 def test_remote_ref_rejects_wrong_declared_target_and_range():
-    codec = RemoteRef("acme.Device")
+    codec = RemoteRef["acme.Device"]()
     with pytest.raises(TypeError, match="target type mismatch"):
         codec.pack(RemoteRefValue("acme.Other", 1))
     with pytest.raises(ValueError, match="outside uint64"):
@@ -28,7 +28,7 @@ def test_remote_ref_rejects_wrong_declared_target_and_range():
 
 def test_generated_cpp_remote_ref_roundtrip(tmp_path: Path):
     class Message(SvObject):
-        target = RemoteRef("acme.Device")
+        target = RemoteRef["acme.Device"]()
 
     header = tmp_path / "model.hpp"
     header.write_text('#include "svtypes.hpp"\n' + Message.to_cpp_obj())

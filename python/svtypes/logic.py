@@ -70,6 +70,31 @@ class Logic(BuiltInType):
     _default_rand = True
     _default_plusarg = True
 
+    @classmethod
+    def __class_getitem__(cls, item):
+        from .typespec import packed_spec
+
+        return packed_spec(cls, item)
+
+    @classmethod
+    def _from_layout(
+        cls,
+        width: int | tuple[int, ...],
+        value: LogicValue | str | int | None = None,
+        *,
+        signed: bool = False,
+        declaration_style: str = "logic",
+        **kwargs: Any,
+    ) -> "Logic":
+        return cls(
+            width,
+            value,
+            signed=signed,
+            _sv_declaration_style=declaration_style,
+            _svtypes_internal=True,
+            **kwargs,
+        )
+
     def __init__(
         self,
         width: int | tuple[int, ...] = 1,
@@ -77,8 +102,11 @@ class Logic(BuiltInType):
         signed: bool = False,
         *,
         _sv_declaration_style: str = "logic",
+        _svtypes_internal: bool = False,
         **kwargs: Any,
     ) -> None:
+        if not _svtypes_internal:
+            raise TypeError("Logic(...) no longer accepts a width; use Logic[width](...) instead")
         super().__init__(**kwargs)
         if not isinstance(signed, bool):
             raise TypeError("Logic signed must be a bool")
@@ -181,12 +209,15 @@ class Logic(BuiltInType):
 
 
 class _RegMeta(type):
-    """Virtual type facade for the legacy ``reg`` declaration form."""
+    """Virtual type facade for SystemVerilog ``reg`` declaration style."""
 
     def __call__(cls, *args: Any, **kwargs: Any) -> Logic:
-        if "_sv_declaration_style" in kwargs:
-            raise TypeError("Reg does not accept a declaration-style override")
-        return Logic(*args, _sv_declaration_style="reg", **kwargs)
+        raise TypeError("Reg(...) no longer accepts a width; use Reg[width](...) instead")
+
+    def __getitem__(cls, item: Any):
+        from .typespec import packed_spec
+
+        return packed_spec(Logic, item, declaration_style="reg")
 
     def __instancecheck__(cls, instance: Any) -> bool:
         return isinstance(instance, Logic)

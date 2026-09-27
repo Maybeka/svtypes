@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from svtypes import Bit, CovPoint, CovPointArray, CoverGroupOption, CoverInput, CoverRef, Cross, CrossOption, DynArray, Enum, Logic, LogicValue, Parameter, SvObject, bins, coverage_init, covergroup, default_bins, ignore_bins, illegal_bins, repeat, transition_bins
+from svtypes import Bit, CovPoint, CovPointArray, CoverGroupOption, CoverInput, CoverRef, Cross, CrossOption, DynArray, Enum, Int, Logic, LogicValue, Parameter, SvObject, bins, coverage_init, covergroup, default_bins, ignore_bins, illegal_bins, repeat, transition_bins
 from svtypes.coverage.observation import compare_manifest_hits, parse_observation
 from svtypes.coverage.sv import observation_manifest
 
@@ -26,11 +26,11 @@ RUNNER_COMMAND = os.environ.get("SVTYPES_REMOTE_SV_RUNNER", "svtypes_remote_sv_r
 
 
 class CoveragePacket(SvObject):
-    opcode = Bit(1, cov=False)
-    mode = Bit(1, cov=False)
-    valid = Bit(1, cov=False)
-    code = Bit(2, cov=False)
-    data = DynArray(Bit(2), cov=False)
+    opcode = Bit[1](cov=False)
+    mode = Bit[1](cov=False)
+    valid = Bit[1](cov=False)
+    code = Bit[2](cov=False)
+    data = DynArray[Bit[2]](cov=False)
 
     @covergroup
     def cg(self):
@@ -350,9 +350,9 @@ endmodule
 
 
 class TransitionPacket(SvObject):
-    enable = Bit(1, cov=False)
-    code = Bit(2, cov=False)
-    signal = Logic(2, cov=False)
+    enable = Bit[1](cov=False)
+    code = Bit[2](cov=False)
+    signal = Logic[2](cov=False)
 
     @covergroup
     def cg(self):
@@ -371,8 +371,8 @@ class TransitionPacket(SvObject):
 
 
 class CrossLocalPacket(SvObject):
-    opcode = Bit(2, cov=False)
-    mode = Bit(1, cov=False)
+    opcode = Bit[2](cov=False)
+    mode = Bit[1](cov=False)
 
     @covergroup
     def cg(self):
@@ -445,8 +445,8 @@ def test_transition_conformance_fixture_emits_iff_ignore_illegal_default_and_xz(
 
 
 class InstancePacket(SvObject):
-    sel = Bit(1, cov=False)
-    opcode = Bit(1, cov=False)
+    sel = Bit[1](cov=False)
+    opcode = Bit[1](cov=False)
 
     @covergroup
     def cg(self):
@@ -660,7 +660,7 @@ endmodule
 
 
 class UcisPacket(SvObject):
-    code = Bit(1, cov=False)
+    code = Bit[1](cov=False)
 
     @covergroup
     def cg(self):
@@ -776,10 +776,10 @@ def _compare_single_instance_remote(packet: Any, observation: dict[str, Any]) ->
 
 
 class CrossIffPacket(SvObject):
-    code = Bit(2, cov=False)
-    mode = Bit(1, cov=False)
-    enabled = Bit(1, cov=False)
-    gate = Bit(1, cov=False)
+    code = Bit[2](cov=False)
+    mode = Bit[1](cov=False)
+    enabled = Bit[1](cov=False)
+    gate = Bit[1](cov=False)
 
     @covergroup
     def cg(self):
@@ -843,14 +843,14 @@ def test_remote_cross_iff_member_skip_and_overlapping_normal_bins() -> None:
         packet.cg.sample()
     _compare_single_instance_remote(packet, remote["observation"])
 
-class CoverageOverlapColor(Enum, width=8, signed=False):
+class CoverageOverlapColor(Enum[Bit[8]]):
     R = 0
     G = 1
 
 
 class OverlapPacket(SvObject):
     color = CoverageOverlapColor(cov=False)
-    code = Bit(2, cov=False)
+    code = Bit[2](cov=False)
 
     @covergroup
     def cg(self):
@@ -917,8 +917,8 @@ def test_remote_enum_and_range_set_overlapping_normal_bins() -> None:
 
 
 class FormalsPacket(SvObject):
-    opcode = Bit(2, cov=False)
-    mode = Bit(1, cov=False)
+    opcode = Bit[2](cov=False)
+    mode = Bit[1](cov=False)
 
     @covergroup
     def cg(self, limit: CoverInput[int], mode: CoverRef[Bit]):
@@ -980,8 +980,8 @@ def test_remote_cover_input_and_cover_ref_sample_bindings() -> None:
 class ParameterCoveragePacket(SvObject):
     """Parameter-driven bin selector used for Python/SV coverage parity."""
 
-    opcode = Bit(4, cov=False)
-    reserved_opcode = Parameter()(15)
+    opcode = Bit[4](cov=False)
+    reserved_opcode = Parameter[Int](15)
 
     @covergroup
     def cg(self):
@@ -1021,7 +1021,7 @@ def test_remote_parameter_coverage_bin_preserves_symbol_and_hits() -> None:
 class InputLayoutPacket(SvObject):
     """One declaration whose constructor input selects an instance bin range."""
 
-    opcode = Bit(2, cov=False)
+    opcode = Bit[2](cov=False)
 
     @covergroup
     def cg(self, first: CoverInput[int], last: CoverInput[int]):
@@ -1142,7 +1142,7 @@ endmodule
 
 
 class RepeatPacket(SvObject):
-    opcode = Bit(2, cov=False)
+    opcode = Bit[2](cov=False)
 
     @covergroup
     def cg(self):

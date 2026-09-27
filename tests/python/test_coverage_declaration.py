@@ -9,7 +9,7 @@ from svtypes.errors import CoverageError
 
 def test_covergroup_descriptor_binds_a_read_only_slot_to_each_host():
     class Packet(SvObject):
-        opcode = Bit(8)
+        opcode = Bit[8]()
 
         @covergroup
         def cg(self, limit: CoverInput[int]):
@@ -124,7 +124,7 @@ def test_coverinput_resolved_svtype_class_mismatch_is_rejected_at_instantiate():
 
 def test_coverage_init_is_the_only_instantiation_entry_for_an_opted_in_class():
     class Packet(SvObject):
-        opcode = Bit(2, cov=False)
+        opcode = Bit[2](cov=False)
 
         @covergroup
         def cg(self, first: CoverInput[int], last: CoverInput[int]):
@@ -145,7 +145,7 @@ def test_coverage_init_is_the_only_instantiation_entry_for_an_opted_in_class():
     assert packet.cg.instance.snapshot()["opcode_cp"]["hits"] == {"window": 1}
 
     class Invalid(SvObject):
-        opcode = Bit(2, cov=False)
+        opcode = Bit[2](cov=False)
 
         @covergroup
         def cg(self, value: CoverInput[int]):

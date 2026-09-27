@@ -8,7 +8,7 @@ import pytest
 from svtypes import Bit, Enum, Logic, RandomContext, SvObject, constraint, schema_descriptor
 
 
-class Three(Enum, width=8, signed=False):
+class Three(Enum[Bit[8]]):
     A = 1
     B = 2
     C = 3
@@ -37,8 +37,8 @@ def draw_bits(seed: int, start_i: int, width: int) -> tuple[int, int]:
 
 def test_unconstrained_sample_v1_vectors():
     class Wide(SvObject):
-        wide = Bit(300)
-        odd = Bit(7)
+        wide = Bit[300]()
+        odd = Bit[7]()
 
     ctx = RandomContext(seed=1)
     obj = Wide()
@@ -93,7 +93,7 @@ def test_enum_rejection_sampling_and_illegal_seeds():
 
 def test_minimum_model_fallback_and_candidate_hit():
     class Exact(SvObject):
-        addr = Bit(32)
+        addr = Bit[32]()
 
         @constraint
         def legal(self):
@@ -106,7 +106,7 @@ def test_minimum_model_fallback_and_candidate_hit():
     assert obj.addr.value == 0x12345678
 
     class Tiny(SvObject):
-        flag = Bit(1)
+        flag = Bit[1]()
 
         @constraint
         def legal(self):
@@ -126,8 +126,8 @@ def test_minimum_model_fallback_and_candidate_hit():
 
 def test_rand_mode_zero_is_state_without_changing_ir_digest():
     class Pair(SvObject):
-        a = Bit(8)
-        b = Bit(8)
+        a = Bit[8]()
+        b = Bit[8]()
 
         @constraint
         def legal(self):
@@ -159,12 +159,12 @@ def test_rand_mode_zero_is_state_without_changing_ir_digest():
 
 
 def test_singleton_enum_consumes_no_rng():
-    class Solo(Enum, width=8, signed=False):
+    class Solo(Enum[Bit[8]]):
         ONLY = 7
 
     class Box(SvObject):
         color = Solo()
-        extra = Bit(8)
+        extra = Bit[8]()
 
     obj = Box()
     ctx = RandomContext(seed=4)
@@ -178,8 +178,8 @@ def test_singleton_enum_consumes_no_rng():
 
 def test_random_context_copy_is_independent_and_seed_none_advances():
     class Wide(SvObject):
-        wide = Bit(300)
-        odd = Bit(7)
+        wide = Bit[300]()
+        odd = Bit[7]()
 
     ctx = RandomContext(seed=13)
     copied = copy.copy(ctx)
@@ -207,7 +207,7 @@ def test_random_context_copy_is_independent_and_seed_none_advances():
 
 def test_call_index_advances_on_unsat_and_state_xz():
     class Clash(SvObject):
-        addr = Bit(8)
+        addr = Bit[8]()
 
         @constraint
         def a(self):
@@ -226,8 +226,8 @@ def test_call_index_advances_on_unsat_and_state_xz():
         assert ctx.call_index == 2
 
     class StatePkt(SvObject):
-        addr = Bit(8)
-        status = Logic(8, rand=False)
+        addr = Bit[8]()
+        status = Logic[8](rand=False)
 
         @constraint
         def legal(self):

@@ -26,7 +26,7 @@ from svtypes_coverage_tools.__main__ import main as coverage_main  # noqa: E402
 
 
 class _Packet(SvObject):
-    opcode = Bit(2)
+    opcode = Bit[2]()
 
     @covergroup
     def cg(self):
@@ -43,7 +43,7 @@ _HIERARCHY_REGISTRY = ObjectRegistry()
 
 
 class _HierarchyPacket(SvObject):
-    opcode = Bit(1)
+    opcode = Bit[1]()
 
     @covergroup
     def cg(self):
@@ -52,8 +52,8 @@ class _HierarchyPacket(SvObject):
 
 
 class _HierarchyTop(SvObject):
-    packet = Object("_HierarchyPacket", registry=_HIERARCHY_REGISTRY)
-    enabled = Bit(1)
+    packet = Object["_HierarchyPacket"](registry=_HIERARCHY_REGISTRY)
+    enabled = Bit[1]()
 
 
 _HIERARCHY_REGISTRY.register(_HierarchyPacket)
@@ -79,8 +79,8 @@ def test_catalog_exposes_declaration_tree_and_stable_bin_ids(tmp_path: Path):
 
 def test_catalog_embeds_cross_local_covpoint_without_creating_public_point():
     class Packet(SvObject):
-        opcode = Bit(2)
-        mode = Bit(1)
+        opcode = Bit[2]()
+        mode = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -145,7 +145,7 @@ def test_scanner_imports_design_only_in_child_process(tmp_path: Path, monkeypatc
         "Path(os.environ['SVT_TEST_SCAN_MARKER']).write_text(str(os.getpid()), encoding='utf-8')\n"
         "from svtypes import Bit, CovPoint, SvObject, bins, covergroup\n"
         "class Packet(SvObject):\n"
-        "    opcode = Bit(1)\n"
+        "    opcode = Bit[1]()\n"
         "    @covergroup\n"
         "    def cg(self):\n"
         "        class opcode_cp(CovPoint, source=self.opcode):\n"
@@ -183,7 +183,7 @@ def test_scanner_retains_successful_declarations_with_import_diagnostics(tmp_pat
     module = tmp_path / "partial_design.py"
     module.write_text(
         "from svtypes import Bit, SvObject\n"
-        "class Packet(SvObject):\n    code = Bit(1)\n",
+        "class Packet(SvObject):\n    code = Bit[1]()\n",
         encoding="utf-8",
     )
     result = scan_design(
@@ -199,7 +199,7 @@ def test_design_gui_scans_and_browses_declarations_without_database(tmp_path: Pa
     module.write_text(
         "from svtypes import Bit, CovPoint, SvObject, bins, covergroup\n"
         "class Packet(SvObject):\n"
-        "    opcode = Bit(1)\n"
+        "    opcode = Bit[1]()\n"
         "    @covergroup\n"
         "    def cg(self):\n"
         "        class opcode_cp(CovPoint, source=self.opcode):\n"
@@ -383,7 +383,7 @@ def test_gui_previews_cover_input_layout_in_the_isolated_scanner(tmp_path: Path)
     module.write_text(
         "from svtypes import Bit, CoverInput, CovPoint, SvObject, bins, coverage_init, covergroup\n"
         "class Packet(SvObject):\n"
-        "    code = Bit(3)\n"
+        "    code = Bit[3]()\n"
         "    @covergroup\n"
         "    def cg(self, first: CoverInput[int], last: CoverInput[int]):\n"
         "        class code_cp(CovPoint, source=self.code):\n"
@@ -415,7 +415,7 @@ def test_proposal_is_reviewable_and_applies_only_after_confirmation(tmp_path: Pa
     source.write_text(
         "from svtypes import Bit, CovPoint, SvObject, bins, covergroup\n"
         "class Packet(SvObject):\n"
-        "    opcode = Bit(1)\n"
+        "    opcode = Bit[1]()\n"
         "    @covergroup\n"
         "    def cg(self):\n"
         "        class opcode_cp(CovPoint, source=self.opcode):\n"
@@ -460,7 +460,7 @@ def test_proposal_rejects_stale_source_and_digest(tmp_path: Path):
     source.write_text(
         "from svtypes import Bit, CovPoint, SvObject, bins, covergroup\n"
         "class Packet(SvObject):\n"
-        "    code = Bit(1)\n"
+        "    code = Bit[1]()\n"
         "    @covergroup\n"
         "    def cg(self):\n"
         "        class code_cp(CovPoint, source=self.code):\n"

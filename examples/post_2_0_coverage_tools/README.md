@@ -28,8 +28,8 @@ array bin 成员可在所属 point/cross 页面内展开，bin 的 Stable ID 会
 coverpoint 值域编辑器的当前行为见
 [docs/SVTYPES_COVERAGE_GUI_DOMAIN_EDITOR.md](../../docs/SVTYPES_COVERAGE_GUI_DOMAIN_EDITOR.md)。
 
-- `flag_cp`：只声明 `bins[0]` 的 `Bit(1)` coverpoint，用来看完整比较域（0–1）而不是被声明 bin 收成一个点。
-- `addr_cp`：`Bit(16)` 地址域（0–65535），用来查看宽轴上的区间编辑。
+- `flag_cp`：只声明 `bins[0]` 的 `Bit[1]()` coverpoint，用来看完整比较域（0–1）而不是被声明 bin 收成一个点。
+- `addr_cp`：`Bit[16]()` 地址域（0–65535），用来查看宽轴上的区间编辑。
 - `opcode_mode`：沿用公开 coverpoint 的显式/自动 cross。
 - `opcode_compact`：对 `opcode_cp` 做 cross 局部重设（`compact` / `control` / `reserved`）。
 - `Monitor.activity`：独立并列类型上的简单 covergroup。

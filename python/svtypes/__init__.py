@@ -2,6 +2,10 @@ from .base import FieldOptions, TypeBase, BuiltInType, UserDefinedType
 
 from .bit import Bit
 from .logic import Logic, LogicValue, Reg
+from .typespec import Signed, Unsigned, SignedFamily, TypeSpec
+BitSigned = SignedFamily(Bit)
+LogicSigned = SignedFamily(Logic)
+RegSigned = SignedFamily(Logic, declaration_style="reg")
 from .int import Int, LongInt
 from .parameter import ParamRef, Parameter
 from .real import Real, ShortReal, RealTime
@@ -126,13 +130,16 @@ from .schema import (
     checked_unpack,
     schema_descriptor,
     encoding_descriptor,
+    sv_type_expression,
+    sv_packer_expression,
+    sv_declaration,
 )
 from .generator import GenerationResult, generate
 
 from pathlib import Path
 import sysconfig
 
-__version__ = "1.2.0"
+__version__ = "1.4.0"
 
 
 def package_root() -> Path:

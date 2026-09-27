@@ -20,7 +20,7 @@ handle_pkg = get_package("test_constraint_handle_randomization")
 
 @svobj(registry=handle_pkg)
 class HandleChild(SvObject):
-    data = Bit(8)
+    data = Bit[8]()
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -40,8 +40,8 @@ class HandleChild(SvObject):
 
 @svobj(registry=handle_pkg)
 class HandleParent(SvObject):
-    child = Object("HandleChild", registry=handle_pkg, rand=True)
-    other = Bit(8)
+    child = Object["HandleChild"](registry=handle_pkg, rand=True)
+    other = Bit[8]()
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -61,14 +61,14 @@ class HandleParent(SvObject):
 
 @svobj(registry=handle_pkg)
 class PlainHandleParent(SvObject):
-    child = Object("HandleChild", registry=handle_pkg)
-    other = Bit(8)
+    child = Object["HandleChild"](registry=handle_pkg)
+    other = Bit[8]()
 
 
 @svobj(registry=handle_pkg)
 class HandleNode(SvObject):
-    data = Bit(4)
-    next = Object("HandleNode", registry=handle_pkg, rand=True)
+    data = Bit[4]()
+    next = Object["HandleNode"](registry=handle_pkg, rand=True)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -88,8 +88,8 @@ class HandleNode(SvObject):
 
 @svobj(registry=handle_pkg)
 class SharedHandleParent(SvObject):
-    left = Object("HandleNode", registry=handle_pkg, rand=True)
-    right = Object("HandleNode", registry=handle_pkg, rand=True)
+    left = Object["HandleNode"](registry=handle_pkg, rand=True)
+    right = Object["HandleNode"](registry=handle_pkg, rand=True)
 
     @constraint
     def equal_aliases(self):
@@ -98,7 +98,7 @@ class SharedHandleParent(SvObject):
 
 @svobj(registry=handle_pkg)
 class UnsatHandleParent(SvObject):
-    child = Object("HandleChild", registry=handle_pkg, rand=True)
+    child = Object["HandleChild"](registry=handle_pkg, rand=True)
 
     @constraint
     def impossible(self):
@@ -108,26 +108,26 @@ class UnsatHandleParent(SvObject):
 
 @svobj(registry=handle_pkg)
 class HandleRandcChild(SvObject):
-    data = Bit(2, randc=True)
+    data = Bit[2](randc=True)
 
 
 @svobj(registry=handle_pkg)
 class HandleRandcParent(SvObject):
-    child = Object("HandleRandcChild", registry=handle_pkg, rand=True)
+    child = Object["HandleRandcChild"](registry=handle_pkg, rand=True)
 
 
 @svobj(registry=handle_pkg)
 class ContainerHandleParent(SvObject):
-    fixed = Array(Object("HandleChild", registry=handle_pkg, rand=True), 1)
-    dynamic = DynArray(Object("HandleChild", registry=handle_pkg, rand=True))
-    queue = Queue(Object("HandleChild", registry=handle_pkg, rand=True))
-    table = AssocArray(Bit(8), Object("HandleChild", registry=handle_pkg, rand=True))
+    fixed = Array[Object["HandleChild"](registry=handle_pkg, rand=True), 1]()
+    dynamic = DynArray[Object["HandleChild"](registry=handle_pkg, rand=True)]()
+    queue = Queue[Object["HandleChild"](registry=handle_pkg, rand=True)]()
+    table = AssocArray[Bit[8], Object["HandleChild"](registry=handle_pkg, rand=True)]()
 
 
 @svobj(registry=handle_pkg)
 class ContainerCrossHandleParent(SvObject):
-    dynamic = DynArray(Object("HandleChild", registry=handle_pkg, rand=True))
-    target = Bit(8)
+    dynamic = DynArray[Object["HandleChild"](registry=handle_pkg, rand=True)]()
+    target = Bit[8]()
 
     @constraint
     def cross_legal(self):
@@ -136,8 +136,8 @@ class ContainerCrossHandleParent(SvObject):
 
 @svobj(registry=handle_pkg)
 class ResizableHandleContainers(SvObject):
-    dynamic = DynArray(Object("HandleChild", registry=handle_pkg, rand=True), max_length=4)
-    queue = Queue(Object("HandleChild", registry=handle_pkg, rand=True), max_length=4)
+    dynamic = DynArray[Object["HandleChild"](registry=handle_pkg, rand=True)](max_length=4)
+    queue = Queue[Object["HandleChild"](registry=handle_pkg, rand=True)](max_length=4)
 
     @constraint
     def sized(self):
@@ -147,7 +147,7 @@ class ResizableHandleContainers(SvObject):
 
 @svobj(registry=handle_pkg)
 class NullAfterHandleResize(SvObject):
-    dynamic = DynArray(Object("HandleChild", registry=handle_pkg, rand=True), max_length=2)
+    dynamic = DynArray[Object["HandleChild"](registry=handle_pkg, rand=True)](max_length=2)
 
     @constraint
     def invalid_access(self):
@@ -353,8 +353,8 @@ def test_disabled_handle_collections_exclude_children_constraints_and_hooks():
 
 def test_layered_randomize_controls_existing_dynamic_handle_elements():
     class LayeredParent(SvObject):
-        dynamic = DynArray(Object("HandleChild", registry=handle_pkg, rand=True), max_length=2)
-        low = Bit(1)
+        dynamic = DynArray[Object["HandleChild"](registry=handle_pkg, rand=True)](max_length=2)
+        low = Bit[1]()
 
         @constraint
         def low_legal(self):
@@ -382,8 +382,8 @@ def test_layered_randomize_controls_existing_dynamic_handle_elements():
 
 def test_shared_handle_remains_active_through_an_enabled_container_path():
     class SharedModeParent(SvObject):
-        left = DynArray(Object("HandleChild", registry=handle_pkg, rand=True), max_length=1)
-        right = Queue(Object("HandleChild", registry=handle_pkg, rand=True), max_length=1)
+        left = DynArray[Object["HandleChild"](registry=handle_pkg, rand=True)](max_length=1)
+        right = Queue[Object["HandleChild"](registry=handle_pkg, rand=True)](max_length=1)
 
     parent = SharedModeParent()
     child = HandleChild()

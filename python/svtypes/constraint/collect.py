@@ -76,6 +76,7 @@ def has_unbound_parameters(cls: type) -> bool:
     return any(
         isinstance(parameter, Parameter)
         and _effective_parameter(cls, name, parameter).value is None
+        and _effective_parameter(cls, name, parameter).expression is None
         for name, parameter in params
     )
 

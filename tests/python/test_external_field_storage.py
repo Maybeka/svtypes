@@ -37,17 +37,17 @@ class RecordingStorage(MemoryExternalFieldStorage):
 
 @svobj
 class ExternalInner(SvStruct):
-    code = Bit(8)
+    code = Bit[8]()
 
 
 @svobj
 class ExternalPacket(SvObject):
-    count = Bit(8)
-    words = Array(Bit(8), 3)
-    queue = Queue(Int())
-    labels = AssocArray(String(), Bit(8))
+    count = Bit[8]()
+    words = Array[Bit[8], 3]()
+    queue = Queue[Int]()
+    labels = AssocArray[String, Bit[8]]()
     inner = ExternalInner()
-    local = Bit(8)
+    local = Bit[8]()
 
 
 def _bound_packet(storage: RecordingStorage) -> ExternalPacket:
@@ -135,7 +135,7 @@ def test_unbind_and_temporary_value_binding_lifetime() -> None:
     packet.unbind_external_storage()
     assert packet.count.value == 0
 
-    descriptor = Bit(4)
+    descriptor = Bit[4]()
     storage.seed("temporary", descriptor, 2)
     bound = bind_external_value(descriptor, storage, "temporary")
     assert bound.value == 2
@@ -170,13 +170,13 @@ def test_external_object_handle_uses_a_detached_owner_view() -> None:
 
     @svobj
     class Child(SvObject):
-        value = Bit(8)
+        value = Bit[8]()
 
     registry.register(Child)
 
     @svobj
     class Parent(SvObject):
-        child = Object("Child", registry=registry)
+        child = Object["Child"](registry=registry)
 
     storage = RecordingStorage()
     child = Child()

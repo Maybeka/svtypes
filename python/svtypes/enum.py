@@ -1,9 +1,31 @@
 import enum
+from math import prod
 from typing import cast, Any, Optional
 from functools import cached_property
 
 from .base import UserDefinedType
 from .errors import DeclarationError, DecodeError
+
+
+class _EnumBaseSpec:
+    """PEP 560 adapter used only while creating an ``Enum[...]`` subclass."""
+
+    def __init__(self, enum_base: type, width: int, signed: bool, sv_base_kind: str) -> None:
+        self._enum_base = enum_base
+        self._width = width
+        self._signed = signed
+        self._sv_base_kind = sv_base_kind
+
+    def __mro_entries__(self, bases: tuple[Any, ...]) -> tuple[type, ...]:
+        adapter = type(
+            "_SvTypesEnumBase",
+            (self._enum_base,),
+            {
+                "_svtypes_enum_base_adapter": True,
+                "_svtypes_enum_base_spec": (self._width, self._signed, self._sv_base_kind),
+            },
+        )
+        return (adapter,)
 
 
 class Enum(UserDefinedType):
@@ -16,6 +38,30 @@ class Enum(UserDefinedType):
     3. 支持生成 SV 代码
     """
 
+    @classmethod
+    def __class_getitem__(cls, base: Any):
+        """Return a class-base adapter for ``class E(Enum[Bit[8]])``."""
+        from .bit import Bit
+        from .int import Int, LongInt
+        from .typespec import Signed, TypeSpec, Unsigned
+
+        if base is Int:
+            width, signed, sv_base_kind = 32, True, "int"
+        elif base is LongInt:
+            width, signed, sv_base_kind = 64, True, "longint"
+        elif isinstance(base, TypeSpec) and base.base is Bit:
+            shape, marker = base.parameters
+            width = prod(shape) if isinstance(shape, tuple) else shape
+            signed = marker is Signed
+            sv_base_kind = "bit"
+            if marker not in (Signed, Unsigned):
+                raise TypeError("Enum bit base has an invalid signedness marker")
+        else:
+            raise TypeError("Enum[...] accepts Int, LongInt, or a Bit[...] specification")
+        if not isinstance(width, int) or isinstance(width, bool) or width <= 0:
+            raise DeclarationError("Enum base width must be a positive integer")
+        return _EnumBaseSpec(cls, width, signed, sv_base_kind)
+
     def __init_subclass__(
         cls,
         *,
@@ -24,14 +70,30 @@ class Enum(UserDefinedType):
         **kwargs,
     ):
         super().__init_subclass__(**kwargs)
-        if width not in (8, 16, 32, 64):
-            raise DeclarationError(
-                f"{cls.__name__} must declare width=8, 16, 32, or 64"
+        if cls.__dict__.get("_svtypes_enum_base_adapter", False):
+            return
+        if width is not None or signed is not None:
+            raise TypeError(
+                "Enum(width=..., signed=...) is no longer supported; "
+                "use Enum[Bit[width]], Enum[Bit[width, Signed]], Enum[Int], "
+                "or bare Enum"
             )
+        inherited_spec = getattr(cls, "_svtypes_enum_base_spec", None)
+        if inherited_spec is not None:
+            width, signed, sv_base_kind = inherited_spec
+        else:
+            sv_base_kind = None
+        # IEEE 1800's omitted enum base type is ``int``.  Keep the public
+        # Python spelling equally direct: ``class Op(Enum): ...``.
+        if width is None and signed is None:
+            width, signed = 32, True
+        if not isinstance(width, int) or isinstance(width, bool) or width <= 0:
+            raise DeclarationError(f"{cls.__name__} must declare a positive integer width")
         if not isinstance(signed, bool):
-            raise DeclarationError(f"{cls.__name__} must explicitly declare signed=True or False")
+            raise DeclarationError(f"{cls.__name__} must declare signed=True or False")
         cls._width = width
         cls._signed = signed
+        cls._sv_base_kind = sv_base_kind
 
         # 使用 cast 告诉检查器这是一个 IntEnum，避免“不可调用”报错
         cls._enum_map: dict[str, enum.IntEnum] = {}
@@ -149,10 +211,17 @@ class Enum(UserDefinedType):
     def to_sv_enum(cls, level=0) -> str:
         if not cls._enum_map:
             return ""
-        sv_width = cls._width
         ind_str = cls.IND * level
-        sv_type = f"bit{' signed' if cls._signed else ''} [{sv_width-1}:0]"
-        lines = [f"{ind_str}typedef enum {sv_type} {{"]
+        if cls._sv_base_kind is None:
+            header = f"{ind_str}typedef enum {{"
+        elif cls._sv_base_kind == "int":
+            header = f"{ind_str}typedef enum int {{"
+        elif cls._sv_base_kind == "longint":
+            header = f"{ind_str}typedef enum longint {{"
+        else:
+            sv_type = f"bit{' signed' if cls._signed else ''} [{cls._width - 1}:0]"
+            header = f"{ind_str}typedef enum {sv_type} {{"
+        lines = [header]
         items = [f"{ind_str}{cls.IND}{name} = {m.value}" for name, m in cls._enum_map.items()]
         lines.append(",\n".join(items))
         lines.append(f"{ind_str}}} {cls.__name__};")
@@ -163,13 +232,42 @@ class Enum(UserDefinedType):
         if not cls._enum_map:
             return ""
         ind_str = cls.IND * level
-        # C++ enum class
-        prefix = "int" if cls._signed else "uint"
-        cpp_type = f"{prefix}{cls._width}_t"
-        lines = [f"{ind_str}enum class {cls.__name__} : {cpp_type} {{"]
-        items = [f"{ind_str}{cls.IND}{name} = {m.value}" for name, m in cls._enum_map.items()]
-        lines.append(",\n".join(items))
+        if cls._width in (8, 16, 32, 64):
+            prefix = "int" if cls._signed else "uint"
+            cpp_type = f"{prefix}{cls._width}_t"
+            lines = [f"{ind_str}enum class {cls.__name__} : {cpp_type} {{"]
+            items = [f"{ind_str}{cls.IND}{name} = {m.value}" for name, m in cls._enum_map.items()]
+            lines.append(",\n".join(items))
+            lines.append(f"{ind_str}}};")
+            return "\n".join(lines)
+
+        # C++ has no integral types at arbitrary bit widths.  Preserve the
+        # generated API (``State::READY`` constants, copy assignment and
+        # comparison) with a thin wrapper over the shared packed-value type.
+        signed = "true" if cls._signed else "false"
+        lines = [f"{ind_str}struct {cls.__name__} {{"]
+        lines.append(f"{ind_str}{cls.IND}using svtypes_enum_wrapper_tag = void;")
+        lines.append(f"{ind_str}{cls.IND}using storage_type = svtypes::BitValue<{cls._width}, {signed}>;")
+        lines.append(f"{ind_str}{cls.IND}storage_type value{{}};")
+        lines.append(f"{ind_str}{cls.IND}{cls.__name__}() = default;")
+        lines.append(f"{ind_str}{cls.IND}explicit {cls.__name__}(storage_type raw) : value(raw) {{}}")
+        lines.append(
+            f"{ind_str}{cls.IND}{cls.__name__}(std::initializer_list<uint8_t> raw) : value(raw) {{}}"
+        )
+        lines.append(f"{ind_str}{cls.IND}bool operator==(const {cls.__name__}&) const = default;")
+        lines.append(f"{ind_str}{cls.IND}bool operator!=(const {cls.__name__}&) const = default;")
+        for name in cls._enum_map:
+            lines.append(f"{ind_str}{cls.IND}static const {cls.__name__} {name};")
         lines.append(f"{ind_str}}};")
+        width_mask = (1 << cls._width) - 1
+        byte_count = cls._item_byte_num()
+        for name, member in cls._enum_map.items():
+            raw = member.value & width_mask
+            bytes_literal = ", ".join(f"0x{(raw >> (8 * index)) & 0xff:02x}" for index in range(byte_count))
+            lines.append(
+                f"{ind_str}inline const {cls.__name__} {cls.__name__}::{name}{{"
+                f"std::initializer_list<uint8_t>{{{bytes_literal}}}}};"
+            )
         return "\n".join(lines)
 
     def sv_decl(self, name: str):
@@ -196,7 +294,7 @@ class Enum(UserDefinedType):
 
     @classmethod
     def _item_byte_num(cls):
-        return cls._width // 8
+        return (cls._width + 7) // 8
 
     @cached_property
     def byte_num(self):
@@ -204,7 +302,7 @@ class Enum(UserDefinedType):
 
     def pack(self, value):
         val = self._normalize(value)
-        unsigned = val.value & ((1 << (self.byte_num * 8)) - 1)
+        unsigned = val.value & ((1 << self.width) - 1)
         return unsigned.to_bytes(self.byte_num, byteorder='little', signed=False)
 
     def unpack(self, bytes_: bytes):
@@ -217,7 +315,11 @@ class Enum(UserDefinedType):
             useful_bytes = bytes_[0:self.byte_num]
         else:
             useful_bytes = bytes_
-        val_int = int.from_bytes(useful_bytes, byteorder='little', signed=self.signed)
+        raw = int.from_bytes(useful_bytes, byteorder='little', signed=False)
+        raw &= (1 << self.width) - 1
+        if self.signed and raw & (1 << (self.width - 1)):
+            raw -= 1 << self.width
+        val_int = raw
         # Enum items are usually small ints.
         # But we should normalize to get the Enum member.
         try:
@@ -229,7 +331,7 @@ class Enum(UserDefinedType):
         return val, self.byte_num
 
 if __name__ == '__main__':
-    class e_op_code(Enum, width=8, signed=False):
+    class e_op_code(Enum[Bit[8]]):
         ADD = 0
         SUB = 1
         MUL = 4

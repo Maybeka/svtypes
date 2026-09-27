@@ -21,6 +21,7 @@ from svtypes import (
     Parameter,
     RandomContext,
     Reg,
+    Signed,
     SvObject,
     SvStruct,
     Queue,
@@ -54,7 +55,7 @@ def _run_remote(host: str, command: str) -> subprocess.CompletedProcess[str]:
 
 @svobj(registry=target_handle_pkg)
 class TargetHandleChild(SvObject):
-    data = Bit(8)
+    data = Bit[8]()
 
     @constraint
     def own_legal(self):
@@ -63,8 +64,8 @@ class TargetHandleChild(SvObject):
 
 @svobj(registry=target_handle_pkg)
 class TargetHandleParent(SvObject):
-    child = Object("TargetHandleChild", registry=target_handle_pkg, rand=True)
-    other = Bit(8)
+    child = Object["TargetHandleChild"](registry=target_handle_pkg, rand=True)
+    other = Bit[8]()
 
     @constraint
     def cross_legal(self):
@@ -73,11 +74,11 @@ class TargetHandleParent(SvObject):
 
 @svobj(registry=target_handle_pkg)
 class TargetContainerHandleParent(SvObject):
-    fixed = Array(Object("TargetHandleChild", registry=target_handle_pkg, rand=True), 1)
-    dynamic = DynArray(Object("TargetHandleChild", registry=target_handle_pkg, rand=True))
-    queue = Queue(Object("TargetHandleChild", registry=target_handle_pkg, rand=True))
-    table = AssocArray(Bit(8), Object("TargetHandleChild", registry=target_handle_pkg, rand=True))
-    target = Bit(8)
+    fixed = Array[Object["TargetHandleChild"](registry=target_handle_pkg, rand=True), 1]()
+    dynamic = DynArray[Object["TargetHandleChild"](registry=target_handle_pkg, rand=True)]()
+    queue = Queue[Object["TargetHandleChild"](registry=target_handle_pkg, rand=True)]()
+    table = AssocArray[Bit[8], Object["TargetHandleChild"](registry=target_handle_pkg, rand=True)]()
+    target = Bit[8]()
 
     @constraint
     def cross_legal(self):
@@ -86,8 +87,8 @@ class TargetContainerHandleParent(SvObject):
 
 @svobj(registry=target_handle_pkg)
 class TargetResizableHandleParent(SvObject):
-    dynamic = DynArray(Object("TargetHandleChild", registry=target_handle_pkg, rand=True), max_length=4)
-    queue = Queue(Object("TargetHandleChild", registry=target_handle_pkg, rand=True), max_length=4)
+    dynamic = DynArray[Object["TargetHandleChild"](registry=target_handle_pkg, rand=True)](max_length=4)
+    queue = Queue[Object["TargetHandleChild"](registry=target_handle_pkg, rand=True)](max_length=4)
 
     @constraint
     def sized(self):
@@ -97,8 +98,8 @@ class TargetResizableHandleParent(SvObject):
 
 @svobj(registry=target_handle_pkg)
 class TargetLayeredHandleParent(SvObject):
-    dynamic = DynArray(Object("TargetHandleChild", registry=target_handle_pkg, rand=True), max_length=2)
-    low = Bit(1)
+    dynamic = DynArray[Object["TargetHandleChild"](registry=target_handle_pkg, rand=True)](max_length=2)
+    low = Bit[1]()
 
     @constraint
     def low_legal(self):
@@ -115,13 +116,13 @@ class TargetLayeredHandleParent(SvObject):
 
 
 class CPacket(SvObject):
-    addr = Bit(32)
-    length = Bit(16)
-    burst = Bit(1)
-    data = Logic(32)
-    legacy = Reg(8)
-    signed_data = Logic(8, signed=True)
-    limit = Bit(32, rand=False)
+    addr = Bit[32]()
+    length = Bit[16]()
+    burst = Bit[1]()
+    data = Logic[32]()
+    legacy = Reg[8]()
+    signed_data = Logic[8, Signed]()
+    limit = Bit[32](rand=False)
 
     @constraint
     def legal(self):
@@ -136,21 +137,21 @@ class CPacket(SvObject):
             self.length == 1
 
 
-class DiffMode(Enum, width=8, signed=False):
+class DiffMode(Enum[Bit[8]]):
     READ = 0
     WRITE = 1
     IDLE = 2
 
 
 class DiffHeader(SvStruct):
-    addr = Bit(16)
-    extra = Bit(8)
+    addr = Bit[16]()
+    extra = Bit[8]()
 
 
 class DistPacket(SvObject):
-    choice = Bit(4)
-    base = Bit(4, rand=False)
-    weight = Bit(4, rand=False)
+    choice = Bit[4]()
+    base = Bit[4](rand=False)
+    weight = Bit[4](rand=False)
 
     @constraint
     def legal(self):
@@ -162,8 +163,8 @@ class DistPacket(SvObject):
 
 
 class RandcPacket(SvObject):
-    choice = Bit(2, randc=True)
-    limit = Bit(2, rand=False)
+    choice = Bit[2](randc=True)
+    limit = Bit[2](rand=False)
 
     @constraint
     def legal(self):
@@ -171,9 +172,9 @@ class RandcPacket(SvObject):
 
 
 class UniquePacket(SvObject):
-    first = Bit(2)
-    second = Bit(2)
-    third = Bit(2)
+    first = Bit[2]()
+    second = Bit[2]()
+    third = Bit[2]()
 
     @constraint
     def legal(self):
@@ -181,7 +182,7 @@ class UniquePacket(SvObject):
 
 
 class UniqueArrayPacket(SvObject):
-    words = Array(Bit(8), 4, rand=True)
+    words = Array[Bit[8], 4](rand=True)
 
     @constraint
     def legal(self):
@@ -189,8 +190,8 @@ class UniqueArrayPacket(SvObject):
 
 
 class UniqueDynPacket(SvObject):
-    tag = Bit(8)
-    data = DynArray(Bit(8), rand=True, max_length=4)
+    tag = Bit[8]()
+    data = DynArray[Bit[8]](rand=True, max_length=4)
 
     @constraint
     def legal(self):
@@ -199,7 +200,7 @@ class UniqueDynPacket(SvObject):
 
 
 class UniqueQueuePacket(SvObject):
-    data = Queue(Bit(8), rand=True, max_length=4)
+    data = Queue[Bit[8]](rand=True, max_length=4)
 
     @constraint
     def legal(self):
@@ -208,7 +209,7 @@ class UniqueQueuePacket(SvObject):
 
 
 class SoftPacket(SvObject):
-    choice = Bit(32)
+    choice = Bit[32]()
 
     @constraint
     def bounds(self):
@@ -220,7 +221,7 @@ class SoftPacket(SvObject):
 
 
 class SoftHardConflictPacket(SvObject):
-    choice = Bit(32)
+    choice = Bit[32]()
 
     @constraint
     def legal(self):
@@ -229,7 +230,7 @@ class SoftHardConflictPacket(SvObject):
 
 
 class SoftOrderPacket(SvObject):
-    choice = Bit(32)
+    choice = Bit[32]()
 
     @constraint
     def legal(self):
@@ -239,7 +240,7 @@ class SoftOrderPacket(SvObject):
 
 
 class SoftBasePacket(SvObject):
-    choice = Bit(32)
+    choice = Bit[32]()
 
     @constraint
     def base_preference(self):
@@ -257,8 +258,8 @@ class SoftDerivedPacket(SoftBasePacket):
 
 
 class SolveBeforePacket(SvObject):
-    first = Bit(2)
-    second = Bit(2)
+    first = Bit[2]()
+    second = Bit[2]()
 
     @constraint
     def legal(self):
@@ -267,8 +268,8 @@ class SolveBeforePacket(SvObject):
 
 
 class DynamicCollectionPacket(SvObject):
-    length = Bit(4)
-    data = DynArray(Bit(8), rand=True, max_length=8)
+    length = Bit[4]()
+    data = DynArray[Bit[8]](rand=True, max_length=8)
 
     @constraint
     def legal(self):
@@ -279,7 +280,7 @@ class DynamicCollectionPacket(SvObject):
 
 
 class QueueCollectionPacket(SvObject):
-    data = Queue(Bit(8), rand=True, max_length=8)
+    data = Queue[Bit[8]](rand=True, max_length=8)
 
     @constraint
     def legal(self):
@@ -289,7 +290,7 @@ class QueueCollectionPacket(SvObject):
 
 
 class EmptyOnlyCollectionPacket(SvObject):
-    data = DynArray(Bit(8), rand=True, max_length=4)
+    data = DynArray[Bit[8]](rand=True, max_length=4)
 
     @constraint
     def legal(self):
@@ -299,7 +300,7 @@ class EmptyOnlyCollectionPacket(SvObject):
 
 
 class AssocCollectionPacket(SvObject):
-    table = AssocArray(Bit(8), Bit(8), rand=True)
+    table = AssocArray[Bit[8], Bit[8]](rand=True)
 
     @constraint
     def legal(self):
@@ -308,14 +309,14 @@ class AssocCollectionPacket(SvObject):
 
 
 class DiffPacket(SvObject):
-    addr = Bit(32)
-    data = Logic(32)
-    signed_data = Logic(8, signed=True)
-    flag = Bit(8)
+    addr = Bit[32]()
+    data = Logic[32]()
+    signed_data = Logic[8, Signed]()
+    flag = Bit[8]()
     mode = DiffMode()
     header = DiffHeader(rand=True)
-    words = Array(Bit(8), 4)
-    limit = Bit(32, rand=False)
+    words = Array[Bit[8], 4]()
+    limit = Bit[32](rand=False)
 
     @constraint
     def legal(self):
@@ -846,8 +847,8 @@ def test_remote_sv_dist_expression_simulation():
         pytest.skip(f"remote target host {host} is not reachable")
 
     class ConditionalDistPacket(SvObject):
-        gate = Bit(1)
-        choice = Bit(8)
+        gate = Bit[1]()
+        choice = Bit[8]()
 
         @constraint
         def legal(self):
@@ -857,7 +858,7 @@ def test_remote_sv_dist_expression_simulation():
                 self.choice @ dist[0 @ 1, 1 @ 3]
 
     class LargeRangeDistPacket(SvObject):
-        choice = Bit(32)
+        choice = Bit[32]()
 
         @constraint
         def legal(self):
@@ -867,9 +868,9 @@ def test_remote_sv_dist_expression_simulation():
             ]
 
     class MixedDistPacket(SvObject):
-        gate = Bit(1)
-        direct = Bit(1)
-        branch = Bit(2)
+        gate = Bit[1]()
+        direct = Bit[1]()
+        branch = Bit[2]()
 
         @constraint
         def legal(self):
@@ -1256,8 +1257,8 @@ def test_remote_sv_solve_before_simulation():
         pytest.skip(f"remote target host {host} is not reachable")
 
     class WideSolveBeforePacket(SvObject):
-        first = Bit(13)
-        second = Bit(13)
+        first = Bit[13]()
+        second = Bit[13]()
 
         @constraint
         def order(self):
@@ -1335,8 +1336,8 @@ def test_remote_sv_template_specialization_simulation():
         pytest.skip(f"remote target host {host} is not reachable")
 
     class Templated(SvObject):
-        WIDTH = Parameter(Int)
-        data = Bit(8, cov=True)
+        WIDTH = Parameter[Int]()
+        data = Bit[8](cov=True)
 
     Spec = Templated.specialize(WIDTH=4)
     MemberOnly = Templated.specialize(WIDTH=8)
@@ -1421,11 +1422,11 @@ def test_remote_sv_type_parameter_simulation():
         pytest.skip(f"remote target host {host} is not reachable")
 
     class Kind(SvObject):
-        T = Parameter(type)
-        data = Bit(8)
+        T = Parameter[type]()
+        data = Bit[8]()
 
     class Payload(SvObject):
-        x = Bit(4)
+        x = Bit[4]()
 
     KindSpec = Kind.specialize(T=Payload)
 
@@ -1498,8 +1499,8 @@ def test_remote_sv_template_constraint_on_parameterized_instance():
         pytest.skip(f"remote target host {host} is not reachable")
 
     class Bound(SvObject):
-        WIDTH = Parameter(Int)
-        addr = Bit(8)
+        WIDTH = Parameter[Int]()
+        addr = Bit[8]()
 
         @constraint
         def legal(self):
@@ -1575,16 +1576,16 @@ def test_remote_sv_paramref_forwarding_and_symbolic_for():
         pytest.skip(f"remote target host {host} is not reachable")
 
     class Base(SvObject):
-        WIDTH = Parameter(Int)
-        addr = Bit(8)
+        WIDTH = Parameter[Int]()
+        addr = Bit[8]()
 
         @constraint
         def legal(self):
             self.addr < WIDTH
 
     class Sub(Base.specialize(WIDTH=ParamRef())):
-        WIDTH = Parameter(Int)
-        words = Array(Bit(8), 4)
+        WIDTH = Parameter[Int]()
+        words = Array[Bit[8], 4]()
 
         @constraint
         def words_nonzero(self):
@@ -1655,10 +1656,10 @@ def test_remote_sv_layered_randomize_simulation():
         pytest.skip(f"remote target host {host} is not reachable")
 
     class LayerPkt(SvObject):
-        addr = Bit(32)
-        payload = Bit(8)
-        extra = Bit(8)
-        lock = Bit(1, rand=False)
+        addr = Bit[32]()
+        payload = Bit[8]()
+        extra = Bit[8]()
+        lock = Bit[1](rand=False)
 
         @constraint
         def address_legal(self):
@@ -1686,7 +1687,7 @@ def test_remote_sv_layered_randomize_simulation():
             self.extra_fail
 
     class WordPkt(SvObject):
-        words = Array(Bit(8), 4)
+        words = Array[Bit[8], 4]()
 
         @constraint
         def first_ok(self):
@@ -1707,7 +1708,7 @@ def test_remote_sv_layered_randomize_simulation():
             self.second_eq
 
     class DynPkt(SvObject):
-        data = DynArray(Bit(8), rand=True, max_length=4)
+        data = DynArray[Bit[8]](rand=True, max_length=4)
 
         @constraint
         def legal(self):
@@ -1721,7 +1722,7 @@ def test_remote_sv_layered_randomize_simulation():
             self.legal
 
     class QueuePkt(SvObject):
-        data = Queue(Bit(8), rand=True, max_length=4)
+        data = Queue[Bit[8]](rand=True, max_length=4)
 
         @constraint
         def legal(self):

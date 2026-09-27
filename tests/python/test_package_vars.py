@@ -6,7 +6,7 @@ def test_package_vars():
 
     # Define variables and parameters
     pkg.my_var = Int()
-    pkg.MY_PARAM = Parameter()(1)
+    pkg.MY_PARAM = Parameter[Int](1)
 
     # Test intrinsic access via .value. Parameters are immutable after binding.
     pkg.my_var.value = 100

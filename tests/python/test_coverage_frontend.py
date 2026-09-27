@@ -14,11 +14,13 @@ from svtypes import (
     CrossOption,
     CrossQueueType,
     Enum,
+    Int,
     SvObject,
     DynArray,
     Logic,
     LogicValue,
     Parameter,
+    Signed,
     bins,
     covergroup,
     coverage_init,
@@ -34,19 +36,19 @@ from svtypes.errors import CoverageDeclarationError, CoverageError
 from svtypes.coverage.context import _reset_coverage_case_name_for_testing
 
 
-class _CoverageColor(Enum, width=8, signed=False):
+class _CoverageColor(Enum[Bit[8]]):
     R = 0
     G = 1
 
 
-class _CoverageHue(Enum, width=8, signed=False):
+class _CoverageHue(Enum[Bit[8]]):
     R = 0
 
 
 def test_freeze_compiles_source_only_points_and_bins_without_executing_declaration():
     class Packet(SvObject):
-        opcode = Bit(8)
-        valid = Bit(1)
+        opcode = Bit[8]()
+        valid = Bit[1]()
 
         @covergroup
         def cg(self, limit: CoverInput[int]):
@@ -71,7 +73,7 @@ def test_freeze_compiles_source_only_points_and_bins_without_executing_declarati
 
 def test_freeze_rejects_statements_outside_the_source_only_declaration_subset():
     class Packet(SvObject):
-        opcode = Bit(8)
+        opcode = Bit[8]()
 
         @covergroup
         def cg(self):
@@ -83,8 +85,8 @@ def test_freeze_rejects_statements_outside_the_source_only_declaration_subset():
 
 def test_static_cross_compiles_explicit_and_automatic_tuples_and_classifies_them():
     class Packet(SvObject):
-        opcode = Bit(2)
-        mode = Bit(1)
+        opcode = Bit[2]()
+        mode = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -135,8 +137,8 @@ def test_static_cross_compiles_explicit_and_automatic_tuples_and_classifies_them
 
 def test_cross_local_covpoint_replaces_only_that_cross_member_definition():
     class Packet(SvObject):
-        opcode = Bit(3)
-        mode = Bit(1)
+        opcode = Bit[3]()
+        mode = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -183,7 +185,7 @@ def test_cross_local_covpoint_replaces_only_that_cross_member_definition():
 
 def test_cross_local_covpoint_rejects_non_member_and_aggregation_options():
     class Packet(SvObject):
-        opcode = Bit(1)
+        opcode = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -215,8 +217,8 @@ def test_cross_local_covpoint_rejects_non_member_and_aggregation_options():
 
 def test_cross_default_policy_drops_automatic_tuples_when_explicit_bins_exist():
     class Packet(SvObject):
-        opcode = Bit(1)
-        mode = Bit(1)
+        opcode = Bit[1]()
+        mode = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -236,8 +238,8 @@ def test_cross_default_policy_drops_automatic_tuples_when_explicit_bins_exist():
 
 def test_cross_may_reference_a_fixed_array_bin():
     class Packet(SvObject):
-        opcode = Bit(3)
-        mode = Bit(1)
+        opcode = Bit[3]()
+        mode = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -264,8 +266,8 @@ def test_cross_may_reference_a_fixed_array_bin():
 
 def test_cross_queue_function_materializes_per_instance_and_classifies_values():
     class Packet(SvObject):
-        opcode = Bit(2)
-        mode = Bit(2)
+        opcode = Bit[2]()
+        mode = Bit[2]()
 
         @covergroup
         def cg(self, limit: CoverInput[int]):
@@ -304,7 +306,7 @@ def test_cross_queue_function_materializes_per_instance_and_classifies_values():
 
 def test_cross_queue_function_rejects_zero_runtime_range_step():
     class Packet(SvObject):
-        opcode = Bit(1)
+        opcode = Bit[1]()
 
         @covergroup
         def cg(self, step: CoverInput[int]):
@@ -330,7 +332,7 @@ def test_cross_queue_function_rejects_zero_runtime_range_step():
 
 def test_cross_queue_does_not_hit_when_a_member_value_has_no_point_bin():
     class Packet(SvObject):
-        opcode = Bit(2)
+        opcode = Bit[2]()
 
         @covergroup
         def cg(self):
@@ -359,8 +361,8 @@ def test_cross_queue_does_not_hit_when_a_member_value_has_no_point_bin():
 
 def test_python_runtime_classifies_iff_ignore_illegal_overlapping_normal_and_default_bins():
     class Packet(SvObject):
-        opcode = Bit(8)
-        valid = Bit(1)
+        opcode = Bit[8]()
+        valid = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -396,7 +398,7 @@ def test_python_runtime_classifies_iff_ignore_illegal_overlapping_normal_and_def
 
 def test_coverage_instance_methods_control_sampling_and_report_name():
     class Packet(SvObject):
-        opcode = Bit(2)
+        opcode = Bit[2]()
 
         @covergroup
         def cg(self):
@@ -425,7 +427,7 @@ def test_coverage_instance_methods_control_sampling_and_report_name():
 
 def test_get_coverage_is_cumulative_while_get_inst_coverage_is_per_instance():
     class Packet(SvObject):
-        opcode = Bit(1)
+        opcode = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -450,7 +452,7 @@ def test_get_coverage_is_cumulative_while_get_inst_coverage_is_per_instance():
 
 def test_freeze_generates_deterministic_automatic_bins_from_a_bit_field_domain():
     class Packet(SvObject):
-        opcode = Bit(4)
+        opcode = Bit[4]()
 
         @covergroup
         def cg(self):
@@ -464,8 +466,8 @@ def test_freeze_generates_deterministic_automatic_bins_from_a_bit_field_domain()
 
 def test_bound_parameter_is_frozen_as_a_coverage_bin_constant():
     class Packet(SvObject):
-        opcode = Bit(4)
-        reserved_opcode = Parameter()(15)
+        opcode = Bit[4]()
+        reserved_opcode = Parameter[Int](15)
 
         @covergroup
         def cg(self):
@@ -492,9 +494,9 @@ def test_bound_parameter_is_frozen_as_a_coverage_bin_constant():
 
 def test_parameter_range_split_materializes_fixed_array_bins_and_sv_count():
     class Packet(SvObject):
-        opcode = Bit(4)
-        first = Parameter()(4)
-        last = Parameter()(7)
+        opcode = Bit[4]()
+        first = Parameter[Int](4)
+        last = Parameter[Int](7)
 
         @covergroup
         def cg(self):
@@ -560,7 +562,7 @@ def test_automatic_enum_bins_preserve_member_symbols():
 def test_enum_literal_provenance_requires_an_enum_covpoint_result_type():
     class Packet(SvObject):
         color = _CoverageColor()
-        code = Bit(2)
+        code = Bit[2]()
 
         @covergroup
         def cg(self):
@@ -590,7 +592,7 @@ def test_enum_literal_provenance_requires_an_enum_covpoint_result_type():
 
 def test_automatic_bins_honor_point_limit_and_assign_remainder_to_final_bin():
     class Packet(SvObject):
-        opcode = Bit(4)
+        opcode = Bit[4]()
 
         @covergroup
         def cg(self):
@@ -619,8 +621,8 @@ def test_nested_sample_formals_are_bound_at_each_sample_without_executing_functi
             self.cg.instantiate()
 
     packet = Packet()
-    packet.cg.sample(Bit(1, value=0))
-    packet.cg.sample(opcode=Bit(1, value=1))
+    packet.cg.sample(Bit[1](value=0))
+    packet.cg.sample(opcode=Bit[1](value=1))
     assert packet.cg.instance.snapshot()["opcode_cp"] == {
         "hits": {"zero": 1}, "illegal_hits": {}, "samples": 2,
     }
@@ -628,7 +630,7 @@ def test_nested_sample_formals_are_bound_at_each_sample_without_executing_functi
 
 def test_transition_repeat_matches_every_finite_repetition_length():
     class Packet(SvObject):
-        opcode = Bit(2)
+        opcode = Bit[2]()
 
         @covergroup
         def cg(self):
@@ -648,7 +650,7 @@ def test_transition_repeat_matches_every_finite_repetition_length():
 
 def test_array_bins_split_expand_compress_and_keep_empty_bins_out_of_denominator():
     class Packet(SvObject):
-        opcode = Bit(3)
+        opcode = Bit[3]()
 
         @covergroup
         def cg(self):
@@ -682,7 +684,7 @@ def test_array_bins_split_expand_compress_and_keep_empty_bins_out_of_denominator
 
 def test_array_bins_split_max_bins_compresses_without_dropping_values():
     class Packet(SvObject):
-        opcode = Bit(3)
+        opcode = Bit[3]()
 
         @covergroup
         def cg(self):
@@ -702,7 +704,7 @@ def test_array_bins_split_max_bins_compresses_without_dropping_values():
 
 def test_repeat_is_rejected_outside_transition_bins():
     class Packet(SvObject):
-        opcode = Bit(2)
+        opcode = Bit[2]()
 
         @covergroup
         def cg(self):
@@ -715,7 +717,7 @@ def test_repeat_is_rejected_outside_transition_bins():
 
 def test_transition_bins_are_rejected_for_array_and_value_domain_points():
     class Packet(SvObject):
-        values = DynArray(Bit(2))
+        values = DynArray[Bit[2]]()
 
         @covergroup
         def array_cg(self):
@@ -735,7 +737,7 @@ def test_transition_bins_are_rejected_for_array_and_value_domain_points():
 
 def test_coverage_case_name_is_global_and_sample_does_not_take_case_metadata():
     class Packet(SvObject):
-        opcode = Bit(2)
+        opcode = Bit[2]()
 
         @covergroup
         def cg(self):
@@ -766,7 +768,7 @@ def test_coverage_case_name_is_global_and_sample_does_not_take_case_metadata():
 
 def test_cover_input_materializes_instance_bin_selectors_without_changing_declaration_digest():
     class Packet(SvObject):
-        opcode = Bit(3)
+        opcode = Bit[3]()
 
         @covergroup
         def cg(self, limit: CoverInput[int]):
@@ -790,7 +792,7 @@ def test_cover_input_materializes_instance_bin_selectors_without_changing_declar
 
 def test_cover_input_materializes_unbounded_array_bins_into_instance_shape():
     class Packet(SvObject):
-        opcode = Bit(2)
+        opcode = Bit[2]()
 
         @covergroup
         def cg(self, first: CoverInput[int], last: CoverInput[int]):
@@ -820,9 +822,9 @@ def test_cover_input_materializes_unbounded_array_bins_into_instance_shape():
 
 def test_layout_preview_resolves_static_host_member_actuals():
     class Packet(SvObject):
-        opcode = Bit(2)
-        first = Bit(2, value=1)
-        last = Bit(2, value=2)
+        opcode = Bit[2]()
+        first = Bit[2](value=1)
+        last = Bit[2](value=2)
 
         @covergroup
         def cg(self, lower: CoverInput[int], upper: CoverInput[int]):
@@ -846,7 +848,7 @@ def test_layout_preview_resolves_static_host_member_actuals():
 
 def test_coverage_options_require_their_declared_base_and_supported_fields():
     class Packet(SvObject):
-        opcode = Bit(1)
+        opcode = Bit[1]()
 
         @covergroup
         def wrong_base(self):
@@ -874,7 +876,7 @@ def test_coverage_options_require_their_declared_base_and_supported_fields():
 
 def test_coverage_freeze_rejects_expression_names_outside_the_declared_sample_scope():
     class Packet(SvObject):
-        opcode = Bit(1)
+        opcode = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -887,7 +889,7 @@ def test_coverage_freeze_rejects_expression_names_outside_the_declared_sample_sc
 
 def test_optional_sample_log_obeys_record_and_byte_budgets_without_affecting_hits():
     class Packet(SvObject):
-        opcode = Bit(1)
+        opcode = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -908,7 +910,7 @@ def test_optional_sample_log_obeys_record_and_byte_budgets_without_affecting_hit
 
 def test_case_source_limit_is_configurable_only_before_sampling():
     class Packet(SvObject):
-        opcode = Bit(1)
+        opcode = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -930,7 +932,7 @@ def test_case_source_limit_is_configurable_only_before_sampling():
 
 def test_array_points_freeze_to_fixed_slots_and_skip_missing_dynamic_elements():
     class Packet(SvObject):
-        values = DynArray(Bit(8))
+        values = DynArray[Bit[8]]()
 
         @covergroup
         def cg(self):
@@ -954,7 +956,7 @@ def test_array_points_freeze_to_fixed_slots_and_skip_missing_dynamic_elements():
 
 def test_array_and_value_domain_points_inherit_automatic_bins_from_element_type():
     class Packet(SvObject):
-        values = DynArray(Bit(2))
+        values = DynArray[Bit[2]]()
 
         @covergroup
         def cg(self):
@@ -979,7 +981,7 @@ def test_array_and_value_domain_points_inherit_automatic_bins_from_element_type(
 
 def test_dynamic_container_value_domain_samples_each_current_element_into_one_point():
     class Packet(SvObject):
-        values = DynArray(Bit(8))
+        values = DynArray[Bit[8]]()
 
         @covergroup
         def cg(self):
@@ -1001,7 +1003,7 @@ def test_dynamic_container_value_domain_samples_each_current_element_into_one_po
 
 def test_coverref_reads_its_bound_host_field_on_each_sample():
     class Packet(SvObject):
-        mode = Bit(2)
+        mode = Bit[2]()
 
         @covergroup
         def cg(self, mode: CoverRef[Bit]):
@@ -1024,7 +1026,7 @@ def test_coverref_reads_its_bound_host_field_on_each_sample():
 
 def test_coverage_uses_at_least_and_goal_options():
     class Packet(SvObject):
-        opcode = Bit(2)
+        opcode = Bit[2]()
 
         @covergroup
         def cg(self):
@@ -1051,7 +1053,7 @@ def test_coverage_uses_at_least_and_goal_options():
 
 def test_transition_bin_matches_only_after_its_finite_sequence_is_observed():
     class Packet(SvObject):
-        opcode = Bit(2)
+        opcode = Bit[2]()
 
         @covergroup
         def cg(self):
@@ -1075,8 +1077,8 @@ def test_transition_bin_matches_only_after_its_finite_sequence_is_observed():
 
 def test_transition_history_does_not_advance_when_coverpoint_iff_is_false():
     class Packet(SvObject):
-        code = Bit(2)
-        enable = Bit(1)
+        code = Bit[2]()
+        enable = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -1099,7 +1101,7 @@ def test_transition_history_does_not_advance_when_coverpoint_iff_is_false():
 
 def test_four_state_sample_does_not_complete_a_two_state_transition():
     class Packet(SvObject):
-        signal = Logic(2)
+        signal = Logic[2]()
 
         @covergroup
         def cg(self):
@@ -1123,7 +1125,7 @@ def test_four_state_sample_does_not_complete_a_two_state_transition():
 
 def test_freeze_rejects_duplicate_default_and_unreachable_transition_sequences():
     class DuplicateDefault(SvObject):
-        code = Bit(1)
+        code = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -1132,7 +1134,7 @@ def test_freeze_rejects_duplicate_default_and_unreachable_transition_sequences()
                 second = default_bins
 
     class LongTransition(SvObject):
-        code = Bit(1)
+        code = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -1147,7 +1149,7 @@ def test_freeze_rejects_duplicate_default_and_unreachable_transition_sequences()
 
 def test_covergroup_sample_count_is_not_container_element_count():
     class Packet(SvObject):
-        data = DynArray(Bit(2))
+        data = DynArray[Bit[2]]()
 
         @covergroup
         def cg(self):
@@ -1168,7 +1170,7 @@ def test_covergroup_sample_count_is_not_container_element_count():
 
 def test_explicit_four_state_bin_matches_xz_but_ranges_do_not():
     class Packet(SvObject):
-        signal = Logic(2)
+        signal = Logic[2]()
 
         @covergroup
         def cg(self):
@@ -1189,19 +1191,19 @@ def test_explicit_four_state_bin_matches_xz_but_ranges_do_not():
 
 def test_bin_literals_are_losslessly_normalized_to_the_source_domain():
     class Unsigned(SvObject):
-        code = Bit(8)
+        code = Bit[8]()
 
         @covergroup
         def cg(self):
             class point(CovPoint, source=self.code):
-                typed = bins[Bit(4, value=15)]
+                typed = bins[Bit[4](value=15)]
                 sv = bins["8'hff"]
 
     ir = Unsigned.cg.freeze()
     assert {bin_.selector["value"] for bin_ in ir.points[0].bins} == {15, 255}
 
     class Overflow(SvObject):
-        code = Bit(8)
+        code = Bit[8]()
 
         @covergroup
         def cg(self):
@@ -1212,7 +1214,7 @@ def test_bin_literals_are_losslessly_normalized_to_the_source_domain():
         Overflow.cg.freeze()
 
     class TwoState(SvObject):
-        code = Bit(2)
+        code = Bit[2]()
 
         @covergroup
         def cg(self):
@@ -1223,17 +1225,17 @@ def test_bin_literals_are_losslessly_normalized_to_the_source_domain():
         TwoState.cg.freeze()
 
     class Signedness(SvObject):
-        code = Bit(8)
+        code = Bit[8]()
 
         @covergroup
         def cg(self):
             class point(CovPoint, source=self.code):
-                allowed = bins[Bit(8, signed=True, value=1)]
+                allowed = bins[Bit[8, Signed](value=1)]
 
     assert Signedness.cg.freeze().points[0].bins[0].selector["value"] == 1
 
     class SignedHex(SvObject):
-        code = Bit(8, signed=True)
+        code = Bit[8, Signed]()
 
         @covergroup
         def cg(self):
@@ -1243,7 +1245,7 @@ def test_bin_literals_are_losslessly_normalized_to_the_source_domain():
     assert SignedHex.cg.freeze().points[0].bins[0].selector["value"] == -1
 
     class XRange(SvObject):
-        code = Logic(2)
+        code = Logic[2]()
 
         @covergroup
         def cg(self):
@@ -1254,12 +1256,12 @@ def test_bin_literals_are_losslessly_normalized_to_the_source_domain():
         XRange.cg.freeze()
 
     class TypedLogic(SvObject):
-        code = Logic(4)
+        code = Logic[4]()
 
         @covergroup
         def cg(self):
             class point(CovPoint, source=self.code):
-                invalid = bins[Logic(4, value="1x")]
+                invalid = bins[Logic[4](value="1x")]
 
     with pytest.raises(CoverageDeclarationError, match="width mismatch"):
         TypedLogic.cg.freeze()
@@ -1267,8 +1269,8 @@ def test_bin_literals_are_losslessly_normalized_to_the_source_domain():
 
 def test_derived_source_uses_a_static_comparison_domain_or_fails_at_freeze():
     class Packet(SvObject):
-        code = Bit(8)
-        other = Bit(8)
+        code = Bit[8]()
+        other = Bit[8]()
 
         @covergroup
         def cg(self):
@@ -1278,7 +1280,7 @@ def test_derived_source_uses_a_static_comparison_domain_or_fails_at_freeze():
     assert Packet.cg.freeze().points[0].bins[0].selector["value"] == 255
 
     class UntypedExpression(SvObject):
-        code = Bit(8)
+        code = Bit[8]()
 
         @covergroup
         def cg(self):
@@ -1301,7 +1303,7 @@ def test_derived_source_uses_a_static_comparison_domain_or_fails_at_freeze():
 
 def test_transition_and_cross_queue_values_use_member_comparison_domains():
     class TransitionOverflow(SvObject):
-        code = Bit(2)
+        code = Bit[2]()
 
         @covergroup
         def cg(self):
@@ -1312,7 +1314,7 @@ def test_transition_and_cross_queue_values_use_member_comparison_domains():
         TransitionOverflow.cg.freeze()
 
     class QueueOverflow(SvObject):
-        code = Bit(2)
+        code = Bit[2]()
 
         @covergroup
         def cg(self):
@@ -1370,7 +1372,7 @@ def test_enum_and_same_domain_integral_bins_both_hit():
 
 def test_illegal_hits_are_exposed_as_a_report_failure_signal():
     class Packet(SvObject):
-        code = Bit(1)
+        code = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -1390,9 +1392,9 @@ def test_illegal_hits_are_exposed_as_a_report_failure_signal():
 
 def test_cross_honors_iff_member_illegal_default_and_overlapping_normal_bins():
     class Packet(SvObject):
-        code = Bit(2)
-        mode = Bit(1)
-        enabled = Bit(1)
+        code = Bit[2]()
+        mode = Bit[1]()
+        enabled = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -1433,7 +1435,7 @@ def test_cross_honors_iff_member_illegal_default_and_overlapping_normal_bins():
 
 def test_coverage_snapshot_json_is_deterministic_and_carries_declaration_identity():
     class Packet(SvObject):
-        opcode = Bit(2)
+        opcode = Bit[2]()
 
         @covergroup
         def cg(self):

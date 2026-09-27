@@ -33,8 +33,8 @@ def _batches(cls):
 
 def test_rand_layer_alias_is_function_name_and_rejects_illegal_api():
     class Packet(SvObject):
-        addr = Bit(32)
-        payload = Bit(8)
+        addr = Bit[32]()
+        payload = Bit[8]()
 
         @rand_layer(100)
         def address(self):
@@ -52,7 +52,7 @@ def test_rand_layer_alias_is_function_name_and_rejects_illegal_api():
 
     with pytest.raises(ConstraintSyntaxError, match="non-zero int priority"):
         class BadBare(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @rand_layer
             def address(self):
@@ -60,7 +60,7 @@ def test_rand_layer_alias_is_function_name_and_rejects_illegal_api():
 
     with pytest.raises(ConstraintSyntaxError, match="non-zero int priority"):
         class BadBool(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @rand_layer(True)
             def address(self):
@@ -68,7 +68,7 @@ def test_rand_layer_alias_is_function_name_and_rejects_illegal_api():
 
     with pytest.raises(ConstraintSyntaxError, match="reserved priority 0"):
         class BadZero(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @rand_layer(0)
             def address(self):
@@ -76,7 +76,7 @@ def test_rand_layer_alias_is_function_name_and_rejects_illegal_api():
 
     with pytest.raises(ConstraintSyntaxError, match="keyword arguments"):
         class BadKw(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @rand_layer(1, alias="x")
             def address(self):
@@ -84,7 +84,7 @@ def test_rand_layer_alias_is_function_name_and_rejects_illegal_api():
 
     with pytest.raises(DeclarationError, match="builtin"):
         class BadBuiltin(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @rand_layer(1)
             def builtin(self):
@@ -93,7 +93,7 @@ def test_rand_layer_alias_is_function_name_and_rejects_illegal_api():
     source = (
         "from svtypes import SvObject, Bit, rand_layer\n"
         "class Missing(SvObject):\n"
-        "    addr = Bit(8)\n"
+        "    addr = Bit[8]()\n"
         "    @rand_layer(1)\n"
         "    def address(self):\n"
         "        self.addr\n"
@@ -107,7 +107,7 @@ def test_rand_layer_alias_is_function_name_and_rejects_illegal_api():
 def test_constraint_decorator_rejects_arguments():
     with pytest.raises(ConstraintSyntaxError, match="does not accept arguments"):
         class BadCall(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @constraint()
             def legal(self):
@@ -115,7 +115,7 @@ def test_constraint_decorator_rejects_arguments():
 
     with pytest.raises(ConstraintSyntaxError, match="does not accept arguments"):
         class BadArgs(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @constraint(1)
             def legal(self):
@@ -125,14 +125,14 @@ def test_constraint_decorator_rejects_arguments():
 def test_rand_layer_body_rejects_assignment_and_instance_access():
     with pytest.raises(ConstraintSyntaxError, match="not allowed"):
         class BadAssign(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @rand_layer(1)
             def address(self):
                 self.addr = 1
 
     class Packet(SvObject):
-        addr = Bit(8)
+        addr = Bit[8]()
 
         @rand_layer(1)
         def address(self):
@@ -147,10 +147,10 @@ def test_rand_layer_body_rejects_assignment_and_instance_access():
 
 def test_same_priority_merges_and_order_is_numeric_including_builtin():
     class Packet(SvObject):
-        addr = Bit(8)
-        length = Bit(8)
-        payload = Bit(8)
-        extra = Bit(8)
+        addr = Bit[8]()
+        length = Bit[8]()
+        payload = Bit[8]()
+        extra = Bit[8]()
 
         @rand_layer(100)
         def address(self):
@@ -198,8 +198,8 @@ def test_same_priority_merges_and_order_is_numeric_including_builtin():
 
 def test_unique_membership_inheritance_super_merge_and_constraint_replace():
     class Base(SvObject):
-        addr = Bit(8)
-        length = Bit(8)
+        addr = Bit[8]()
+        length = Bit[8]()
 
         @constraint
         def address_legal(self):
@@ -211,7 +211,7 @@ def test_unique_membership_inheritance_super_merge_and_constraint_replace():
             self.address_legal
 
     class Child(Base):
-        payload = Bit(8)
+        payload = Bit[8]()
 
         @constraint
         def address_legal(self):
@@ -244,7 +244,7 @@ def test_unique_membership_inheritance_super_merge_and_constraint_replace():
 
     with pytest.raises(DeclarationError, match="overlaps"):
         class DupVar(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @rand_layer(2)
             def a(self):
@@ -256,7 +256,7 @@ def test_unique_membership_inheritance_super_merge_and_constraint_replace():
 
     with pytest.raises(DeclarationError, match="non-rand"):
         class StateListed(SvObject):
-            addr = Bit(8, rand=False)
+            addr = Bit[8](rand=False)
 
             @rand_layer(1)
             def address(self):
@@ -270,7 +270,7 @@ def test_unique_membership_inheritance_super_merge_and_constraint_replace():
 
     with pytest.raises(DeclarationError, match="no inherited rand_layer"):
         class MissingSuper(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @rand_layer(1)
             def address(self):
@@ -283,8 +283,8 @@ def test_lower_priority_reference_warning_and_error_policy():
     try:
         with pytest.warns(LayeredRandomizationPriorityWarning, match="payload"):
             class Warned(SvObject):
-                addr = Bit(8)
-                payload = Bit(8)
+                addr = Bit[8]()
+                payload = Bit[8]()
 
                 @constraint
                 def high_uses_low(self):
@@ -302,8 +302,8 @@ def test_lower_priority_reference_warning_and_error_policy():
         set_layered_randomization_reference_policy("error")
         with pytest.raises(DeclarationError, match="payload"):
             class Errored(SvObject):
-                addr = Bit(8)
-                payload = Bit(8)
+                addr = Bit[8]()
+                payload = Bit[8]()
 
                 @constraint
                 def high_uses_low(self):
@@ -324,8 +324,8 @@ def test_lower_priority_reference_warning_and_error_policy():
 
 def test_layered_randomize_ignores_entry_modes_and_restores_them():
     class Packet(SvObject):
-        addr = Bit(8)
-        payload = Bit(8)
+        addr = Bit[8]()
+        payload = Bit[8]()
 
         @constraint
         def address_legal(self):
@@ -364,9 +364,9 @@ def test_layered_randomize_ignores_entry_modes_and_restores_them():
 
 def test_layered_failure_status_does_not_rollback_earlier_success():
     class Packet(SvObject):
-        addr = Bit(8)
-        payload = Bit(8)
-        flag = Bit(1, rand=False)
+        addr = Bit[8]()
+        payload = Bit[8]()
+        flag = Bit[1](rand=False)
 
         @constraint
         def address_legal(self):
@@ -403,8 +403,8 @@ def test_layered_failure_status_does_not_rollback_earlier_success():
     assert pkt.payload.value == 4
 
     class XzPkt(SvObject):
-        addr = Bit(8)
-        status = Logic(8, rand=False)
+        addr = Bit[8]()
+        status = Logic[8](rand=False)
 
         @constraint
         def tied(self):
@@ -428,8 +428,8 @@ def test_layered_failure_status_does_not_rollback_earlier_success():
 
 def test_pre_post_randomize_counts_and_inheritance():
     class Base(SvObject):
-        addr = Bit(8)
-        payload = Bit(8)
+        addr = Bit[8]()
+        payload = Bit[8]()
 
         @rand_layer(10)
         def high(self):
@@ -473,7 +473,7 @@ def test_pre_post_randomize_counts_and_inheritance():
     assert ordinary.post_count == 1
 
     class Unsat(SvObject):
-        addr = Bit(8)
+        addr = Bit[8]()
 
         @constraint
         def impossible(self):
@@ -495,33 +495,33 @@ def test_pre_post_randomize_counts_and_inheritance():
 def test_final_entry_methods_cannot_be_redefined():
     with pytest.raises(DeclarationError, match="framework-owned"):
         class BadRand(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             def randomize(self):
                 return False
 
     with pytest.raises(DeclarationError, match="framework-owned"):
         class BadWith(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             def randomize_with(self, fn):
                 return False
 
     with pytest.raises(DeclarationError, match="framework-owned"):
         class BadLayer(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             def layered_randomize(self):
                 return False
 
     with pytest.raises(DeclarationError, match="framework-owned"):
         class BadLayerContext(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             def svtypes_layered_randomize_priority(self):
                 return 0
 
-    pkt = type("Plain", (SvObject,), {"addr": Bit(8)})()
+    pkt = type("Plain", (SvObject,), {"addr": Bit[8]()})()
     with pytest.raises(TypeError, match="does not accept arguments"):
         pkt.layered_randomize(1)
 
@@ -530,8 +530,8 @@ def test_hooks_can_observe_current_layered_randomize_priority():
     seen: list[tuple[str, bool, int]] = []
 
     class Packet(SvObject):
-        high = Bit(8)
-        low = Bit(8)
+        high = Bit[8]()
+        low = Bit[8]()
 
         @rand_layer(5)
         def high_layer(self):
@@ -563,10 +563,10 @@ def test_hooks_can_observe_current_layered_randomize_priority():
 
 def test_hooks_can_apply_different_actions_at_each_layered_priority():
     class Packet(SvObject):
-        high = Bit(8)
-        middle = Bit(8)
-        low = Bit(8)
-        gate = Bit(8, rand=False)
+        high = Bit[8]()
+        middle = Bit[8]()
+        low = Bit[8]()
+        gate = Bit[8](rand=False)
 
         @constraint
         def middle_uses_high_pre_hook_state(self):
@@ -612,8 +612,8 @@ def test_hooks_can_apply_different_actions_at_each_layered_priority():
 
 def test_generated_sv_emits_layered_randomize_and_schema_identity():
     class Packet(SvObject):
-        addr = Bit(32)
-        payload = Bit(8)
+        addr = Bit[32]()
+        payload = Bit[8]()
 
         @constraint
         def address_legal(self):
@@ -625,8 +625,8 @@ def test_generated_sv_emits_layered_randomize_and_schema_identity():
             self.address_legal
 
     class Moved(SvObject):
-        addr = Bit(32)
-        payload = Bit(8)
+        addr = Bit[32]()
+        payload = Bit[8]()
 
         @constraint
         def address_legal(self):
@@ -659,7 +659,7 @@ def test_generated_sv_emits_layered_randomize_and_schema_identity():
 
 def test_no_explicit_layer_runs_only_builtin_batch():
     class Plain(SvObject):
-        addr = Bit(8)
+        addr = Bit[8]()
 
         def pre_randomize(self):
             self.calls = getattr(self, "calls", 0) + 1
@@ -679,8 +679,8 @@ def test_no_explicit_layer_runs_only_builtin_batch():
 
 def test_fixed_array_element_targets_and_illegal_indices():
     class Packet(SvObject):
-        words = Array(Bit(8), 4)
-        grid = Array(Bit(8), (2, 2))
+        words = Array[Bit[8], 4]()
+        grid = Array[Bit[8], (2, 2)]()
 
         @constraint
         def first_nonzero(self):
@@ -739,7 +739,7 @@ def test_fixed_array_element_targets_and_illegal_indices():
 
     with pytest.raises(ConstraintSyntaxError, match="constant non-bool int"):
         class BadDynamic(SvObject):
-            words = Array(Bit(8), 2)
+            words = Array[Bit[8], 2]()
 
             @rand_layer(1)
             def first(self):
@@ -747,7 +747,7 @@ def test_fixed_array_element_targets_and_illegal_indices():
 
     with pytest.raises(ConstraintSyntaxError, match="slice"):
         class BadSlice(SvObject):
-            words = Array(Bit(8), 2)
+            words = Array[Bit[8], 2]()
 
             @rand_layer(1)
             def first(self):
@@ -755,7 +755,7 @@ def test_fixed_array_element_targets_and_illegal_indices():
 
     with pytest.raises(ConstraintSyntaxError, match="non-bool int"):
         class BadBoolIndex(SvObject):
-            words = Array(Bit(8), 2)
+            words = Array[Bit[8], 2]()
 
             @rand_layer(1)
             def first(self):
@@ -763,7 +763,7 @@ def test_fixed_array_element_targets_and_illegal_indices():
 
     with pytest.raises(ConstraintSyntaxError, match="non-negative"):
         class BadNeg(SvObject):
-            words = Array(Bit(8), 2)
+            words = Array[Bit[8], 2]()
 
             @rand_layer(1)
             def first(self):
@@ -771,7 +771,7 @@ def test_fixed_array_element_targets_and_illegal_indices():
 
     with pytest.raises(DeclarationError, match="out of range"):
         class BadOob(SvObject):
-            words = Array(Bit(8), 2)
+            words = Array[Bit[8], 2]()
 
             @rand_layer(1)
             def first(self):
@@ -779,7 +779,7 @@ def test_fixed_array_element_targets_and_illegal_indices():
 
     with pytest.raises(DeclarationError, match="packed vector"):
         class BadBitSelect(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @rand_layer(1)
             def bit0(self):
@@ -787,7 +787,7 @@ def test_fixed_array_element_targets_and_illegal_indices():
 
     with pytest.raises(DeclarationError, match="overlaps"):
         class WholeAndElem(SvObject):
-            words = Array(Bit(8), 2)
+            words = Array[Bit[8], 2]()
 
             @rand_layer(2)
             def all_words(self):
@@ -800,7 +800,7 @@ def test_fixed_array_element_targets_and_illegal_indices():
 
 def test_array_element_cross_priority_is_state():
     class Packet(SvObject):
-        words = Array(Bit(8), 2)
+        words = Array[Bit[8], 2]()
 
         @constraint
         def first_fixed(self):

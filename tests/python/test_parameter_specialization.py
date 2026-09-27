@@ -22,7 +22,7 @@ from svtypes import (
 
 @svobj
 class ConfigurableData(SvObject):
-    ID = Parameter()(0)
+    ID = Parameter[Int](0)
     data = Int()
 
 InlineConfigurableData = ConfigurableData.specialize(ID=5)
@@ -198,7 +198,7 @@ int main() {
 def test_package_parameter_immutability():
     print("Testing Package Parameter Immutability...")
     pkg = Package("const_pkg")
-    pkg.VERSION = Parameter()(1)
+    pkg.VERSION = Parameter[Int](1)
 
     assert pkg.VERSION.value == 1
 
@@ -215,8 +215,8 @@ def test_unbound_template_definition_and_specialization_codegen():
     definition is generated and specializations are just parameter
     references resolved by the target language."""
     class Templated(SvObject):
-        WIDTH = Parameter(Int)
-        data = Bit(8)
+        WIDTH = Parameter[Int]()
+        data = Bit[8]()
 
     assert Templated._SvObject__svtypes_is_template is True
     sv = Templated.to_sv_obj()
@@ -234,15 +234,15 @@ def test_unbound_template_definition_and_specialization_codegen():
         Spec.to_cpp_obj()
 
     class Kind(SvObject):
-        T = Parameter(type)
-        data = Bit(8)
+        T = Parameter[type]()
+        data = Bit[8]()
 
     assert Kind._SvObject__svtypes_is_template is True
     assert "class Kind #(parameter type T) extends svtypes_pkg::sv_object;" in Kind.to_sv_obj()
     assert "template <typename T>" in Kind.to_cpp_obj()
 
     class Payload(SvObject):
-        x = Bit(4)
+        x = Bit[4]()
 
     KindSpec = Kind.specialize(T=Payload)
     assert KindSpec.__name__ == "Kind_T_Payload"
@@ -257,8 +257,8 @@ def test_unbound_template_definition_and_specialization_codegen():
 
 def test_member_only_specialization_references_template():
     class Templated(SvObject):
-        WIDTH = Parameter(Int)
-        data = Bit(8)
+        WIDTH = Parameter[Int]()
+        data = Bit[8]()
 
     MemberOnly = Templated.specialize(WIDTH=8)
 
@@ -273,24 +273,19 @@ def test_member_only_specialization_references_template():
     assert "Templated_WIDTH_8 child;" not in cpp
 
 
-def test_unbound_template_requires_type_declaration_for_codegen():
-    class Anonymous(SvObject):
-        W = Parameter()
-        data = Bit(8)
-
-    try:
-        Anonymous.to_sv_obj()
-        assert False, "untyped unbound parameter should be rejected at codegen"
-    except Exception as exc:
-        assert "declare a type" in str(exc)
+def test_legacy_untyped_parameter_is_rejected_at_declaration():
+    with pytest.raises(TypeError, match=r"Parameter\[Type\]"):
+        class Anonymous(SvObject):
+            W = Parameter()
+            data = Bit[8]()
 
 
 def test_template_and_specialization_cpp_compile_parity():
     """Generated template definition + specialization + member-only field
     compile and roundtrip through the C++ runtime."""
     class Templated(SvObject):
-        WIDTH = Parameter(Int)
-        data = Bit(8)
+        WIDTH = Parameter[Int]()
+        data = Bit[8]()
 
     Spec = Templated.specialize(WIDTH=4)
     MemberOnly = Templated.specialize(WIDTH=8)
@@ -397,7 +392,7 @@ def test_dtype_template_definition_matrix():
         name = f"Tpl{dtype.__name__}"
         namespace = {"SvObject": SvObject, "Bit": Bit, "Parameter": Parameter, "dtype": dtype}
         exec(
-            f"class {name}(SvObject):\n    W = Parameter(dtype)\n    data = Bit(8)",
+            f"class {name}(SvObject):\n    W = Parameter[dtype]()\n    data = Bit[8]()",
             namespace,
         )
         cls = namespace[name]
@@ -416,15 +411,15 @@ def test_dtype_template_definition_matrix():
 
 def test_mixed_value_and_type_parameters():
     class Mixed(SvObject):
-        N = Parameter(Int)
-        T = Parameter(type)
-        data = Bit(8)
+        N = Parameter[Int]()
+        T = Parameter[type]()
+        data = Bit[8]()
 
     assert "class Mixed #(parameter int N, parameter type T) extends svtypes_pkg::sv_object;" in Mixed.to_sv_obj()
     assert "template <int32_t N, typename T>" in Mixed.to_cpp_obj()
 
     class Payload(SvObject):
-        x = Bit(4)
+        x = Bit[4]()
 
     Spec = Mixed.specialize(N=4, T=Payload)
     assert Spec.__name__ == "Mixed_N_4_T_Payload"
@@ -437,8 +432,8 @@ def test_mixed_value_and_type_parameters():
 def test_template_and_specializations_share_encoding_fingerprint():
     """Encoding fingerprints are parameter-independent layout digests."""
     class Templated(SvObject):
-        WIDTH = Parameter(Int)
-        data = Bit(8)
+        WIDTH = Parameter[Int]()
+        data = Bit[8]()
 
     fp = Templated._encoding_fingerprint_hex()
     assert len(fp) == 64
@@ -450,12 +445,12 @@ def test_template_and_specializations_share_encoding_fingerprint():
 
 def test_str_and_float_specializations_reject_cpp_generation():
     class StrTpl(SvObject):
-        S = Parameter(String)
-        data = Bit(8)
+        S = Parameter[String]()
+        data = Bit[8]()
 
     class FloatTpl(SvObject):
-        V = Parameter(Real)
-        data = Bit(8)
+        V = Parameter[Real]()
+        data = Bit[8]()
 
     str_spec = StrTpl.specialize(S="abc")
     # The specialization is a Python-side binding; only the template generates
@@ -478,15 +473,15 @@ def test_str_and_float_specializations_reject_cpp_generation():
 
 def test_specialize_rejects_mismatched_bindings():
     class WVal(SvObject):
-        W = Parameter(Int)
-        data = Bit(8)
+        W = Parameter[Int]()
+        data = Bit[8]()
 
     with pytest.raises(TypeError, match="value parameter"):
         WVal.specialize(W=int)
 
     class TVar(SvObject):
-        T = Parameter(type)
-        data = Bit(8)
+        T = Parameter[type]()
+        data = Bit[8]()
 
     with pytest.raises(TypeError, match="type parameter"):
         TVar.specialize(T=5)
@@ -499,11 +494,11 @@ def test_specialize_rejects_mismatched_bindings():
 
 def test_type_parameter_schema_entries():
     class Kind(SvObject):
-        T = Parameter(type)
-        data = Bit(8)
+        T = Parameter[type]()
+        data = Bit[8]()
 
     class Payload(SvObject):
-        x = Bit(4)
+        x = Bit[4]()
 
     Spec = Kind.specialize(T=Payload)
     params = [dict(item) for item in schema_descriptor(Spec).schema["parameters"]]
@@ -513,12 +508,12 @@ def test_type_parameter_schema_entries():
 
 def test_package_generates_unbound_template_and_type_parameter():
     class Tpl(SvObject):
-        W = Parameter(Int)
-        data = Bit(8)
+        W = Parameter[Int]()
+        data = Bit[8]()
 
     class Kind(SvObject):
-        T = Parameter(type)
-        data = Bit(8)
+        T = Parameter[type]()
+        data = Bit[8]()
 
     pkg = Package("param_pkg")
     pkg._types["Tpl"] = Tpl
@@ -532,7 +527,7 @@ def test_package_generates_unbound_template_and_type_parameter():
     assert "class Kind #(parameter type T) extends svtypes_pkg::sv_object;" in sv
 
     class Payload(SvObject):
-        x = Bit(4)
+        x = Bit[4]()
 
     pkg2 = Package("type_pkg")
     pkg2._types["Kind"] = Kind
@@ -545,17 +540,17 @@ def test_package_generates_unbound_template_and_type_parameter():
 def test_type_parameter_cpp_compile_parity():
     """Type parameters compile and roundtrip through C++."""
     class Templated(SvObject):
-        WIDTH = Parameter(Int)
-        data = Bit(8)
+        WIDTH = Parameter[Int]()
+        data = Bit[8]()
 
     Spec = Templated.specialize(WIDTH=4)
 
     class Kind(SvObject):
-        T = Parameter(type)
-        data = Bit(8)
+        T = Parameter[type]()
+        data = Bit[8]()
 
     class Payload(SvObject):
-        x = Bit(4)
+        x = Bit[4]()
 
     KindSpec = Kind.specialize(T=Payload)
 
@@ -649,8 +644,8 @@ def test_specialization_cannot_be_re_specialized():
     would produce Tpl_W_4_W_16, which is not a template. Re-specialize the
     original template instead."""
     class Tpl(SvObject):
-        W = Parameter(Int)
-        data = Bit(8)
+        W = Parameter[Int]()
+        data = Bit[8]()
 
     S = Tpl.specialize(W=4)
     assert S.W.value == 4
@@ -659,16 +654,16 @@ def test_specialization_cannot_be_re_specialized():
         S.specialize(W=16)
     # Default-valued parameter classes (not specializations) stay re-specializable.
     class Defaulted(SvObject):
-        W = Parameter(Int)(4)
-        data = Bit(8)
+        W = Parameter[Int](4)
+        data = Bit[8]()
 
     assert Defaulted.specialize(W=16).W.value == 16
 
 
 def test_specialize_preserves_declared_dtype():
     class Wide(SvObject):
-        W = Parameter(LongInt)
-        data = Bit(8)
+        W = Parameter[LongInt]()
+        data = Bit[8]()
 
     assert Wide.W.dtype == "longint"
     Spec = Wide.specialize(W=5)
@@ -682,8 +677,8 @@ def test_specialize_preserves_declared_dtype():
 
 def test_bound_str_default_template_rejects_cpp_generation():
     class StrDef(SvObject):
-        S = Parameter("hello")
-        data = Bit(8)
+        S = Parameter[String]("hello")
+        data = Bit[8]()
 
     assert 'class StrDef #(parameter string S = "hello") extends svtypes_pkg::sv_object;' in StrDef.to_sv_obj()
     with pytest.raises(DeclarationError, match="C\\+\\+ template parameter"):
@@ -692,17 +687,17 @@ def test_bound_str_default_template_rejects_cpp_generation():
 
 def test_inheriting_unbound_template_is_rejected():
     class Base(SvObject):
-        W = Parameter(Int)
-        data = Bit(8)
+        W = Parameter[Int]()
+        data = Bit[8]()
 
     with pytest.raises(DeclarationError, match="cannot inherit unbound parameter template"):
         class Child(Base):
-            x = Bit(4)
+            x = Bit[4]()
 
     # Inheriting a bound specialization is fine; the subclass flattens to the
     # original template rather than referencing the specialization class.
     class Child2(Base.specialize(W=8)):
-        x = Bit(4)
+        x = Bit[4]()
     assert Child2._SvObject__svtypes_params == []
     assert "class Child2 extends Base#(.W(32'd8));" in Child2.to_sv_obj()
     assert "struct Child2 : public Base<8> {" in Child2.to_cpp_obj()
@@ -710,13 +705,13 @@ def test_inheriting_unbound_template_is_rejected():
 
 def test_paramref_forwarding_flattens_to_original_template():
     class Base(SvObject):
-        WIDTH = Parameter(Int)
-        addr = Bit(8)
+        WIDTH = Parameter[Int]()
+        addr = Bit[8]()
 
     # Same-name forward.
     class Same(Base.specialize(WIDTH=ParamRef())):
-        WIDTH = Parameter(Int)
-        n = Parameter(Int)
+        WIDTH = Parameter[Int]()
+        n = Parameter[Int]()
 
     assert Same._SvObject__svtypes_param_refs == {"WIDTH": "WIDTH"}
     sv = Same.to_sv_obj()
@@ -728,8 +723,8 @@ def test_paramref_forwarding_flattens_to_original_template():
 
     # Renamed forward.
     class Renamed(Base.specialize(WIDTH=ParamRef("W"))):
-        W = Parameter(Int)
-        n = Parameter(Int)
+        W = Parameter[Int]()
+        n = Parameter[Int]()
 
     assert Renamed._SvObject__svtypes_param_refs == {"WIDTH": "W"}
     assert "class Renamed #(parameter int W, parameter int n) extends Base#(.WIDTH(W));" in Renamed.to_sv_obj().splitlines()[0]
@@ -742,33 +737,33 @@ def test_paramref_forwarding_flattens_to_original_template():
 
 def test_paramref_requires_declared_subclass_parameter():
     class Base(SvObject):
-        WIDTH = Parameter(Int)
-        addr = Bit(8)
+        WIDTH = Parameter[Int]()
+        addr = Bit[8]()
 
     with pytest.raises(DeclarationError, match="undeclared parameter"):
         class Bad(Base.specialize(WIDTH=ParamRef())):
-            data = Bit(8)
+            data = Bit[8]()
 
 
 def test_paramref_dtype_mismatch_is_rejected():
     class Base(SvObject):
-        WIDTH = Parameter(Int)
-        addr = Bit(8)
+        WIDTH = Parameter[Int]()
+        addr = Bit[8]()
 
     with pytest.raises(DeclarationError, match="dtype mismatch"):
         class Bad(Base.specialize(WIDTH=ParamRef("W"))):
-            W = Parameter(String)
-            data = Bit(8)
+            W = Parameter[String]()
+            data = Bit[8]()
 
 
 def test_type_parameter_forwarding():
     class Kind(SvObject):
-        T = Parameter(type)
-        data = Bit(8)
+        T = Parameter[type]()
+        data = Bit[8]()
 
     class Sub(Kind.specialize(T=ParamRef())):
-        T = Parameter(type)
-        payload = Bit(8)
+        T = Parameter[type]()
+        payload = Bit[8]()
 
     assert Sub._SvObject__svtypes_param_refs == {"T": "T"}
     assert "class Sub #(parameter type T) extends Kind#(.T(T));" in Sub.to_sv_obj().splitlines()[0]
@@ -779,12 +774,12 @@ def test_user_subclass_keeps_own_parameters():
     """class Child(Base.specialize(A=8)) with its own parameter still renders
     the parameter list and can be specialized."""
     class Base(SvObject):
-        A = Parameter(Int)
-        data = Bit(8)
+        A = Parameter[Int]()
+        data = Bit[8]()
 
     class Child(Base.specialize(A=8)):
-        B = Parameter(Int)
-        x = Bit(4)
+        B = Parameter[Int]()
+        x = Bit[4]()
 
     assert "class Child #(parameter int B) extends Base#(.A(32'd8));" in Child.to_sv_obj().splitlines()[0]
     assert "template <int32_t B>\nstruct Child : public Base<8> {" in Child.to_cpp_obj()
@@ -795,8 +790,8 @@ def test_user_subclass_keeps_own_parameters():
 
 def test_paramref_intermediate_is_not_instantiable():
     class Base(SvObject):
-        A = Parameter(Int)
-        data = Bit(8)
+        A = Parameter[Int]()
+        data = Bit[8]()
 
     Mid = Base.specialize(A=ParamRef())
     assert Mid._SvObject__svtypes_is_template is True

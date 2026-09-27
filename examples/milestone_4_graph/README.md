@@ -28,12 +28,12 @@ The test covers:
 - shared child identity preservation
 - self-cycle identity preservation
 - repeated object references in queues
-- object queues generated from both `Queue(GraphNode())` and
-  `Queue(Object("GraphNode"))`
+- object queues generated from both `Queue[GraphNode]()` and
+  `Queue[Object["GraphNode"]]()`
 - Python -> SV typed-channel graph payloads
 - SV -> Python typed-channel graph payloads
 - malformed SV reference records for unresolved ids, type mismatches, and id `0`
 
-C++ graph parity is covered for explicit `Object("Type")` reference fields and
+C++ graph parity is covered for explicit `Object["Type"]` reference fields and
 object queues. Forward references and weak-reference lifecycle cleanup are not
 covered by this example.

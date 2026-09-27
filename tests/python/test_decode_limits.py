@@ -16,10 +16,10 @@ from test_m4_graph import GraphNode, GraphQueue
 
 def test_standalone_dynamic_codecs_reject_lengths_before_allocation():
     with pytest.raises(ResourceLimitError, match="DynArray length 3"):
-        DynArray(Int(), max_length=2).unpack((3).to_bytes(4, "little"))
+        DynArray[Int](max_length=2).unpack((3).to_bytes(4, "little"))
 
     with pytest.raises(ResourceLimitError, match="AssocArray length 3"):
-        AssocArray(Int(), Int(), max_length=2).unpack((3).to_bytes(4, "little"))
+        AssocArray[Int, Int](max_length=2).unpack((3).to_bytes(4, "little"))
 
     with pytest.raises(ResourceLimitError, match="String length 3"):
         String(max_bytes=2).unpack((3).to_bytes(4, "little"))
@@ -27,16 +27,16 @@ def test_standalone_dynamic_codecs_reject_lengths_before_allocation():
 
 def test_dynamic_codecs_enforce_the_same_limit_while_encoding():
     with pytest.raises(EncodeError, match="encoder limit"):
-        DynArray(Int(), max_length=2).pack([1, 2, 3])
+        DynArray[Int](max_length=2).pack([1, 2, 3])
     with pytest.raises(EncodeError, match="encoder limit"):
-        AssocArray(Int(), Int(), max_length=2).pack({1: 1, 2: 2, 3: 3})
+        AssocArray[Int, Int](max_length=2).pack({1: 1, 2: 2, 3: 3})
     with pytest.raises(EncodeError, match="encoder limit"):
         String(max_bytes=2).pack("abc")
 
 
 def test_local_decoder_limits_change_source_schema_but_not_encoding_identity():
-    normal = schema_descriptor(DynArray(Int(), max_length=10))
-    strict = schema_descriptor(DynArray(Int(), max_length=2))
+    normal = schema_descriptor(DynArray[Int](max_length=10))
+    strict = schema_descriptor(DynArray[Int](max_length=2))
     assert normal.schema_fingerprint != strict.schema_fingerprint
     assert normal.encoding_fingerprint == strict.encoding_fingerprint
 

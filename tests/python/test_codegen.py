@@ -2,7 +2,7 @@ from svtypes import SvObject, Enum, Int, Parameter, svobj
 
 @svobj
 class MyData(SvObject):
-    ID = Parameter()(1)
+    ID = Parameter[Int](1)
     status = Int()
 
 def test_codegen():

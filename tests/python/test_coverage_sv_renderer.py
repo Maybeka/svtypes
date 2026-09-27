@@ -8,7 +8,7 @@ from svtypes.coverage.observation import compare_manifest_hits, parse_observatio
 from svtypes.coverage.sv import _queue_function_lines, observation_manifest
 
 
-class _RendererPacketKind(Enum, width=8, signed=False):
+class _RendererPacketKind(Enum[Bit[8]]):
     request = 0
     response = 1
 
@@ -29,8 +29,8 @@ def test_renderer_preserves_enum_member_symbols():
 
 def test_renderer_uses_frozen_cross_ir_and_manifest_has_all_observable_bins():
     class Packet(SvObject):
-        opcode = Bit(1)
-        mode = Bit(1)
+        opcode = Bit[1]()
+        mode = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -66,8 +66,8 @@ def test_renderer_uses_frozen_cross_ir_and_manifest_has_all_observable_bins():
 
 def test_renderer_emits_cross_local_covpoint_as_private_zero_weight_support():
     class Packet(SvObject):
-        opcode = Bit(2)
-        mode = Bit(1)
+        opcode = Bit[2]()
+        mode = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -97,8 +97,8 @@ def test_renderer_emits_cross_local_covpoint_as_private_zero_weight_support():
 
 def test_renderer_suppresses_unselected_static_cross_tuples_when_auto_retain_is_disabled():
     class Packet(SvObject):
-        opcode = Bit(1)
-        mode = Bit(1)
+        opcode = Bit[1]()
+        mode = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -120,7 +120,7 @@ def test_renderer_suppresses_unselected_static_cross_tuples_when_auto_retain_is_
 
 def test_renderer_guards_dynamic_slot_coverpoints_by_size():
     class Packet(SvObject):
-        values = DynArray(Bit(2))
+        values = DynArray[Bit[2]]()
 
         @covergroup
         def cg(self):
@@ -136,7 +136,7 @@ def test_renderer_guards_dynamic_slot_coverpoints_by_size():
 
 def test_renderer_emits_transition_sequences_with_implication():
     class Packet(SvObject):
-        code = Bit(2)
+        code = Bit[2]()
 
         @covergroup
         def cg(self):
@@ -151,8 +151,8 @@ def test_renderer_emits_transition_sequences_with_implication():
 
 def test_renderer_binds_cover_input_constructor_and_cover_ref_sample_path():
     class Packet(SvObject):
-        opcode = Bit(2)
-        mode = Bit(1)
+        opcode = Bit[2]()
+        mode = Bit[1]()
 
         @covergroup
         def cg(self, limit: CoverInput[int], mode: CoverRef[Bit]):
@@ -172,7 +172,7 @@ def test_renderer_binds_cover_input_constructor_and_cover_ref_sample_path():
 
 def test_renderer_emits_a_coverage_init_method_with_the_same_actual_mapping():
     class Packet(SvObject):
-        opcode = Bit(2)
+        opcode = Bit[2]()
 
         @covergroup
         def cg(self, first: CoverInput[int], last: CoverInput[int]):
@@ -191,7 +191,7 @@ def test_renderer_emits_a_coverage_init_method_with_the_same_actual_mapping():
 
 def test_renderer_preserves_input_driven_unbounded_array_bin_syntax():
     class Packet(SvObject):
-        opcode = Bit(2)
+        opcode = Bit[2]()
 
         @covergroup
         def cg(self, first: CoverInput[int], last: CoverInput[int]):
@@ -208,9 +208,9 @@ def test_renderer_preserves_input_driven_unbounded_array_bin_syntax():
 
 def test_renderer_emits_cross_iff_on_the_cross_declaration():
     class Packet(SvObject):
-        code = Bit(1)
-        mode = Bit(1)
-        gate = Bit(1)
+        code = Bit[1]()
+        mode = Bit[1]()
+        gate = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -232,7 +232,7 @@ def test_renderer_emits_cross_iff_on_the_cross_declaration():
 
 def test_renderer_explicitly_emits_supported_coverage_options():
     class Packet(SvObject):
-        opcode = Bit(1)
+        opcode = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -254,7 +254,7 @@ def test_renderer_explicitly_emits_supported_coverage_options():
 
 def test_renderer_gates_target_unsupported_instance_type_options():
     class InstCoverage(SvObject):
-        opcode = Bit(1)
+        opcode = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -268,7 +268,7 @@ def test_renderer_gates_target_unsupported_instance_type_options():
         InstCoverage.to_sv_obj()
 
     class MergeInstances(SvObject):
-        opcode = Bit(1)
+        opcode = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -284,8 +284,8 @@ def test_renderer_gates_target_unsupported_instance_type_options():
 
 def test_renderer_rejects_cross_queue_when_configured_target_lacks_type_support():
     class Packet(SvObject):
-        opcode = Bit(2)
-        mode = Bit(2)
+        opcode = Bit[2]()
+        mode = Bit[2]()
 
         @covergroup
         def cg(self, limit: CoverInput[int]):
@@ -313,7 +313,7 @@ def test_renderer_rejects_cross_queue_when_configured_target_lacks_type_support(
 
 def test_cross_queue_function_rejects_non_queue_return_and_self_access():
     class NonQueueReturn(SvObject):
-        value = Bit(1)
+        value = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -331,7 +331,7 @@ def test_cross_queue_function_rejects_non_queue_return_and_self_access():
         NonQueueReturn.cg.freeze()
 
     class SelfParameter(SvObject):
-        value = Bit(1)
+        value = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -375,7 +375,7 @@ def test_observation_protocol_requires_every_manifest_named_item():
 
 def test_observation_manifest_binds_instance_keys_only_through_explicit_target_labels():
     class Packet(SvObject):
-        opcode = Bit(1)
+        opcode = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -441,7 +441,7 @@ def test_observation_protocol_accepts_per_instance_documents():
 
 def test_observation_labels_disambiguate_equal_item_names_from_multiple_covergroups():
     class Packet(SvObject):
-        opcode = Bit(1)
+        opcode = Bit[1]()
 
         @covergroup
         def control(self):
@@ -465,12 +465,12 @@ def test_observation_labels_disambiguate_equal_item_names_from_multiple_covergro
 
 def test_renderer_emits_nullness_value_points_for_object_dynamic_containers():
     class Child(SvObject):
-        value = Bit(8)
+        value = Bit[8]()
 
     class Packet(SvObject):
-        dynamic = DynArray(Object("Child"), cov=True)
-        queue = Queue(Object("Child"), cov=True)
-        lookup = AssocArray(Bit(8), Object("Child"), cov=True)
+        dynamic = DynArray[Object["Child"]](cov=True)
+        queue = Queue[Object["Child"]](cov=True)
+        lookup = AssocArray[Bit[8], Object["Child"]](cov=True)
 
     code = Packet.to_sv_obj()
     assert "dynamic: coverpoint (value == null)" in code
@@ -480,10 +480,10 @@ def test_renderer_emits_nullness_value_points_for_object_dynamic_containers():
 
 def test_renderer_strips_field_randomization_qualifier_from_value_sample_formal():
     class Child(SvObject):
-        value = Bit(8)
+        value = Bit[8]()
 
     class Packet(SvObject):
-        dynamic = DynArray(Object("Child", rand=True), cov=True)
+        dynamic = DynArray[Object["Child"](rand=True)](cov=True)
 
     code = Packet.to_sv_obj()
     assert "sample(Child value)" in code

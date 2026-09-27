@@ -57,12 +57,12 @@ JSON 配置文件；配置文件必须是一个全局键值 JSON object，不能
 
 | Type | Encoding |
 |---|---|
-| `Bit(width, signed=False)` | `(width + 7) // 8` little-endian bytes. Unused high bits in the final byte are zero on pack. |
-| `Bit(width, signed=True)` | Same byte width as unsigned bits. Values are normalized to two's-complement width before packing. |
-| `Logic(width_or_shape)` | Three consecutive `(width + 7) // 8` little-endian planes: known value bits, X mask, then Z mask. X and Z masks are disjoint; value bits under X/Z are zero; unused high bits in every plane are zero. |
-| `Int` | 32-bit signed value, same encoding as `Bit(32, signed=True)`. |
-| `LongInt` | 64-bit signed value, same encoding as `Bit(64, signed=True)`. |
-| `Enum(width=8/16/32/64, signed=...)` | Exactly `width / 8` little-endian two's-complement bytes. Width and signedness are mandatory declaration arguments; decoded values not present in the enum are rejected. |
+| `Bit[width]()` | `(width + 7) // 8` little-endian bytes. Unused high bits in the final byte are zero on pack. |
+| `Bit[width, Signed]()` | Same byte width as unsigned bits. Values are normalized to two's-complement width before packing. |
+| `Logic[width_or_shape]()` | Three consecutive `(width + 7) // 8` little-endian planes: known value bits, X mask, then Z mask. X and Z masks are disjoint; value bits under X/Z are zero; unused high bits in every plane are zero. |
+| `Int` | 32-bit signed value, same encoding as `Bit[32, Signed]()`. |
+| `LongInt` | 64-bit signed value, same encoding as `Bit[64, Signed]()`. |
+| `Enum[Bit[width]]` | Exactly `(width + 7) // 8` little-endian bytes. Decoded values not present in the enum are rejected. |
 | `String` | 4-byte byte length followed by UTF-8 bytes on Python. Generated SV strings are byte strings and pack one byte per character. |
 | `Real` | 8 IEEE-754 bytes matching SystemVerilog `$realtobits` / `$bitstoreal`. |
 | `ShortReal` | 4 IEEE-754 bytes matching SystemVerilog `$shortrealtobits` / `$bitstoshortreal`. |
@@ -71,15 +71,15 @@ JSON 配置文件；配置文件必须是一个全局键值 JSON object，不能
 
 | Type | Encoding |
 |---|---|
-| fixed `Array(T, N)` | `N` elements serialized in index order, without a length prefix. |
-| `DynArray(T)` | 4-byte element count followed by elements in index order. |
-| `Queue(T)` | Same as `DynArray(T)`. |
-| `AssocArray(K, V)` | 4-byte entry count followed by key/value pairs sorted lexicographically by each key's stable encoded bytes. Python, generated SV, and generated C++ use the same ordering; insertion and simulator iteration order do not affect the payload. |
+| fixed `Array[T, N]()` | `N` elements serialized in index order, without a length prefix. |
+| `DynArray[T]()` | 4-byte element count followed by elements in index order. |
+| `Queue[T]()` | Same as `DynArray[T]()`. |
+| `AssocArray[K, V]()` | 4-byte entry count followed by key/value pairs sorted lexicographically by each key's stable encoded bytes. Python, generated SV, and generated C++ use the same ordering; insertion and simulator iteration order do not affect the payload. |
 | `SvObject` | 1-byte presence marker. `0` means null and no more object bytes follow. `1` means an object envelope follows. |
 | object envelope | Magic bytes `SVXO`, 2-byte little-endian format version, 2-byte little-endian encoding-field count, 8-byte little-endian object number, unified type name as a SvTypes `String`, the raw 32-byte SHA-256 encoding fingerprint, then field bytes. The frozen `1.0.0` envelope version is `2`; prototype version `1` is rejected rather than interpreted as version `2`. |
 | nested `SvObject` | Same `SvObject` encoding inline at the field position. |
 | object arrays/queues | Elements are serialized as `SvObject` values in container order, so each element has its own presence marker and envelope when present. |
-| object arrays/queues in generated C++ | SvTypes object elements are represented as object pointers in generated C++ containers so identity is preserved. This applies to both `Queue(GraphNode())`-style object element declarations and explicit `Queue(Object("GraphNode"))` reference declarations. |
+| object arrays/queues in generated C++ | SvTypes object elements are represented as object pointers in generated C++ containers so identity is preserved. This applies to both `Queue[GraphNode]()`-style object element declarations and explicit `Queue[Object["GraphNode"]]()` reference declarations. |
 
 ## Object References
 
@@ -123,8 +123,8 @@ mismatch for an existing id is an error.
 
 - Dynamic strings, arrays, queues, and associative arrays accept at most
   `1_000_000` bytes/elements by default. Python codecs can lower the local
-  limit with `String(max_bytes=...)`, `DynArray(..., max_length=...)`, or
-  `AssocArray(..., max_length=...)`.
+  limit with `String(max_bytes=...)`, `DynArray[T](max_length=...)`, or
+  `AssocArray[K, V](max_length=...)`.
 - Python object-graph decoding uses immutable public `DecodeLimits`. Defaults
   are 64 MiB input, 1,000,000 dynamic elements, 100,000 inline objects, and
   256 nested object codec calls. `CodecSession.unpack_context(limits)` selects

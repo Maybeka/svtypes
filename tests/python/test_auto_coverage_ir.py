@@ -9,11 +9,11 @@ from svtypes.errors import CoverageDeclarationError
 
 def test_effective_cov_fields_compile_into_one_default_coverage_group():
     class Packet(SvObject):
-        opcode = Bit(8)
-        fixed = Array(Bit(8), 2, cov=True)
-        dynamic = DynArray(Bit(8), cov=True)
-        queue = Queue(Bit(8), cov=True, cov_slots=3)
-        lookup = AssocArray(Bit(8), Bit(8), cov=True)
+        opcode = Bit[8]()
+        fixed = Array[Bit[8], 2](cov=True)
+        dynamic = DynArray[Bit[8]](cov=True)
+        queue = Queue[Bit[8]](cov=True, cov_slots=3)
+        lookup = AssocArray[Bit[8], Bit[8]](cov=True)
 
     coverage = auto_coverage_ir(Packet)
 
@@ -31,15 +31,15 @@ def test_effective_cov_fields_compile_into_one_default_coverage_group():
 def test_no_effective_cov_fields_produces_no_default_group():
     class Plain(SvObject):
         text = String()
-        ignored = Bit(8, cov=False)
+        ignored = Bit[8](cov=False)
 
     assert auto_coverage_ir(Plain) is None
 
 
 def test_default_auto_coverage_group_is_bound_and_samples_scalar_and_dynamic_values():
     class Packet(SvObject):
-        opcode = Bit(2)
-        dynamic = DynArray(Bit(2), cov=True)
+        opcode = Bit[2]()
+        dynamic = DynArray[Bit[2]](cov=True)
 
     packet = Packet()
     packet.opcode.value = 1
@@ -52,8 +52,8 @@ def test_default_auto_coverage_group_is_bound_and_samples_scalar_and_dynamic_val
 
 def test_default_auto_coverage_tracks_handle_nullness_and_excludes_xz_from_two_state_bins():
     class Packet(SvObject):
-        state = Logic(1)
-        child = Object("Child")
+        state = Logic[1]()
+        child = Object["Child"]()
 
     packet = Packet()
     packet.state.value = "x"
@@ -67,7 +67,7 @@ def test_default_auto_coverage_tracks_handle_nullness_and_excludes_xz_from_two_s
 
 
 def test_automatic_bins_create_one_named_bin_per_enum_value():
-    class Opcode(Enum, width=8, signed=False):
+    class Opcode(Enum[Bit[8]]):
         READ = 1
         WRITE = 7
 
@@ -82,14 +82,14 @@ def test_automatic_bins_create_one_named_bin_per_enum_value():
 
 def test_object_handles_do_not_create_default_nullness_coverage():
     class Packet(SvObject):
-        child = Object("Child")
+        child = Object["Child"]()
 
     coverage = auto_coverage_ir(Packet)
 
     assert coverage is None
 
     class Child(SvObject):
-        value = Bit(8)
+        value = Bit[8]()
 
     class ByValueDisabled(SvObject):
         child = Child(cov=False)
@@ -99,13 +99,13 @@ def test_object_handles_do_not_create_default_nullness_coverage():
 
 def test_object_container_auto_coverage_tracks_element_nullness():
     class Child(SvObject):
-        value = Bit(8)
+        value = Bit[8]()
 
     class Packet(SvObject):
-        fixed = Array(Object("Child"), 2, cov=True)
-        dynamic = DynArray(Object("Child"), cov=True)
-        queue = Queue(Object("Child"), cov=True)
-        lookup = AssocArray(Bit(8), Object("Child"), cov=True)
+        fixed = Array[Object["Child"], 2](cov=True)
+        dynamic = DynArray[Object["Child"]](cov=True)
+        queue = Queue[Object["Child"]](cov=True)
+        lookup = AssocArray[Bit[8], Object["Child"]](cov=True)
 
     coverage = auto_coverage_ir(Packet)
     assert coverage is not None
@@ -129,10 +129,10 @@ def test_object_container_auto_coverage_tracks_element_nullness():
 def test_cov_slots_is_restricted_to_dynamic_array_and_queue_fields():
     with pytest.raises(ValueError, match="cov_slots is only supported"):
         class Invalid(SvObject):
-            fixed = Array(Bit(8), 2, cov=True, cov_slots=2)
+            fixed = Array[Bit[8], 2](cov=True, cov_slots=2)
 
     class Disabled(SvObject):
-        values = DynArray(Bit(8), cov=False, cov_slots=2)
+        values = DynArray[Bit[8]](cov=False, cov_slots=2)
 
     with pytest.raises(CoverageDeclarationError, match="SVT-COV-SLOTS"):
         auto_coverage_ir(Disabled)

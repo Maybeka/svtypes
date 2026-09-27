@@ -30,7 +30,45 @@ class RemoteRef(BuiltInType):
     """Codec for one immutable, nullable, foreign-owned object identifier."""
     _default_cov = False
 
-    def __init__(self, target_type_name: str, value: RemoteRefValue | int | None = None, **kwargs: Any) -> None:
+    @classmethod
+    def __class_getitem__(cls, target_type_name: str):
+        from .typespec import TypeSpec
+
+        if not isinstance(target_type_name, str) or not target_type_name:
+            raise TypeError("RemoteRef[...] requires a nonempty string target name")
+
+        def construct(*values: Any, **kwargs: Any) -> "RemoteRef":
+            if len(values) > 1:
+                raise TypeError("RemoteRef[...] accepts at most one positional value")
+            if values:
+                return cls._from_target(target_type_name, values[0], **kwargs)
+            return cls._from_target(target_type_name, **kwargs)
+
+        return TypeSpec(cls, (target_type_name,), construct)
+
+    @classmethod
+    def _from_target(
+        cls,
+        target_type_name: str,
+        value: RemoteRefValue | int | None = None,
+        **kwargs: Any,
+    ) -> "RemoteRef":
+        return cls(target_type_name, value, _svtypes_internal=True, **kwargs)
+
+    def __init__(
+        self,
+        target_type_name: str | None = None,
+        value: RemoteRefValue | int | None = None,
+        *,
+        _svtypes_internal: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        if not _svtypes_internal:
+            raise TypeError(
+                "RemoteRef(...) no longer declares a target type; "
+                "use RemoteRef[\"target.Type\"](...) instead"
+            )
+        assert target_type_name is not None
         super().__init__(**kwargs)
         if not isinstance(target_type_name, str) or not target_type_name:
             raise ValueError("RemoteRef target_type_name must be a nonempty string")

@@ -48,6 +48,7 @@ from svtypes import (
     RemoteRef,
     RemoteRefValue,
     STABLE_CAPABILITIES,
+    Signed,
     SvObject,
     SvStruct,
     clear_object_registry,
@@ -62,7 +63,7 @@ WORKDIR_NAME = "target_core"
 REMOTE_RUNNER = os.environ.get("SVTYPES_REMOTE_SV_RUNNER", "svtypes_remote_sv_runner")
 
 
-class SignedTone(Enum, width=8, signed=True):
+class SignedTone(Enum[Bit[8, Signed]]):
     NEG = -1
     ZERO = 0
     POS = 1
@@ -70,26 +71,26 @@ class SignedTone(Enum, width=8, signed=True):
 
 @svobj
 class Header(SvStruct):
-    addr = Bit(16)
-    extra = Bit(8)
+    addr = Bit[16]()
+    extra = Bit[8]()
 
 
 @svobj
 class CoreExtraTx(SvObject):
-    flags = Logic(4)
-    shaped_logic = Logic((2, 4))
-    legacy = Reg(8)
-    signed_logic = Logic(8, signed=True)
-    shaped_bits = Bit((2, 8))
+    flags = Logic[4]()
+    shaped_logic = Logic[(2, 4)]()
+    legacy = Reg[8]()
+    signed_logic = Logic[8, Signed]()
+    shaped_bits = Bit[(2, 8)]()
     header = Header()
-    headers = Array(Header(), 2)
-    q_headers = Queue(Header())
-    handle = RemoteRef("acme.Device")
+    headers = Array[Header, 2]()
+    q_headers = Queue[Header]()
+    handle = RemoteRef["acme.Device"]()
     skipped = Int(pack_bytes=False)
     hidden = Int(dump=False)
-    empty_dyn = DynArray(Int())
-    empty_q = Queue(Int())
-    matrix = Array(Int(), (2, 2))
+    empty_dyn = DynArray[Int]()
+    empty_q = Queue[Int]()
+    matrix = Array[Int, (2, 2)]()
     signed_tone = SignedTone()
 
 
@@ -100,7 +101,7 @@ class PlusargBox(SvObject):
 
 @svobj
 class RandBox(SvObject):
-    amount = Bit(8)
+    amount = Bit[8]()
 
     @constraint
     def legal(self):
@@ -111,8 +112,8 @@ class RandBox(SvObject):
 DriveRequest = RecordSchema(
     "target.core.drive.request",
     [
-        RecordField("address", Bit(32)),
-        ("data", Bit(64)),
+        RecordField("address", Bit[32]()),
+        ("data", Bit[64]()),
     ],
     class_name="DriveRequest",
 ).build()

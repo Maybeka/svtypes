@@ -5,13 +5,13 @@ from svtypes import SvObject, SvStruct, Int, Bit, Array, DynArray, Queue, AssocA
 
 @svobj
 class Pixel(SvStruct):
-    r = Bit(8)
-    g = Bit(8)
-    b = Bit(8)
+    r = Bit[8]()
+    g = Bit[8]()
+    b = Bit[8]()
 
 @svobj
 class Image(SvObject):
-    pixels = Array(Pixel(), 4) # Fixed array of 4 pixels
+    pixels = Array[Pixel, 4]() # Fixed array of 4 pixels
 
 def test_array_access():
     print("Testing Array Access...")
@@ -31,7 +31,7 @@ def test_array_access():
 
 def test_dyn_array():
     print("Testing DynArray...")
-    da = DynArray(Int())
+    da = DynArray[Int]()
     da.value = [1, 2, 3]
     assert da.value == [1, 2, 3]
     assert da.size() == 3
@@ -40,7 +40,7 @@ def test_dyn_array():
 
     # Test pack/unpack
     b = da.to_bytes()
-    da2 = DynArray(Int())
+    da2 = DynArray[Int]()
     da2.from_bytes(b)
     assert da2.value == [1, 2, 3]
 
@@ -51,7 +51,7 @@ def test_dyn_array():
 
 def test_queue():
     print("Testing Queue...")
-    q = Queue(Int())
+    q = Queue[Int]()
     q.value = [10, 20]
     assert q.value == [10, 20]
     assert q.size() == 2
@@ -69,7 +69,7 @@ def test_queue():
 
 def test_assoc_array():
     print("Testing AssocArray...")
-    aa = AssocArray(String(), Int())
+    aa = AssocArray[String, Int]()
     aa.value = {"apple": 1, "banana": 2}
     assert aa.value == {"apple": 1, "banana": 2}
     assert aa.size() == 2
@@ -78,7 +78,7 @@ def test_assoc_array():
 
     # Test pack/unpack
     b = aa.to_bytes()
-    aa2 = AssocArray(String(), Int())
+    aa2 = AssocArray[String, Int]()
     aa2.from_bytes(b)
     assert aa2.value == {"apple": 1, "banana": 2}
 

@@ -8,7 +8,7 @@ import sys
 class TopLevelObj(SvObject):
     x = Int()
 
-TopLevelParam = Parameter()(123)
+TopLevelParam = Parameter[Int](123)
 
 def test_unit_package():
     print("Testing $unit (Global) Package...")

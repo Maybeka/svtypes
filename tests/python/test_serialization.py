@@ -1,6 +1,6 @@
 from svtypes import SvObject, Int, Bit, Enum, Real, String, svobj
 
-class e_color(Enum, width=8, signed=False):
+class e_color(Enum[Bit[8]]):
     RED = 0
     GREEN = 1
     BLUE = 2
@@ -8,12 +8,12 @@ class e_color(Enum, width=8, signed=False):
 @svobj
 class InnerObj(SvObject):
     a = Int()
-    b = Bit(8)
+    b = Bit[8]()
 
 @svobj
 class ComplexObj(SvObject):
     f1 = Int()
-    f2 = Bit(16)
+    f2 = Bit[16]()
     f3 = e_color()
     f4 = Real()
     f5 = String()

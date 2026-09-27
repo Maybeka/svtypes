@@ -16,8 +16,8 @@ def test_record_schema_builds_an_unregistered_ordered_public_record():
     schema = RecordSchema(
         "svx.generated.bus.drive.request",
         [
-            RecordField("address", Bit(32)),
-            ("data", Bit(64)),
+            RecordField("address", Bit[32]()),
+            ("data", Bit[64]()),
         ],
         class_name="DriveRequest",
     )

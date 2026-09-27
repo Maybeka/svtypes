@@ -49,10 +49,10 @@ All types inherit from `TypeBase`, which defines the core interface:
 ### 2. Basic Value Types
 These types wrap standard Python values with hardware-specific constraints:
 - **`Int`**: Models a 32-bit signed integer. Maps to SV `int` and C++ `int32_t`. Serialized as 4-byte little-endian.
-- **`Bit(width_or_shape, signed=False)`**: Models an arbitrary-width two-state packed value. It maps to SV `bit`; a tuple shape becomes packed dimensions, for example `Bit((2, 8))` becomes `bit [1:0] [7:0]`.
-- **`Logic(width_or_shape, signed=False)`**: Models an arbitrary-width four-state packed value. It maps to SV `logic`, preserves 0/1/X/Z in three byte planes, and is randomized as its SystemVerilog two-state projection.
-- **`Reg(...)`**: Creates the same Python runtime type and byte representation as `Logic(...)`, while emitting the historical SV declaration spelling `reg`. Thus `type(Reg(8)) == type(Logic(8))`, and both values satisfy `isinstance(value, Reg)`.
-- **`Array(element, size)`**: A real fixed-array class. A tuple shape is recursively expanded: `Array(Bit(8), (3, 2))` is represented exactly as `Array(Array(Bit(8), 2), 3)`; outer field options apply only to the outer array.
+- **`Bit[width_or_shape](...)`**: Models an arbitrary-width two-state packed value. It maps to SV `bit`; `Bit[2, 8]()` becomes `bit [1:0] [7:0]`. Use `BitSigned[...]` or `Bit[..., Signed]` for signed storage.
+- **`Logic[width_or_shape](...)`**: Models an arbitrary-width four-state packed value. It maps to SV `logic`, preserves 0/1/X/Z in three byte planes, and is randomized as its SystemVerilog two-state projection. `LogicSigned[...]` and `Logic[..., Signed]` select signed storage.
+- **`Reg[...](...)`**: Creates the same Python runtime type and byte representation as `Logic[...]`, while emitting the SV declaration spelling `reg`. Thus `type(Reg[8]()) == type(Logic[8]())`, and both values satisfy `isinstance(value, Reg)`.
+- **`Array[element_spec, size](...)`**: A real fixed-array class. A tuple shape is recursively expanded: `Array[Bit[8], (3, 2)]()` is represented exactly as `Array[Array[Bit[8], 2], 3]()`; outer field options apply only to the outer array.
 - **`Real`**: Models a 64-bit float. Maps to SV `real` and C++ `double`. Serialized as 8-byte IEEE 754.
 - **`String`**: Models a variable-length string. Maps to SV `string` and C++ `std::string`.
 
@@ -60,12 +60,12 @@ These types wrap standard Python values with hardware-specific constraints:
 `Enum` declarations explicitly freeze their encoding width and signedness:
 
 ```python
-class Status(Enum, width=8, signed=False):
+class Status(Enum[Bit[8]]):
     IDLE = 0
     BUSY = 1
 ```
 
-- Supported widths are 8, 16, 32, and 64 bits.
+- `Enum[Bit[width]]` supports every positive bit width; `Enum[Int]` and `Enum[LongInt]` select SV `int` and `longint`. Bare `Enum` uses SV's default signed `int` base.
 - Every member must fit the declared signed or unsigned range.
 - Duplicate numeric values are rejected, so aliases are not part of the stable contract.
 - Unknown numeric values are rejected during decode with `DecodeError`.
@@ -88,7 +88,7 @@ from svtypes import Bit, RecordSchema
 
 request_type = RecordSchema(
     "svx.generated.bus.drive.request",
-    [("address", Bit(32)), ("data", Bit(64))],
+    [("address", Bit[32]()), ("data", Bit[64]())],
     class_name="DriveRequest",
 ).build()
 ```
@@ -98,7 +98,27 @@ does not create an empty object envelope. The caller owns callable naming and
 transport semantics; SvTypes only validates and materializes the supplied
 record name and ordered fields.
 
-### 5.1 运行时能力协商
+### 5.1 Generated SV expressions
+
+`sv_type_expression(codec)`, `sv_packer_expression(codec)`, and
+`sv_declaration(codec, name)` are stable rendering entry points for an
+integration that generates a typed adapter around an existing SvTypes codec.
+The first two return a type or packer expression; the declaration form also
+places unpacked dimensions correctly after `name`.
+
+```python
+from svtypes import Int, Queue, sv_declaration, sv_packer_expression
+
+codec = Queue[Int]()
+assert sv_declaration(codec, "history") == "int history [$]"
+assert sv_packer_expression(codec) == "svtypes_pkg::queue_packer#(int, svtypes_pkg::int_packer)"
+```
+
+These functions do not define transport, ownership, or dispatch behavior.
+They only preserve the SystemVerilog spelling and codec pairing used by normal
+SvTypes generated code.
+
+### 5.2 运行时能力协商
 
 `runtime_capabilities()` 返回包、模式、二进制、对象包络和生成运行时接口版本，
 以及确定性排序的可提供能力名称。调用
@@ -112,11 +132,11 @@ record name and ordered fields.
 ### 5. Complex Objects (`SvObject` & `ObjectDescriptor`)
 `SvObject` is the container for all other types:
 - **Cloning Mechanism**: `SvObject.__getattribute__` clones class-level `TypeBase` attributes into the instance's `__dict__` on first access, ensuring instance independence.
-- **`ObjectDescriptor`**: Handles nested `SvObject` instances, ensuring they are properly instantiated and linked. Use `Object("Child", rand=True)` when an already allocated, non-null child must participate in the parent's constrained randomization; the generated declaration is `rand Child child`. The default is `rand=False` and does not allocate or randomize the handle.
+- **`ObjectDescriptor`**: Handles nested `SvObject` instances, ensuring they are properly instantiated and linked. Use `Object["Child"](rand=True)` when an already allocated, non-null child must participate in the parent's constrained randomization; the generated declaration is `rand Child child`. The default is `rand=False` and does not allocate or randomize the handle.
 - **Strict Access**: `SvObject.__setattr__` blocks direct assignment (e.g., `obj.x = 10` is banned), forcing the use of `obj.x.value = 10`.
 - **Constrained random**: `@constraint` declares predicates. `@rand_layer(priority)` groups rand members and constraints, including fixed unpacked-array elements such as `self.words[0]`, or a complete `DynArray` / `Queue` member. Dynamic containers are handled per current element: entry-disabled elements stay disabled, and elements created during a layered call remain enabled. `layered_randomize()` solves those groups from high priority to low, with unlisted members in implicit `builtin` (priority 0). Python returns `bool`; generated SV is `virtual function int layered_randomize()`. `randomize()` / `randomize_with()` / `layered_randomize()` cannot be overridden. Users may override `pre_randomize()` / `post_randomize()`.
 
-### 5.2 External field storage
+### 5.3 External field storage
 
 `SvObject.bind_external_storage(storage, field_keys)` binds selected fields of
 one object instance to an `ExternalFieldStorage`.  Keys are opaque to
@@ -155,12 +175,12 @@ backend unchanged.
 | Type | Python Base | SV Mapping | C++ Mapping | Width (Bit) |
 | :--- | :--- | :--- | :--- | :--- |
 | `Int` | `int` | `int` | `int32_t` | 32 |
-| `Bit(w)` | `int` | `bit [w-1:0]` | `uintN_t` | `w` |
-| `Logic(w)` | `LogicValue` | `logic [w-1:0]` | `LogicValue<w>` | `w` |
-| `Reg(w)` | `LogicValue` | `reg [w-1:0]` | `LogicValue<w>` | `w` |
+| `Bit[w]()` | `int` | `bit [w-1:0]` | `uintN_t` | `w` |
+| `Logic[w]()` | `LogicValue` | `logic [w-1:0]` | `LogicValue<w>` | `w` |
+| `Reg[w]()` | `LogicValue` | `reg [w-1:0]` | `LogicValue<w>` | `w` |
 | `Real` | `float` | `real` | `double` | 64 |
 | `String` | `str` | `string` | `std::string` | Variable |
-| `Enum(width=..., signed=...)` | `IntEnum` member | explicitly sized `enum` | fixed-width `enum class` | 8/16/32/64 |
+| `Enum[Bit[w]]` | `IntEnum` member | explicitly based `enum` | fixed-width or arbitrary-width wrapper | `w` |
 | `Parameter`| `TypeBase` | `parameter` | `static constexpr`| N/A |
 
 ---
@@ -172,7 +192,7 @@ from svtypes import SvObject, Int, Parameter, svobj
 
 @svobj
 class Header(SvObject):
-    VERSION = Parameter()(1)
+    VERSION = Parameter[Int](1)
     id = Int()
     length = Int()
 
@@ -194,7 +214,7 @@ their `bins` / `ignore_bins` / `illegal_bins` / `transition_bins`.
 from svtypes import Bit, CovPoint, SvObject, bins, covergroup
 
 class Packet(SvObject):
-    opcode = Bit(2)
+    opcode = Bit[2]()
 
     @covergroup
     def cg(self):
@@ -219,7 +239,7 @@ value as a constant, while generated SystemVerilog retains the parameter name.
 
 Automatic `cov=True` coverage is compiled into the same CoverageIR pipeline as
 an explicit covergroup. Scalar and container value domains receive deterministic
-automatic bins; an `Object(...)` handle field does not receive a default
+automatic bins; an `Object[...]` handle field does not receive a default
 nullness coverpoint.
 
 `instance.get_coverage()` reports type coverage, while

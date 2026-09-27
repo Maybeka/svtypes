@@ -6,8 +6,8 @@ from svtypes import SvObject, Int, Array, Queue, svobj
 @svobj
 class Config(SvObject):
     version = Int()
-    scores = Array(Int(), 3)
-    tags = Queue(Int())
+    scores = Array[Int, 3]()
+    tags = Queue[Int]()
 
 def test_cpp_interop(tmp_path: Path):
     # 1. Setup data in Python

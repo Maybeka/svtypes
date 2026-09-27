@@ -237,7 +237,8 @@ def _descriptors(
     from .enum import Enum
     from .object import ObjectDescriptor, SvObject, SvStruct
     from .logic import Logic
-    from .parameter import Parameter
+    from .parameter import Parameter, TypeParameterField
+    from .symbolic import SymbolicPackedField, SymbolicArrayField, SymbolicCollectionField
     from .real import Real, ShortReal
     from .remote_ref import RemoteRef
     from .string import String
@@ -258,7 +259,7 @@ def _descriptors(
                 declared_fields = []
                 encoding_fields = []
                 for name, member in codec._SvObject__svtypes_members:
-                    member_schema, member_encoding = _descriptors(member, active)
+                    member_schema, member_encoding = _descriptors(member, active, allow_template=True)
                     entry = {
                         "name": name,
                         "policies": _policies(member) if isinstance(member, TypeBase) else {},
@@ -353,6 +354,50 @@ def _descriptors(
     if isinstance(codec, ObjectDescriptor):
         ref = {"kind": "object_ref", "type_name": unified_type_name(codec)}
         return {**ref, "strict_set": codec.strict_set, "rand": codec.rand}, ref
+    if isinstance(codec, TypeParameterField):
+        name = codec.parameter_name
+        if name is None:
+            raise DeclarationError("type-parameter field is not attached to a Parameter")
+        symbolic = {"kind": "type_parameter", "parameter": name}
+        return symbolic, symbolic
+    if isinstance(codec, SymbolicPackedField):
+        if not allow_template:
+            raise DeclarationError("symbolic packed layout must be specialized before schema generation")
+        symbolic = {
+            "kind": "symbolic_packed",
+            "factory": codec.factory.__name__,
+            "shape": list(codec._render_dimensions()),
+            "signed": codec.signed,
+            "declaration_style": codec.declaration_style,
+        }
+        return symbolic, symbolic
+    if isinstance(codec, SymbolicArrayField):
+        if not allow_template:
+            raise DeclarationError("symbolic array layout must be specialized before schema generation")
+        element_schema, element_encoding = _descriptors(codec._element(), active, allow_template=True)
+        symbolic = {
+            "kind": "symbolic_array",
+            "dimensions": list(codec._render_dimensions()),
+            "element": element_schema,
+        }
+        encoding = {**symbolic, "element": element_encoding}
+        return symbolic, encoding
+    if isinstance(codec, SymbolicCollectionField):
+        if not allow_template:
+            raise DeclarationError("symbolic collection layout must be specialized before schema generation")
+        from .typespec import materialize_type
+
+        members = [
+            _descriptors(materialize_type(item, "symbolic collection member"), active, allow_template=True)
+            for item in codec.args
+        ]
+        symbolic = {
+            "kind": "symbolic_collection",
+            "factory": codec.factory.__name__,
+            "members": [schema for schema, _ in members],
+        }
+        encoding = {**symbolic, "members": [encoding for _, encoding in members]}
+        return symbolic, encoding
     if isinstance(codec, SvObject):
         return _descriptors(codec.__class__, active)
     if isinstance(codec, Logic):
@@ -474,6 +519,41 @@ def schema_descriptor(codec_or_type: Any) -> SchemaDescriptor:
 
 def encoding_descriptor(codec_or_type: Any) -> EncodingDescriptor:
     return schema_descriptor(codec_or_type).encoding_descriptor
+
+
+def sv_type_expression(codec: Any) -> str:
+    """Return the canonical generated-SystemVerilog type expression for a codec.
+
+    The expression intentionally excludes a member name; use
+    :func:`sv_declaration` when an unpacked collection dimension must follow a
+    concrete identifier.
+    """
+
+    from .object import SvObject
+
+    return SvObject._sv_type_expr(codec)
+
+
+def sv_packer_expression(codec: Any) -> str:
+    """Return the canonical generated-SystemVerilog packer expression for a codec."""
+
+    from .object import SvObject
+
+    return SvObject._sv_packer_expr(codec)
+
+
+def sv_declaration(codec: Any, name: str) -> str:
+    """Render one canonical generated-SystemVerilog member declaration."""
+
+    if not isinstance(name, str) or not name:
+        raise TypeError("SV declaration name must be a non-empty string")
+    declaration = getattr(codec, "sv_decl", None)
+    if not callable(declaration):
+        raise TypeError("SV declaration requires a SvTypes codec with sv_decl()")
+    rendered = declaration(name)
+    if not isinstance(rendered, str) or not rendered.strip():
+        raise TypeError("SvTypes codec produced an invalid SV declaration")
+    return rendered.strip().rstrip(";")
 
 
 def checked_unpack(

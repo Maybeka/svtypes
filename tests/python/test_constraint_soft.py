@@ -5,7 +5,7 @@ from svtypes import Bit, RandomContext, SvObject, constraint, soft
 
 def test_soft_conflict_with_hard_constraint_is_dropped_not_unsat():
     class HardWins(SvObject):
-        choice = Bit(32)
+        choice = Bit[32]()
 
         @constraint
         def legal(self):
@@ -22,7 +22,7 @@ def test_soft_conflict_with_hard_constraint_is_dropped_not_unsat():
 
 def test_soft_priority_uses_later_and_derived_constraints_first():
     class Ordered(SvObject):
-        choice = Bit(32)
+        choice = Bit[32]()
 
         @constraint
         def bounds(self):
@@ -39,7 +39,7 @@ def test_soft_priority_uses_later_and_derived_constraints_first():
     assert ordered.choice.value == 1
 
     class Base(SvObject):
-        choice = Bit(32)
+        choice = Bit[32]()
 
         @constraint
         def base_preference(self):
@@ -62,8 +62,8 @@ def test_soft_priority_uses_later_and_derived_constraints_first():
 
 def test_soft_inside_if_uses_the_selected_branch_only():
     class Conditional(SvObject):
-        flag = Bit(1)
-        choice = Bit(32)
+        flag = Bit[1]()
+        choice = Bit[32]()
 
         @constraint
         def legal(self):

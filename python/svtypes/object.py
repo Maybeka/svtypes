@@ -29,6 +29,12 @@ class ObjectRegistry:
                 f"{existing.__module__}.{existing.__qualname__}"
             )
         self._types[reg_name] = cls
+        # ``Object[SomeClass]`` must use the registered target-language name,
+        # not a potentially different Python class name.  The attribute is
+        # intentionally written by registration (rather than inferred from
+        # ``__name__``) so an unregistered class cannot accidentally become a
+        # valid handle specification.
+        cls._svtypes_registered_object_name = reg_name
         namespace = getattr(self, "path", None)
         if namespace:
             normalized_namespace = namespace.replace("::", ".")
@@ -643,7 +649,29 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        from .parameter import Parameter, ParamRef
+        from .parameter import Parameter, ParamRef, TypeParameterField, _construct_type_parameter_field
+        from .symbolic import SymbolicPackedField, SymbolicArrayField, SymbolicCollectionField
+        from .typespec import TypeSpec
+
+        # A bracket type in an annotation documents the ordinary Python field
+        # type, but it never declares a SystemVerilog member by itself.  Failing
+        # here avoids the especially dangerous typo where ``data: Bit[8]`` is
+        # accepted yet omitted from schema, packing, randomization and target
+        # code.  Plain non-SvTypes annotations remain available to subclasses
+        # for their own Python-side metadata.
+        for annotation_name, annotation in cls.__dict__.get("__annotations__", {}).items():
+            if annotation_name in cls.__dict__:
+                continue
+            is_svtypes_annotation = isinstance(annotation, TypeSpec)
+            if isinstance(annotation, str):
+                is_svtypes_annotation = annotation.lstrip().startswith(
+                    ("Bit[", "Logic[", "Reg[", "Array[", "DynArray[", "Queue[", "AssocArray[", "Object[", "RemoteRef[")
+                )
+            if is_svtypes_annotation:
+                raise DeclarationError(
+                    f"{cls.__name__}.{annotation_name} has an SvTypes type annotation but no field value; "
+                    "declare it with an initializer such as Bit[8]()"
+                )
 
         seen = set()
         params = []
@@ -668,6 +696,41 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 seen.add(name)
                 params.append((name, attr))
 
+        parameter_names = {name for name, _ in params}
+        for name, parameter in params:
+            expression = parameter.expression
+            if expression is None:
+                continue
+            unknown = set(expression.parameters) - parameter_names
+            if unknown:
+                raise DeclarationError(
+                    f"{cls.__name__}.{name} parameter expression refers to unknown parameter(s): "
+                    f"{', '.join(sorted(unknown))}"
+                )
+
+        def parameters_are_bound() -> bool:
+            names: set[str] = set()
+            for candidate in cls.__mro__:
+                for candidate_name, candidate_attr in candidate.__dict__.items():
+                    if isinstance(candidate_attr, Parameter):
+                        names.add(candidate_name)
+            for candidate_name in names:
+                candidate = getattr(cls, candidate_name)
+                if isinstance(candidate, Parameter) and candidate.value is None and candidate.expression is None:
+                    return False
+            return True
+
+        # ``T()`` fields retain the Parameter object created in the same class
+        # body.  Record its source name before this descriptor is inherited by
+        # a Python-side specialization.
+        for _field_name, _field_attr in cls.__dict__.items():
+            if not isinstance(_field_attr, TypeParameterField):
+                continue
+            for _param_name, _param in params:
+                if _field_attr.parameter is _param:
+                    _field_attr.bind_parameter_name(_param_name)
+                    break
+
         for base in reversed(mro):
             if base is object or base.__name__ in ('SvObject', 'SvStruct'): continue
             for name, attr in base.__dict__.items():
@@ -678,6 +741,61 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                     # class body only, so a base's parameter must not leak in.
                     seen.add(name)
                     continue
+                if isinstance(attr, TypeParameterField):
+                    parameter_name = attr.parameter_name
+                    effective = getattr(cls, parameter_name, None) if parameter_name else None
+                    if isinstance(effective, Parameter) and effective.value is not None:
+                        concrete = _construct_type_parameter_field(
+                            effective.value,
+                            (),
+                            {
+                                key: value
+                                for key, value in (
+                                    ("rand", attr.field_options.rand),
+                                    ("randc", attr.field_options.randc),
+                                    ("plusarg", attr.field_options.plusarg),
+                                    ("dump", attr.field_options.dump),
+                                    ("cov", attr.field_options.cov),
+                                    ("cov_slots", attr.field_options.cov_slots),
+                                    ("intelli", attr.field_options.intelli),
+                                    ("pack_bytes", attr.field_options.pack_bytes),
+                                )
+                                if value is not None and not (key == "randc" and value is False)
+                            },
+                        )
+                        concrete.__set_name__(cls, name)
+                        setattr(cls, name, concrete)
+                        attr = concrete
+                if isinstance(attr, SymbolicPackedField):
+                    try:
+                        concrete = attr.resolve(cls)
+                    except DeclarationError:
+                        if parameters_are_bound():
+                            raise
+                    else:
+                        concrete.__set_name__(cls, name)
+                        setattr(cls, name, concrete)
+                        attr = concrete
+                if isinstance(attr, SymbolicArrayField):
+                    try:
+                        concrete = attr.resolve(cls)
+                    except DeclarationError:
+                        if parameters_are_bound():
+                            raise
+                    else:
+                        concrete.__set_name__(cls, name)
+                        setattr(cls, name, concrete)
+                        attr = concrete
+                if isinstance(attr, SymbolicCollectionField):
+                    try:
+                        concrete = attr.resolve(cls)
+                    except DeclarationError:
+                        if parameters_are_bound():
+                            raise
+                    else:
+                        concrete.__set_name__(cls, name)
+                        setattr(cls, name, concrete)
+                        attr = concrete
                 if isinstance(attr, ObjectDescriptor):
                     seen.add(name)
                     ordered_members.append((name, attr))
@@ -778,7 +896,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         def rand_supported(desc: Any) -> bool:
             from .randomizable import is_randomizable
 
-            return is_randomizable(desc)
+            return is_randomizable(desc) or isinstance(desc, (SymbolicPackedField, SymbolicArrayField, SymbolicCollectionField))
 
         def randc_supported(desc: Any) -> bool:
             from .bit import Bit
@@ -803,7 +921,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         def cov_supported(desc: Any) -> bool:
             from .collection import Array, AssocArray, DynArray, Queue
 
-            return isinstance(desc, (Bit, Logic, Enum, Array, DynArray, Queue, AssocArray, ObjectDescriptor)) or (
+            return isinstance(desc, (Bit, Logic, Enum, Array, DynArray, Queue, AssocArray, ObjectDescriptor, SymbolicPackedField, SymbolicArrayField, SymbolicCollectionField)) or (
                 isinstance(desc, SvObject) and not (
                     struct_type is not None and isinstance(desc, struct_type)
                 )
@@ -883,6 +1001,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
     @classmethod
     def specialize(cls: type[T], **kwargs) -> type[T]:
         from .parameter import DTYPE_CLASSES, Parameter, ParamRef
+        from .typespec import TypeSpec
 
         if "_SvObject__svtypes_emit_specialization_class" in cls.__dict__:
             raise DeclarationError(
@@ -890,7 +1009,10 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 f"{cls.__svtypes_specialized_from.__name__}; specialize the original template again"
             )
 
-        unbound = [name for name, parameter in cls.__svtypes_params if parameter.value is None]
+        unbound = [
+            name for name, parameter in cls.__svtypes_params
+            if parameter.value is None and parameter.expression is None
+        ]
         missing = [name for name in unbound if name not in kwargs]
         if missing:
             raise DeclarationError(
@@ -928,12 +1050,12 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 continue
             base_dtype = base_dtypes.get(name)
             if base_dtype == "type":
-                if not isinstance(value, type):
+                if not isinstance(value, (type, TypeSpec)):
                     raise TypeError(
                         f"type parameter {name!r} must be bound to a class/type, "
                         f"not {type(value).__name__}"
                     )
-                namespace[name] = Parameter(type)(value)
+                namespace[name] = Parameter[type](value)
                 continue
             if isinstance(value, type):
                 raise TypeError(
@@ -942,9 +1064,9 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 )
             param_cls = DTYPE_CLASSES.get(base_dtype) if base_dtype else None
             if param_cls is not None:
-                namespace[name] = Parameter(param_cls)(value)
+                namespace[name] = Parameter[param_cls](value)
             else:
-                namespace[name] = Parameter(value)
+                namespace[name] = Parameter._from_value(value)
         return type(new_name, (cls,), namespace)
 
     @classmethod
@@ -971,7 +1093,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 continue
             param = cls.__dict__.get(name)
             if param is None:
-                param = Parameter(type)(value) if isinstance(value, type) else Parameter(value)
+                param = Parameter[type](value) if isinstance(value, type) else Parameter._from_value(value)
             params.append(f".{name}({param.sv_repr()})")
         return f"{template.__name__}#({', '.join(params)})"
 
@@ -1164,6 +1286,13 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         from .real import Real, ShortReal
         from .remote_ref import RemoteRef
         from .string import String
+        from .parameter import TypeParameterField
+        from .symbolic import SymbolicPackedField, SymbolicArrayField, SymbolicCollectionField
+
+        if isinstance(desc, TypeParameterField):
+            return desc._name()
+        if isinstance(desc, SymbolicPackedField):
+            return desc.sv_decl("").strip()
 
         if isinstance(desc, Int):
             return "int"
@@ -1216,6 +1345,17 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         from .logic import Logic
         from .real import Real, ShortReal
         from .remote_ref import RemoteRef
+        from .parameter import TypeParameterField
+        from .symbolic import SymbolicPackedField
+
+        if isinstance(desc, TypeParameterField):
+            # A type-parameter field is constrained to a packed codec at the
+            # target-language boundary; the concrete specialization selects
+            # its width and signedness through T itself.
+            return f"svtypes_pkg::bit_packer#({desc._name()})"
+        if isinstance(desc, SymbolicPackedField):
+            packer = "bit_packer" if desc.factory.__name__ == "Bit" else "logic_packer"
+            return f"svtypes_pkg::{packer}#({SvObject._sv_type_expr(desc)})"
         from .string import String
 
         if isinstance(desc, Int):
@@ -1273,6 +1413,17 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         from .real import Real, ShortReal
         from .remote_ref import RemoteRef
         from .string import String
+        from .parameter import TypeParameterField
+        from .symbolic import SymbolicPackedField, SymbolicArrayField, SymbolicCollectionField
+
+        if isinstance(desc, TypeParameterField):
+            return [f"{indent}{SvObject._sv_packer_expr(desc)}::pack({name}, bytes);"]
+        if isinstance(desc, SymbolicArrayField):
+            return desc.sv_pack_loop(name, 0, indent)
+        if isinstance(desc, SymbolicCollectionField):
+            return desc.sv_pack_loop(name, 0, indent)
+        if isinstance(desc, SymbolicPackedField):
+            return [f"{indent}{SvObject._sv_packer_expr(desc)}::pack({name}, bytes);"]
 
         if isinstance(desc, Int):
             return [f"{indent}{SvObject._sv_packer_expr(desc)}::pack({name}, bytes);"]
@@ -1315,6 +1466,17 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         from .real import Real, ShortReal
         from .remote_ref import RemoteRef
         from .string import String
+        from .parameter import TypeParameterField
+        from .symbolic import SymbolicPackedField, SymbolicArrayField, SymbolicCollectionField
+
+        if isinstance(desc, TypeParameterField):
+            return [f"{indent}{SvObject._sv_packer_expr(desc)}::unpack({name}, bytes, offset);"]
+        if isinstance(desc, SymbolicArrayField):
+            return desc.sv_unpack_loop(name, 0, indent)
+        if isinstance(desc, SymbolicCollectionField):
+            return desc.sv_unpack_loop(name, 0, indent)
+        if isinstance(desc, SymbolicPackedField):
+            return [f"{indent}{SvObject._sv_packer_expr(desc)}::unpack({name}, bytes, offset);"]
 
         if isinstance(desc, Int):
             return [f"{indent}{SvObject._sv_packer_expr(desc)}::unpack({name}, bytes, offset);"]
@@ -1738,8 +1900,9 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                         "C++ template parameter; bind an int/type parameter or skip C++ generation"
                     )
                 decl = p_attr.cpp_decl(p_name).replace("static constexpr ", "")
-                if p_attr.is_bound and p_attr.dtype != "type":
-                    decl += f" = {cpp_param_literal(p_attr.value)}"
+                if p_attr.dtype != "type" and (p_attr.is_bound or p_attr.expression is not None):
+                    value = p_attr.expression.render() if p_attr.expression is not None else cpp_param_literal(p_attr.value)
+                    decl += f" = {value}"
                 param_parts.append(decl)
             lines.append(f"{ind_str}template <{', '.join(param_parts)}>")
 
@@ -2378,19 +2541,65 @@ def svobj(cls: type[T] | None = None, *, name: str | None = None, registry: Obje
     return decorator
 
 
-def Object(
-    cls_name: str,
-    registry: ObjectRegistry | None = None,
-    strict_set: bool = False,
-    rand: bool = False,
-) -> Any:
-    """Declare a class handle.
+class _ObjectFactory:
+    """Bracket-style class-handle declaration factory."""
 
-    ``rand=True`` makes a non-null, already allocated handle an enabled random
-    object member of its containing object.  It does not randomize the handle
-    value itself and does not allocate a null handle.
-    """
-    return ObjectDescriptor(cls_name, registry=registry, strict_set=strict_set, rand=rand)
+    __name__ = "Object"
+
+    def __call__(
+        self,
+        cls_name: str | None = None,
+        registry: ObjectRegistry | None = None,
+        strict_set: bool = False,
+        rand: bool = False,
+    ) -> Any:
+        raise TypeError(
+            "Object(...) no longer declares a target type; "
+            "use Object[\"Name\"](...) or Object[RegisteredClass](...) instead"
+        )
+
+    @staticmethod
+    def _from_target(
+        cls_name: str,
+        registry: ObjectRegistry | None = None,
+        strict_set: bool = False,
+        rand: bool = False,
+    ) -> ObjectDescriptor:
+        """Construct after ``Object[...]`` has fixed the target type."""
+
+        return ObjectDescriptor(cls_name, registry=registry, strict_set=strict_set, rand=rand)
+
+    def __getitem__(self, target: str | type[SvObject]):
+        if isinstance(target, str):
+            cls_name = target
+        elif isinstance(target, type) and issubclass(target, SvObject):
+            cls_name = target.__dict__.get("_svtypes_registered_object_name")
+            if not isinstance(cls_name, str) or not cls_name:
+                raise TypeError(
+                    "Object[Class] requires a registered SvObject class; "
+                    "use Object[\"Name\"] for a forward reference"
+                )
+        else:
+            raise TypeError("Object[...] requires an SvObject class or nonempty registry name")
+        if not cls_name:
+            raise ValueError("Object target name cannot be empty")
+
+        return _object_spec(self, cls_name)
+
+
+@functools.lru_cache(maxsize=None)
+def _object_spec(factory: _ObjectFactory, cls_name: str):
+    from .typespec import TypeSpec
+
+    def construct(*args: Any, **kwargs: Any) -> ObjectDescriptor:
+        if args:
+            raise TypeError("Object[...] accepts only declaration keyword arguments")
+        return factory._from_target(cls_name, **kwargs)
+
+    return TypeSpec(factory, (cls_name,), construct)
+
+
+Object = _ObjectFactory()
 
 
 def new(cls_name: str, *args, registry: ObjectRegistry | None = None, **kwargs) -> Any:

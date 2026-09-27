@@ -7,7 +7,7 @@ from svtypes import Bit, ConstraintTypeError, Logic, RandomContext, SvObject, co
 
 def test_randc_cycle_mode_pause_and_generated_declaration():
     class Cycle(SvObject):
-        choice = Bit(2, randc=True)
+        choice = Bit[2](randc=True)
 
     obj = Cycle()
     with RandomContext(seed=401):
@@ -29,8 +29,8 @@ def test_randc_cycle_mode_pause_and_generated_declaration():
 
 def test_randc_constraint_exhaustion_resets_and_unsat_does_not_consume():
     class Limited(SvObject):
-        choice = Bit(2, randc=True)
-        limit = Bit(2, rand=False)
+        choice = Bit[2](randc=True)
+        limit = Bit[2](rand=False)
 
         @constraint
         def legal(self):
@@ -59,16 +59,16 @@ def test_randc_constraint_exhaustion_resets_and_unsat_does_not_consume():
 def test_randc_rejects_logic_dist_and_explicit_rand_policy():
     with pytest.raises(ValueError, match="unsupported"):
         class BadLogic(SvObject):
-            choice = Logic(2, randc=True)
+            choice = Logic[2](randc=True)
 
     with pytest.raises(ValueError, match="cannot be combined"):
-        Bit(2, rand=False, randc=True)
+        Bit[2](rand=False, randc=True)
     with pytest.raises(TypeError, match="randc"):
-        Bit(2, randc=None)
+        Bit[2](randc=None)
 
     with pytest.raises(ConstraintTypeError, match="randc"):
         class BadDist(SvObject):
-            choice = Bit(2, randc=True)
+            choice = Bit[2](randc=True)
 
             @constraint
             def legal(self):

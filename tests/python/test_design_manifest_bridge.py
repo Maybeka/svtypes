@@ -18,7 +18,7 @@ _BRIDGE_SOURCE = (
 )
 sys.path.insert(0, str(_BRIDGE_SOURCE))
 
-from svtypes import Bit, CovPoint, Parameter, SvObject, bins, covergroup  # noqa: E402
+from svtypes import Bit, CovPoint, Int, Parameter, SvObject, bins, covergroup  # noqa: E402
 from svtypes_design_manifest import (  # noqa: E402
     DesignManifestError,
     canonical_json_bytes,
@@ -31,7 +31,7 @@ from svtypes_design_manifest.__main__ import main  # noqa: E402
 
 
 class _Packet(SvObject):
-    opcode = Bit(2)
+    opcode = Bit[2]()
 
     @covergroup
     def cg(self):
@@ -78,8 +78,8 @@ def test_manifest_write_load_and_tamper_validation(tmp_path: Path):
 
 def test_manifest_declares_parameter_ref_capability_when_coverage_uses_parameter():
     class Packet(SvObject):
-        opcode = Bit(4)
-        reserved = Parameter()(15)
+        opcode = Bit[4]()
+        reserved = Parameter[Int](15)
 
         @covergroup
         def cg(self):
@@ -111,7 +111,7 @@ def test_export_cli_uses_explicit_type_entry_point(tmp_path: Path, monkeypatch: 
     module.write_text(
         "from svtypes import Bit, CovPoint, SvObject, bins, covergroup\n"
         "class Packet(SvObject):\n"
-        "    opcode = Bit(1)\n"
+        "    opcode = Bit[1]()\n"
         "    @covergroup\n"
         "    def cg(self):\n"
         "        class opcode_cp(CovPoint, source=self.opcode):\n"

@@ -42,8 +42,8 @@ def test_field_options_are_public_immutable_three_state_metadata():
 def test_rand_generation_and_supported_default_matrix():
     class RandomPayload(SvObject):
         scalar = Int()
-        packed = Bit((2, 8))
-        fixed = Array(Int(), 2)
+        packed = Bit[(2, 8)]()
+        fixed = Array[Int, 2]()
         text = String()
 
     code = RandomPayload.to_sv_obj()
@@ -64,7 +64,7 @@ def test_explicit_unsupported_rand_is_rejected():
 
     with pytest.raises(ValueError, match="plusarg=True is unsupported"):
         class InvalidPlusarg(SvObject):
-            values = Array(Int(), 2, plusarg=True)
+            values = Array[Int, 2](plusarg=True)
 
     with pytest.raises(ValueError, match="cov=True is unsupported"):
         class InvalidCoverage(SvObject):
@@ -109,7 +109,7 @@ def test_deferred_intelli_is_retained_without_affecting_generation_or_descriptor
 def test_generated_coverage_collector_is_nested_and_explicitly_sampled():
     class Covered(SvObject):
         scalar = Int()
-        values = DynArray(Int())
+        values = DynArray[Int]()
         ignored = String()
 
     code = Covered.to_sv_obj()
@@ -128,7 +128,7 @@ def test_generated_coverage_collector_is_nested_and_explicitly_sampled():
 
 def test_template_coverage_collector_references_enclosing_parameters():
     class Templated(SvObject):
-        WIDTH = Parameter(Int)
+        WIDTH = Parameter[Int]()
         data = Int()
 
     code = Templated.to_sv_obj()
@@ -150,17 +150,17 @@ def test_no_cov_fields_means_no_coverage_collector():
 
 
 def test_coverage_field_type_expressions():
-    class Color(Enum, width=8, signed=False):
+    class Color(Enum[Bit[8]]):
         RED = 0
         BLUE = 1
 
     class Child(SvObject):
-        x = Bit(4)
+        x = Bit[4]()
 
     class CoverageKinds(SvObject):
         tone = Color(cov=True)
-        lookup = AssocArray(Bit(8), Bit(8), cov=True)
-        items = Queue(Int(), cov=True)
+        lookup = AssocArray[Bit[8], Bit[8]](cov=True)
+        items = Queue[Int](cov=True)
         child = Child(cov=True)
 
     code = CoverageKinds.to_sv_obj()
@@ -173,7 +173,7 @@ def test_coverage_field_type_expressions():
 
 def test_specialization_is_not_a_generated_coverage_unit():
     class Templated(SvObject):
-        WIDTH = Parameter(Int)
+        WIDTH = Parameter[Int]()
         data = Int()
 
     # The coverage collector lives on the template (parameterized instance);
@@ -206,7 +206,7 @@ def test_struct_rejects_member_level_rand_and_pack_exclusion():
 
 def test_element_templates_and_scope_variables_reject_explicit_field_policies():
     with pytest.raises(DeclarationError, match="element template"):
-        Queue(Int(rand=True))
+        Queue[Int(rand=True)]()
 
     package = Package("invalid_policy_scope")
     with pytest.raises(DeclarationError, match="package/scope variable"):
@@ -249,7 +249,7 @@ def test_python_dump_is_ordered_selective_and_cycle_safe():
     class Node(SvObject):
         visible = Int()
         hidden = Int(dump=False)
-        next = Object("Node", registry=package)
+        next = Object["Node"](registry=package)
 
     node = Node()
     node.visible.value = 3

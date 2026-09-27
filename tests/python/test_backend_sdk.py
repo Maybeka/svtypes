@@ -23,7 +23,7 @@ from svtypes_backend_sdk.__main__ import main as backend_main  # noqa: E402
 
 
 class _Packet(SvObject):
-    opcode = Bit(1)
+    opcode = Bit[1]()
 
     @covergroup
     def cg(self):

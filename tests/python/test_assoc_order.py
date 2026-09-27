@@ -5,7 +5,7 @@ from svtypes import AssocArray, Int
 
 
 def test_assoc_array_orders_entries_by_encoded_key_bytes():
-    codec = AssocArray(Int(), Int())
+    codec = AssocArray[Int, Int]()
     payload = codec.pack({-1: 1, 256: 2, 0: 3})
     offset = 4
     keys = []

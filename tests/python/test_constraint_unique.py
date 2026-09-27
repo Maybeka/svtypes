@@ -23,9 +23,9 @@ from svtypes.constraint.leaves import iter_class_leaves, leaf_unsigned, resolve_
 
 
 class UniquePacket(SvObject):
-    first = Bit(2)
-    second = Bit(2)
-    third = Bit(2)
+    first = Bit[2]()
+    second = Bit[2]()
+    third = Bit[2]()
 
     @constraint
     def legal(self):
@@ -33,7 +33,7 @@ class UniquePacket(SvObject):
 
 
 class UniqueArrayPacket(SvObject):
-    words = Array(Bit(8), 4, rand=True)
+    words = Array[Bit[8], 4](rand=True)
 
     @constraint
     def legal(self):
@@ -41,8 +41,8 @@ class UniqueArrayPacket(SvObject):
 
 
 class UniqueDynPacket(SvObject):
-    tag = Bit(8)
-    data = DynArray(Bit(8), rand=True, max_length=4)
+    tag = Bit[8]()
+    data = DynArray[Bit[8]](rand=True, max_length=4)
 
     @constraint
     def legal(self):
@@ -51,7 +51,7 @@ class UniqueDynPacket(SvObject):
 
 
 class UniqueQueuePacket(SvObject):
-    data = Queue(Bit(8), rand=True, max_length=4)
+    data = Queue[Bit[8]](rand=True, max_length=4)
 
     @constraint
     def legal(self):
@@ -60,7 +60,7 @@ class UniqueQueuePacket(SvObject):
 
 
 class UniqueEmptyPacket(SvObject):
-    data = DynArray(Bit(8), rand=True, max_length=4)
+    data = DynArray[Bit[8]](rand=True, max_length=4)
 
     @constraint
     def legal(self):
@@ -68,7 +68,7 @@ class UniqueEmptyPacket(SvObject):
 
 
 class UniquePigeonholePacket(SvObject):
-    words = Array(Bit(1), 3, rand=True)
+    words = Array[Bit[1], 3](rand=True)
 
     @constraint
     def legal(self):
@@ -80,7 +80,7 @@ unique_graph_pkg = get_package("test_constraint_unique_graph")
 
 @svobj(registry=unique_graph_pkg)
 class UniqueGraphChild(SvObject):
-    words = Array(Bit(1), 2, rand=True)
+    words = Array[Bit[1], 2](rand=True)
 
     @constraint
     def legal(self):
@@ -89,12 +89,12 @@ class UniqueGraphChild(SvObject):
 
 @svobj(registry=unique_graph_pkg)
 class UniqueGraphParent(SvObject):
-    child = Object("UniqueGraphChild", registry=unique_graph_pkg, rand=True)
+    child = Object["UniqueGraphChild"](registry=unique_graph_pkg, rand=True)
 
 
 @svobj(registry=unique_graph_pkg)
 class UniqueGraphDynamicChild(SvObject):
-    data = DynArray(Bit(3), rand=True, max_length=4)
+    data = DynArray[Bit[3]](rand=True, max_length=4)
 
     @constraint
     def legal(self):
@@ -104,13 +104,13 @@ class UniqueGraphDynamicChild(SvObject):
 
 @svobj(registry=unique_graph_pkg)
 class UniqueGraphDynamicParent(SvObject):
-    child = Object("UniqueGraphDynamicChild", registry=unique_graph_pkg, rand=True)
+    child = Object["UniqueGraphDynamicChild"](registry=unique_graph_pkg, rand=True)
 
 
 @svobj(registry=unique_graph_pkg)
 class UniqueGraphMixedDynamicChild(SvObject):
-    tag = Bit(3)
-    data = DynArray(Bit(3), rand=True, max_length=4)
+    tag = Bit[3]()
+    data = DynArray[Bit[3]](rand=True, max_length=4)
 
     @constraint
     def legal(self):
@@ -120,7 +120,7 @@ class UniqueGraphMixedDynamicChild(SvObject):
 
 @svobj(registry=unique_graph_pkg)
 class UniqueGraphQueueChild(SvObject):
-    data = Queue(Bit(3), rand=True, max_length=4)
+    data = Queue[Bit[3]](rand=True, max_length=4)
 
     @constraint
     def legal(self):
@@ -130,8 +130,8 @@ class UniqueGraphQueueChild(SvObject):
 
 @svobj(registry=unique_graph_pkg)
 class UniqueGraphCollectionParent(SvObject):
-    mixed = Object("UniqueGraphMixedDynamicChild", registry=unique_graph_pkg, rand=True)
-    queue = Object("UniqueGraphQueueChild", registry=unique_graph_pkg, rand=True)
+    mixed = Object["UniqueGraphMixedDynamicChild"](registry=unique_graph_pkg, rand=True)
+    queue = Object["UniqueGraphQueueChild"](registry=unique_graph_pkg, rand=True)
 
 
 def test_unique_is_a_hard_scalar_constraint_in_python_and_sv():
@@ -155,7 +155,7 @@ def test_unique_is_a_hard_scalar_constraint_in_python_and_sv():
 def test_unique_requires_two_scalars_or_one_collection():
     with pytest.raises(ConstraintSyntaxError, match="at least one"):
         class EmptyArgs(SvObject):
-            first = Bit(2)
+            first = Bit[2]()
 
             @constraint
             def legal(self):
@@ -163,7 +163,7 @@ def test_unique_requires_two_scalars_or_one_collection():
 
     with pytest.raises(ConstraintTypeError, match="at least two scalar"):
         class OneScalar(SvObject):
-            first = Bit(2)
+            first = Bit[2]()
 
             @constraint
             def legal(self):
@@ -172,8 +172,8 @@ def test_unique_requires_two_scalars_or_one_collection():
 
 def test_unique_mixed_widths_uses_sv_equality_sizing():
     class Mixed(SvObject):
-        narrow = Bit(2)
-        wide = Bit(3)
+        narrow = Bit[2]()
+        wide = Bit[3]()
 
         @constraint
         def legal(self):
@@ -268,7 +268,7 @@ def test_mixed_dynamic_and_queue_unique_in_rand_objects_are_constrained_by_paren
 def test_unique_rejects_associative_arrays_and_nested_dynamic_collections():
     with pytest.raises(ConstraintTypeError, match="associative arrays"):
         class AssocUnique(SvObject):
-            table = AssocArray(Bit(8), Bit(8), rand=True)
+            table = AssocArray[Bit[8], Bit[8]](rand=True)
 
             @constraint
             def legal(self):
@@ -276,7 +276,7 @@ def test_unique_rejects_associative_arrays_and_nested_dynamic_collections():
 
     with pytest.raises(ConstraintTypeError, match="nested dynamic"):
         class NestedDyn(SvObject):
-            data = DynArray(DynArray(Bit(8), max_length=2), rand=True, max_length=2)
+            data = DynArray[DynArray[Bit[8]](max_length=2)](rand=True, max_length=2)
 
             @constraint
             def legal(self):

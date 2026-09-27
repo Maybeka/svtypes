@@ -39,14 +39,14 @@ SVX (SystemVerilog eXtensions) is a framework that brings Python into the System
 SvTypes is the **single source of truth for all data structures** that flow through the SVX stack. A verification engineer defines a transaction type once:
 
 ```python
-class OpEnum(Enum, width=8, signed=False):
+class OpEnum(Enum[Bit[8]]):
     READ = 0
     WRITE = 1
 
 @svobj
 class MyTransaction(SvObject):
-    addr = Bit(32)
-    data = Bit(64)
+    addr = Bit[32]()
+    data = Bit[64]()
     op   = OpEnum(OpEnum.READ)
 ```
 
@@ -76,7 +76,7 @@ And gets, for free:
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                  USER API LAYER                           │
-│  Public Python API: @svobj, Int(), Bit(), Package, etc. │
+│  Public Python API: @svobj, Int(), Bit[width](), Package, etc. │
 │  What the verification engineer writes                   │
 ├─────────────────────────────────────────────────────────┤
 │                  CORE MODEL LAYER                         │
@@ -105,7 +105,7 @@ And gets, for free:
                     ┌──────────────────┐
                     │   User writes:   │
                     │ @svobj / Int() / │
-                    │ Bit() / Array() │
+                    │ Bit[W]() / Array[T, N]() │
                     └────────┬─────────┘
                              │
                     ┌────────▼─────────┐
@@ -186,17 +186,17 @@ TypeBase (abstract)
 │   ├── IntegerType
 │   │   ├── Int          — 32-bit signed   → SV: int       C++: int32_t
 │   │   └── LongInt      — 64-bit signed   → SV: longint   C++: int64_t
-│   ├── Bit(width, signed) — arbitrary width → SV: bit [N-1:0]  C++: uintN_t
-│   ├── Logic(width/shape) — four-state packed value with value/X/Z planes
+│   ├── Bit[width, Signed?]() — arbitrary width → SV: bit [N-1:0]  C++: uintN_t
+│   ├── Logic[width_or_shape, Signed?]() — four-state packed value with value/X/Z planes
 │   ├── RealType
 │   │   ├── Real         — 64-bit float    → SV: real      C++: double
 │   │   └── ShortReal    — 32-bit float    → SV: shortreal C++: float
 │   ├── String           — dynamic string  → SV: string    C++: std::string
 │   ├── CollectionBase
-│   │   ├── Array(elem, N)  — fixed        → SV: T [N]     C++: std::array<T,N>
-│   │   ├── DynArray(elem)  — dynamic      → SV: T []      C++: std::vector<T>
-│   │   ├── Queue(elem)     — queue        → SV: T [$]     C++: std::vector<T>
-│   │   └── AssocArray(K,V) — associative  → SV: V [K]     C++: std::map<K,V>
+│   │   ├── Array[T, N]()  — fixed        → SV: T [N]     C++: std::array<T,N>
+│   │   ├── DynArray[T]()  — dynamic      → SV: T []      C++: std::vector<T>
+│   │   ├── Queue[T]()     — queue        → SV: T [$]     C++: std::vector<T>
+│   │   └── AssocArray[K,V]() — associative → SV: V [K]   C++: std::map<K,V>
 │
 └── UserDefinedType — User/composite types
     ├── SvObject         — class-based     → SV: class      C++: struct
@@ -213,7 +213,7 @@ Every type carries metadata that drives code generation:
 | `rand` | bool | Randomizable in SV? | `rand` modifier in SV class |
 | `plusarg` | bool | Overridable by +plusargs? | `$value$plusargs` override block |
 | `dump` | bool | Included in print/dump? | Print statement in `display()` |
-| `cov` | bool | Include this field in deterministic automatic functional coverage | `svtypes_auto_cov` CoverageIR, Python runtime, and generated SystemVerilog; `Object(...)` handles have no default nullness point |
+| `cov` | bool | Include this field in deterministic automatic functional coverage | `svtypes_auto_cov` CoverageIR, Python runtime, and generated SystemVerilog; `Object[...]` handles have no default nullness point |
 | `pack_bytes` | bool | Included in serialization? | Packed in `pack()`/`unpack()` |
 | `width` | int (ro) | Bit width (primitives) | Drives SV/C++ type selection |
 
@@ -258,9 +258,9 @@ Serialization Order:
 | Bit(N) | Unsigned LE, padded to ceil(N/8) | ceil(N/8) |
 | Real / ShortReal | IEEE 754 LE | 8 / 4 |
 | String | 4-byte LE length + UTF-8 bytes | 4 + len |
-| Array(T,N) | N × pack(T) | N × sizeof(T) |
-| DynArray(T) / Queue(T) | 4-byte LE count + count × pack(T) | 4 + count × sizeof(T) |
-| AssocArray(K,V) | 4-byte LE count + count × (pack(K) + pack(V)) sorted by K | 4 + count × (sizeof(K)+sizeof(V)) |
+| Array[T,N]() | N × pack(T) | N × sizeof(T) |
+| DynArray[T]() / Queue[T]() | 4-byte LE count + count × pack(T) | 4 + count × sizeof(T) |
+| AssocArray[K,V]() | 4-byte LE count + count × (pack(K) + pack(V)) sorted by K | 4 + count × (sizeof(K)+sizeof(V)) |
 | SvObject | Recursive: base fields first, then derived | variable |
 
 ### 4.2 Cross-Language Parity Guarantee
@@ -289,7 +289,7 @@ Verification: A binary blob produced by Python can be unpacked by SV,
 ### 5.2 Package API
 
 ```python
-from svtypes import Package, get_package
+from svtypes import Int, Package, Parameter, get_package
 
 # Option A: Explicit package creation
 pkg = Package("my_packet_pkg")
@@ -300,7 +300,7 @@ pkg.collect_module("my_project.packets")   # Discovers @svobj types
 
 # Option C: Explicit registration
 pkg.register(MyTransaction)
-pkg.add_parameter("DATA_WIDTH", Parameter(64))
+pkg.add_parameter("DATA_WIDTH", Parameter[Int](64))
 
 # Generate all outputs
 pkg.to_sv_code()     # → my_packet_pkg.sv

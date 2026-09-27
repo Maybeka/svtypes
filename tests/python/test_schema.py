@@ -7,6 +7,7 @@ from svtypes import (
     Bit,
     CompatibilityError,
     Int,
+    Queue,
     String,
     SvObject,
     EncodingDescriptor,
@@ -14,19 +15,33 @@ from svtypes import (
     checked_unpack,
     get_package,
     schema_descriptor,
+    sv_declaration,
+    sv_packer_expression,
+    sv_type_expression,
     svobj,
     encoding_descriptor,
 )
 
 
 def test_bits_shape_has_distinct_identity_but_flat_encoding_bytes():
-    shaped = Bit((2, 8))
-    flat = Bit(16)
+    shaped = Bit[(2, 8)]()
+    flat = Bit[16]()
 
     assert unified_type_name(shaped) == "svtypes.Bit[shape=(2,8),signed=false,state=2state]"
     assert unified_type_name(flat) == "svtypes.Bit[width=16,signed=false,state=2state]"
     assert shaped.pack(0x1234) == flat.pack(0x1234)
     assert encoding_descriptor(shaped) != encoding_descriptor(flat)
+
+
+def test_public_sv_rendering_expressions_preserve_unpacked_collection_spelling():
+    queue = Queue[Int]()
+
+    assert sv_type_expression(queue) == "int [$]"
+    assert sv_packer_expression(queue) == "svtypes_pkg::queue_packer#(int, svtypes_pkg::int_packer)"
+    assert sv_declaration(queue, "history") == "int history [$]"
+
+    with pytest.raises(TypeError, match="non-empty"):
+        sv_declaration(queue, "")
 
 
 def test_schema_and_encoding_fingerprints_have_separate_policy_behavior():
@@ -62,14 +77,14 @@ def test_registered_object_uses_qualified_package_type_id():
 
     @svobj(registry=package)
     class Payload(SvObject):
-        value = Array(String(), 2)
+        value = Array[String, 2]()
 
     assert unified_type_name(Payload) == "descriptor_test.Payload"
     assert schema_descriptor(Payload).unified_type_name == "descriptor_test.Payload"
 
 
 def test_encoding_descriptor_text_roundtrip_and_immutability():
-    descriptor = encoding_descriptor(Bit((2, 8)))
+    descriptor = encoding_descriptor(Bit[(2, 8)]())
     restored = EncodingDescriptor.from_dict(descriptor.to_dict())
 
     assert restored == descriptor

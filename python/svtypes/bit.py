@@ -15,6 +15,33 @@ class Bit(BuiltInType):
     Oct = 'o'
     Bin = 'b'
 
+    @classmethod
+    def __class_getitem__(cls, item):
+        from .typespec import packed_spec
+
+        return packed_spec(cls, item)
+
+    @classmethod
+    def _from_layout(
+        cls,
+        width: int | tuple[int, ...],
+        value: int | None = None,
+        *,
+        signed: bool = False,
+        radix: str | None = None,
+        **kwargs,
+    ) -> "Bit":
+        """Internal construction after a public type specification is bound."""
+
+        return cls(
+            width,
+            value,
+            signed=signed,
+            radix=cls.Hex if radix is None else radix,
+            _svtypes_internal=True,
+            **kwargs,
+        )
+
     def __init__(
         self,
         width: int | tuple[int, ...] = 1,
@@ -28,7 +55,10 @@ class Bit(BuiltInType):
         intelli: bool | None = None,
         pack_bytes: bool | None = True,
         randc: bool = False,
+        _svtypes_internal: bool = False,
     ) -> None:
+        if not _svtypes_internal:
+            raise TypeError("Bit(...) no longer accepts a width; use Bit[width](...) instead")
         super().__init__(
             rand=rand,
             plusarg=plusarg,
@@ -249,6 +279,6 @@ class Bit(BuiltInType):
 
 
 if __name__ == '__main__':
-    bit = Bit(1)
+    bit = Bit[1]()
     bit.value = 1
     print(bit)

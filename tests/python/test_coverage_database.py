@@ -10,7 +10,7 @@ from svtypes.coverage.context import _reset_coverage_case_name_for_testing
 
 
 class DatabasePacket(SvObject):
-    code = Bit(2)
+    code = Bit[2]()
 
     @covergroup
     def cg(self):
@@ -185,7 +185,7 @@ def test_ucis_import_requires_explicit_frozen_instance_binding() -> None:
 
 def test_ucis_export_omits_unrepresentable_default_bin_without_invalid_xml() -> None:
     class Packet(SvObject):
-        code = Bit(1)
+        code = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -212,7 +212,7 @@ def test_ucis_export_omits_unrepresentable_default_bin_without_invalid_xml() -> 
 
 def test_ucis_import_accepts_exported_subset_when_default_bins_are_omitted() -> None:
     class Packet(SvObject):
-        code = Bit(1)
+        code = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -284,7 +284,7 @@ def test_database_snapshot_is_not_a_mutable_view_of_internal_records() -> None:
 
 def test_per_instance_database_record_requires_bound_logical_key_and_checks_layout() -> None:
     class Packet(SvObject):
-        code = Bit(2)
+        code = Bit[2]()
 
         @covergroup
         def cg(self, limit: CoverInput[int]):
@@ -319,7 +319,7 @@ def test_per_instance_database_record_requires_bound_logical_key_and_checks_layo
 
 def test_database_type_summary_supports_independent_and_merged_instance_scoring() -> None:
     class Independent(SvObject):
-        code = Bit(1)
+        code = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -343,7 +343,7 @@ def test_database_type_summary_supports_independent_and_merged_instance_scoring(
     assert database.type_summary(Independent.cg.freeze().covergroup_type_id) == {"coverage": 50.0, "merge_instances": 0}
 
     class Merged(SvObject):
-        code = Bit(1)
+        code = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -400,7 +400,7 @@ def test_database_merge_unions_case_sources_without_changing_counts() -> None:
 
 def test_per_instance_illegal_hits_remain_separate_by_logical_key() -> None:
     class Packet(SvObject):
-        code = Bit(2)
+        code = Bit[2]()
 
         @covergroup
         def cg(self):
@@ -429,7 +429,7 @@ def test_per_instance_illegal_hits_remain_separate_by_logical_key() -> None:
 
 def test_database_aggregate_coverage_honors_covergroup_weight() -> None:
     class WeightedLow(SvObject):
-        code = Bit(1)
+        code = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -444,7 +444,7 @@ def test_database_aggregate_coverage_honors_covergroup_weight() -> None:
             self.cg.instantiate()
 
     class WeightedHigh(SvObject):
-        code = Bit(1)
+        code = Bit[1]()
 
         @covergroup
         def cg(self):
@@ -468,8 +468,8 @@ def test_database_aggregate_coverage_honors_covergroup_weight() -> None:
 
 def test_database_merges_cross_counters_with_merge_instances() -> None:
     class Packet(SvObject):
-        code = Bit(1)
-        kind = Bit(1)
+        code = Bit[1]()
+        kind = Bit[1]()
 
         @covergroup
         def cg(self):

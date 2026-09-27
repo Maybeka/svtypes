@@ -1,7 +1,7 @@
 from __future__ import annotations
 import copy
 import struct
-from typing import Any, Generic, TypeVar, overload
+from typing import Any, Generic, TypeVar
 from .base import BuiltInType, TypeBase
 from .errors import DeclarationError, EncodeError, ResourceLimitError
 from .limits import DEFAULT_MAX_DYNAMIC_LENGTH
@@ -44,7 +44,7 @@ def _sv_collection_element_decl(codec: Any, name: str) -> str:
     """Render an unpacked element type without duplicating its qualifier.
 
     The enclosing collection owns the ``rand``/``randc`` declaration
-    qualifier.  This matters for ``Object(..., rand=True)``: its descriptor
+    qualifier.  This matters for ``Object[...](rand=True)``: its descriptor
     also uses that flag for recursive graph randomization, but an unpacked
     declaration must still contain exactly one qualifier.
     """
@@ -58,35 +58,47 @@ def _sv_collection_element_decl(codec: Any, name: str) -> str:
 class Array(CollectionBase, Generic[T], metaclass=_ArrayMeta):
     """Fixed-size SystemVerilog array.
 
-    A tuple ``size`` is expanded recursively, so ``Array(T, (3, 2))`` has
-    the same concrete nested representation as ``Array(Array(T, 2), 3)``.
+    A tuple ``size`` is expanded recursively, so ``Array[T, (3, 2)]()`` has
+    the same concrete nested representation as ``Array[Array[T, 2], 3]()``.
     Field policies supplied to the tuple form apply to its outermost array,
     exactly as they do in the explicit nested form.
     """
     _default_cov = False
 
-    @overload
-    def __new__(cls, elem_type: T, size: int, **kwargs: Any) -> "Array[T]": ...
+    @classmethod
+    def __class_getitem__(cls, item: Any):
+        from .typespec import collection_spec
 
-    @overload
-    def __new__(cls, elem_type: T, size: tuple[int], **kwargs: Any) -> "Array[T]": ...
-
-    @overload
-    def __new__(cls, elem_type: T, size: tuple[int, int], **kwargs: Any) -> "Array[Array[T]]": ...
-
-    @overload
-    def __new__(cls, elem_type: T, size: tuple[int, int, int], **kwargs: Any) -> "Array[Array[Array[T]]]": ...
-
-    @overload
-    def __new__(cls, elem_type: T, size: tuple[int, int, int, int], **kwargs: Any) -> "Array[Array[Array[Array[T]]]]": ...
-
-    @overload
-    def __new__(cls, elem_type: T, size: tuple[int, ...], **kwargs: Any) -> "Array[Any]": ...
+        return collection_spec(cls, item, 2)
 
     def __new__(cls, *args: Any, **kwargs: Any) -> "Array[Any]":
         return super().__new__(cls)
 
-    def __init__(self, elem_type: T, size: int | tuple[int, ...], **kwargs: Any):
+    @classmethod
+    def _from_layout(
+        cls,
+        elem_type: T,
+        size: int | tuple[int, ...],
+        **kwargs: Any,
+    ) -> "Array[Any]":
+        """Construct an Array after ``Array[...]`` has fixed its layout."""
+
+        return cls(elem_type, size, _svtypes_internal=True, **kwargs)
+
+    def __init__(
+        self,
+        elem_type: T | None = None,
+        size: int | tuple[int, ...] | None = None,
+        *,
+        _svtypes_internal: bool = False,
+        **kwargs: Any,
+    ):
+        if not _svtypes_internal:
+            raise TypeError(
+                "Array(...) no longer declares an element type or size; "
+                "use Array[ElementType, size](...) instead"
+            )
+        assert elem_type is not None and size is not None
         if isinstance(size, tuple):
             if not size:
                 raise ValueError("Array size tuple cannot be empty")
@@ -101,7 +113,7 @@ class Array(CollectionBase, Generic[T], metaclass=_ArrayMeta):
                 elem_type, size = elem_type, size[0]
             else:
                 # Do not propagate outer field policies into nested elements.
-                elem_type, size = Array(elem_type, size[1:]), size[0]
+                elem_type, size = Array[elem_type, size[1:]](), size[0]
         elif not isinstance(size, int):
             raise TypeError("size must be int or tuple of ints")
 
@@ -238,7 +250,32 @@ class Array(CollectionBase, Generic[T], metaclass=_ArrayMeta):
 
 class DynArray(CollectionBase, Generic[T]):
     """Dynamic array: type name []"""
-    def __init__(self, elem_type: T, *, max_length: int = DEFAULT_MAX_DYNAMIC_LENGTH, **kwargs):
+
+    @classmethod
+    def __class_getitem__(cls, item: Any):
+        from .typespec import collection_spec
+
+        return collection_spec(cls, item, 1)
+    @classmethod
+    def _from_layout(cls, elem_type: T, **kwargs: Any) -> "DynArray[T]":
+        """Construct after ``DynArray[...]`` or ``Queue[...]`` fixes its type."""
+
+        return cls(elem_type, _svtypes_internal=True, **kwargs)
+
+    def __init__(
+        self,
+        elem_type: T | None = None,
+        *,
+        max_length: int = DEFAULT_MAX_DYNAMIC_LENGTH,
+        _svtypes_internal: bool = False,
+        **kwargs: Any,
+    ):
+        if not _svtypes_internal:
+            raise TypeError(
+                f"{self.__class__.__name__}(...) no longer declares an element type; "
+                f"use {self.__class__.__name__}[ElementType](...) instead"
+            )
+        assert elem_type is not None
         super().__init__(**kwargs)
         _validate_element_template(elem_type, f"{self.__class__.__name__} element template")
         if not isinstance(max_length, int) or isinstance(max_length, bool) or max_length <= 0:
@@ -251,7 +288,7 @@ class DynArray(CollectionBase, Generic[T]):
     def rand(self):
         """Expose the declaration's random qualifier for its element type.
 
-        ``DynArray(Object(..., rand=True))`` represents ``rand Child a[]``;
+        ``DynArray[Object[...]](rand=True)`` represents ``rand Child a[]``;
         like ``Array``, its container is therefore a random variable even
         when no redundant outer ``rand=True`` policy was supplied.
         """
@@ -411,8 +448,14 @@ class DynArray(CollectionBase, Generic[T]):
             f"{indent}svtypes_pkg::dyn_array_packer#({elem_t}, {elem_packer})::unpack({name}, bytes, offset);"
         ]
 
-class Queue(DynArray[T]):
+class Queue(DynArray):
     """Queue: type name [$]"""
+
+    @classmethod
+    def __class_getitem__(cls, item: Any):
+        from .typespec import collection_spec
+
+        return collection_spec(cls, item, 1)
     def sv_decl(self, name: str) -> str:
         return _sv_collection_element_decl(self._elem_template, f"{name} [$]")
 
@@ -482,7 +525,33 @@ class Queue(DynArray[T]):
 
 class AssocArray(CollectionBase, Generic[K, V]):
     """Associative array: val_type name [key_type]"""
-    def __init__(self, key_type: K, val_type: V, *, max_length: int = DEFAULT_MAX_DYNAMIC_LENGTH, **kwargs):
+
+    @classmethod
+    def __class_getitem__(cls, item: Any):
+        from .typespec import collection_spec
+
+        return collection_spec(cls, item, 2, key_value=True)
+    @classmethod
+    def _from_layout(cls, key_type: K, val_type: V, **kwargs: Any) -> "AssocArray[K, V]":
+        """Construct after ``AssocArray[...]`` fixes its key and value types."""
+
+        return cls(key_type, val_type, _svtypes_internal=True, **kwargs)
+
+    def __init__(
+        self,
+        key_type: K | None = None,
+        val_type: V | None = None,
+        *,
+        max_length: int = DEFAULT_MAX_DYNAMIC_LENGTH,
+        _svtypes_internal: bool = False,
+        **kwargs: Any,
+    ):
+        if not _svtypes_internal:
+            raise TypeError(
+                "AssocArray(...) no longer declares key/value types; "
+                "use AssocArray[KeyType, ValueType](...) instead"
+            )
+        assert key_type is not None and val_type is not None
         super().__init__(**kwargs)
         _validate_element_template(key_type, "AssocArray key template")
         _validate_element_template(val_type, "AssocArray value template")

@@ -8,8 +8,8 @@ from svtypes.constraint.randomize import _dynamic_size_ir
 
 
 class DynamicPacket(SvObject):
-    length = Bit(4)
-    data = DynArray(Bit(8), rand=True, max_length=8)
+    length = Bit[4]()
+    data = DynArray[Bit[8]](rand=True, max_length=8)
 
     @constraint
     def legal(self):
@@ -20,7 +20,7 @@ class DynamicPacket(SvObject):
 
 
 class QueuePacket(SvObject):
-    data = Queue(Bit(8), rand=True, max_length=8)
+    data = Queue[Bit[8]](rand=True, max_length=8)
 
     @constraint
     def legal(self):
@@ -30,7 +30,7 @@ class QueuePacket(SvObject):
 
 
 class ExistingDynamicPacket(SvObject):
-    data = DynArray(Bit(8), rand=True, max_length=8)
+    data = DynArray[Bit[8]](rand=True, max_length=8)
 
     @constraint
     def legal(self):
@@ -39,7 +39,7 @@ class ExistingDynamicPacket(SvObject):
 
 
 class UnsatDynamicPacket(SvObject):
-    data = DynArray(Bit(8), rand=True, max_length=8)
+    data = DynArray[Bit[8]](rand=True, max_length=8)
 
     @constraint
     def legal(self):
@@ -50,7 +50,7 @@ class UnsatDynamicPacket(SvObject):
 
 
 class EmptyOnlyDynamicPacket(SvObject):
-    data = DynArray(Bit(8), rand=True, max_length=4)
+    data = DynArray[Bit[8]](rand=True, max_length=4)
 
     @constraint
     def legal(self):
@@ -60,7 +60,7 @@ class EmptyOnlyDynamicPacket(SvObject):
 
 
 class AssocPacket(SvObject):
-    table = AssocArray(Bit(8), Bit(8), rand=True)
+    table = AssocArray[Bit[8], Bit[8]](rand=True)
 
     @constraint
     def legal(self):
@@ -69,7 +69,7 @@ class AssocPacket(SvObject):
 
 
 class StringAssocPacket(SvObject):
-    table = AssocArray(String(), Bit(8), rand=True)
+    table = AssocArray[String, Bit[8]](rand=True)
 
     @constraint
     def legal(self):
@@ -121,8 +121,8 @@ def test_dynamic_size_search_retries_when_nonempty_elements_are_unsat():
 
 def test_dynamic_size_phase_keeps_fixed_array_constraints():
     class MixedSize(SvObject):
-        fixed = Array(Bit(2), 1)
-        data = DynArray(Bit(8), rand=True, max_length=4)
+        fixed = Array[Bit[2], 1]()
+        data = DynArray[Bit[8]](rand=True, max_length=4)
 
         @constraint
         def legal(self):
@@ -162,7 +162,7 @@ def test_associative_array_mode_path_accepts_brace_in_string_key():
 def test_associative_array_size_is_not_a_random_constraint_variable():
     with pytest.raises(ConstraintUnsupportedError, match="associative-array size"):
         class BadAssocSize(SvObject):
-            data = AssocArray(Bit(8), Bit(8))
+            data = AssocArray[Bit[8], Bit[8]]()
 
             @constraint
             def legal(self):
@@ -171,7 +171,7 @@ def test_associative_array_size_is_not_a_random_constraint_variable():
 
 def test_dynamic_collection_layer_controls_existing_elements_individually():
     class LayeredDynamic(SvObject):
-        data = DynArray(Bit(8), rand=True, max_length=4)
+        data = DynArray[Bit[8]](rand=True, max_length=4)
 
         @constraint
         def legal(self):
@@ -198,7 +198,7 @@ def test_dynamic_collection_layer_controls_existing_elements_individually():
 
 def test_dynamic_collection_layer_uses_observable_element_mode():
     class LayeredDynamic(SvObject):
-        data = DynArray(Bit(8), rand=True, max_length=4)
+        data = DynArray[Bit[8]](rand=True, max_length=4)
 
         @constraint
         def legal(self):
@@ -226,7 +226,7 @@ def test_dynamic_collection_layer_uses_observable_element_mode():
 
 def test_queue_layer_controls_existing_elements_individually():
     class LayeredQueue(SvObject):
-        data = Queue(Bit(8), rand=True, max_length=4)
+        data = Queue[Bit[8]](rand=True, max_length=4)
 
         @constraint
         def legal(self):
@@ -254,7 +254,7 @@ def test_queue_layer_controls_existing_elements_individually():
 
 def test_queue_pop_front_rebinds_element_rand_mode_paths_without_moving_modes():
     class QueueModes(SvObject):
-        data = Queue(Bit(8), rand=True, max_length=4)
+        data = Queue[Bit[8]](rand=True, max_length=4)
 
     packet = QueueModes()
     packet.data.value = [10, 20]

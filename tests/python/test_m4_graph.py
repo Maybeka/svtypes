@@ -20,23 +20,23 @@ graph_pkg = get_package("test_m4_graph")
 @svobj(registry=graph_pkg)
 class GraphNode(SvObject):
     data = Int()
-    next = Object("GraphNode", registry=graph_pkg)
+    next = Object["GraphNode"](registry=graph_pkg)
 
 
 @svobj(registry=graph_pkg)
 class GraphPair(SvObject):
-    left = Object("GraphNode", registry=graph_pkg)
-    right = Object("GraphNode", registry=graph_pkg)
+    left = Object["GraphNode"](registry=graph_pkg)
+    right = Object["GraphNode"](registry=graph_pkg)
 
 
 @svobj(registry=graph_pkg)
 class GraphQueue(SvObject):
-    nodes = Queue(GraphNode())
+    nodes = Queue[GraphNode]()
 
 
 @svobj(registry=graph_pkg)
 class GraphRefQueue(SvObject):
-    nodes = Queue(Object("GraphNode", registry=graph_pkg))
+    nodes = Queue[Object["GraphNode"](registry=graph_pkg)]()
 
 
 def test_self_reference_roundtrip_preserves_identity():

@@ -135,20 +135,43 @@ def _slice_selector(node: ast.AST) -> Any:
         if minimum.value < 0 or maximum.value < minimum.value:
             raise _error("repeat() requires 0 <= minimum <= maximum")
         return {"kind": "repeat", "term": _slice_selector(node.args[0]), "minimum": minimum.value, "maximum": maximum.value}
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"Bit", "Logic"}:
-        if not node.args or not isinstance(node.args[0], ast.Constant) or not isinstance(node.args[0].value, int) or isinstance(node.args[0].value, bool) or node.args[0].value <= 0:
-            raise _error(f"{node.func.id} coverage literal requires an integer width")
+    if isinstance(node, ast.Call) and (
+        (isinstance(node.func, ast.Name) and node.func.id in {"Bit", "Logic"})
+        or (
+            isinstance(node.func, ast.Subscript)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in {"Bit", "Logic"}
+        )
+    ):
+        bracket_style = isinstance(node.func, ast.Subscript)
+        type_name = node.func.value.id if bracket_style else node.func.id
+        if bracket_style:
+            slice_node = node.func.slice
+            slice_items = slice_node.elts if isinstance(slice_node, ast.Tuple) else [slice_node]
+            if not slice_items or not isinstance(slice_items[0], ast.Constant) or not isinstance(slice_items[0].value, int) or isinstance(slice_items[0].value, bool) or slice_items[0].value <= 0:
+                raise _error(f"{type_name} coverage literal requires an integer width")
+            if len(slice_items) > 2 or (len(slice_items) == 2 and not isinstance(slice_items[1], ast.Name)):
+                raise _error(f"{type_name} coverage literal has an invalid type specification")
+            signed = len(slice_items) == 2 and slice_items[1].id == "Signed"
+            if len(slice_items) == 2 and slice_items[1].id not in {"Signed", "Unsigned"}:
+                raise _error(f"{type_name} coverage literal has an invalid signedness marker")
+            width = slice_items[0].value
+        else:
+            if not node.args or not isinstance(node.args[0], ast.Constant) or not isinstance(node.args[0].value, int) or isinstance(node.args[0].value, bool) or node.args[0].value <= 0:
+                raise _error(f"{type_name} coverage literal requires an integer width")
+            width = node.args[0].value
+            signed = False
         keywords = {keyword.arg: keyword.value for keyword in node.keywords if keyword.arg is not None}
-        if set(keywords).difference({"value", "signed"}) or "value" not in keywords:
-            raise _error(f"{node.func.id} coverage literal requires value= and optionally signed=")
+        allowed_keywords = {"value"} if bracket_style else {"value", "signed"}
+        if set(keywords).difference(allowed_keywords) or "value" not in keywords:
+            raise _error(f"{type_name} coverage literal requires value= and optionally signed=")
         if not isinstance(keywords["value"], ast.Constant) or not isinstance(keywords["value"].value, (int, str)):
-            raise _error(f"{node.func.id} coverage literal value must be an integer or string")
-        signed = False
-        if "signed" in keywords:
+            raise _error(f"{type_name} coverage literal value must be an integer or string")
+        if not bracket_style and "signed" in keywords:
             if not isinstance(keywords["signed"], ast.Constant) or not isinstance(keywords["signed"].value, bool):
-                raise _error(f"{node.func.id} coverage literal signed must be a boolean")
+                raise _error(f"{type_name} coverage literal signed must be a boolean")
             signed = keywords["signed"].value
-        return {"kind": "typed_literal", "type": node.func.id, "width": node.args[0].value,
+        return {"kind": "typed_literal", "type": type_name, "width": width,
                 "signed": signed, "value": keywords["value"].value}
     return _expr(node)
 
@@ -315,7 +338,11 @@ def _normalize_literal(
         literal_width, literal_signed, literal_four_state = selector["width"], bool(selector["signed"]), selector["type"] == "Logic"
         if literal_four_state:
             try:
-                literal_value = Logic(literal_width, value=raw, signed=literal_signed).value
+                from ..typespec import Signed, Unsigned
+
+                literal_value = Logic[
+                    literal_width, Signed if literal_signed else Unsigned
+                ](value=raw).value
             except (TypeError, ValueError) as error:
                 raise _error(f"coverage point {point_name!r} has invalid Logic literal: {error}") from error
         else:

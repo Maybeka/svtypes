@@ -25,7 +25,7 @@ from svtypes import (
 )
 
 
-class ErrorColor(Enum, width=32, signed=False):
+class ErrorColor(Enum[Bit[32]]):
     RED = 0
     GREEN = 1
 
@@ -33,7 +33,7 @@ class ErrorColor(Enum, width=32, signed=False):
 @pytest.mark.parametrize(
     ("type_obj", "payload"),
     [
-        (Bit(16), b"\x01"),
+        (Bit[16](), b"\x01"),
         (Int(), b"\x01\x02\x03"),
         (Real(), b"\x00" * 7),
         (ShortReal(), b"\x00" * 3),
@@ -57,23 +57,23 @@ def test_string_unpack_rejects_truncated_data():
 
 def test_dyn_array_unpack_rejects_truncated_length():
     with pytest.raises(ValueError, match="DynArray length"):
-        DynArray(Int()).unpack(b"\x01")
+        DynArray[Int]().unpack(b"\x01")
 
 
 def test_dyn_array_unpack_rejects_truncated_element():
     with pytest.raises(ValueError, match="Not enough bytes"):
-        DynArray(Int()).unpack(b"\x01\x00\x00\x00\x01")
+        DynArray[Int]().unpack(b"\x01\x00\x00\x00\x01")
 
 
 def test_assoc_array_unpack_rejects_truncated_length():
     with pytest.raises(ValueError, match="AssocArray length"):
-        AssocArray(String(), Int()).unpack(b"\x01")
+        AssocArray[String, Int]().unpack(b"\x01")
 
 
 def test_assoc_array_unpack_rejects_truncated_value():
     payload = b"\x01\x00\x00\x00" + String().pack("key") + b"\x01"
     with pytest.raises(ValueError, match="Not enough bytes"):
-        AssocArray(String(), Int()).unpack(payload)
+        AssocArray[String, Int]().unpack(payload)
 
 
 def test_late_bound_object_descriptor_supports_recursive_graphs():
@@ -82,7 +82,7 @@ def test_late_bound_object_descriptor_supports_recursive_graphs():
     @svobj(registry=registry)
     class RecursiveNode(SvObject):
         data = Int()
-        next = Object("RecursiveNode", registry=registry)
+        next = Object["RecursiveNode"](registry=registry)
 
     node = RecursiveNode()
     node.data.value = 3
@@ -150,7 +150,7 @@ def test_type_registry_rejects_duplicate_name_for_different_type():
 
 
 def test_public_version_matches_project_metadata():
-    assert __version__ == "1.2.0"
+    assert __version__ == "1.4.0"
 
 
 def test_public_exception_hierarchy_is_importable():

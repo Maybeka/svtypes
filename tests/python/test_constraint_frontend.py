@@ -19,21 +19,21 @@ from svtypes import (
 )
 
 
-class FrontMode(Enum, width=8, signed=False):
+class FrontMode(Enum[Bit[8]]):
     READ = 0
     WRITE = 1
     IDLE = 2
 
 
 class FrontHeader(SvStruct):
-    addr = Bit(16)
-    extra = Bit(8)
+    addr = Bit[16]()
+    extra = Bit[8]()
 
 
 def test_frontend_rejects_assignment_return_elif_and_empty_body():
     with pytest.raises(ConstraintSyntaxError, match="assignment"):
         class BadAssign(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @constraint
             def legal(self):
@@ -41,7 +41,7 @@ def test_frontend_rejects_assignment_return_elif_and_empty_body():
 
     with pytest.raises(ConstraintSyntaxError, match="Return"):
         class BadReturn(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @constraint
             def legal(self):
@@ -49,8 +49,8 @@ def test_frontend_rejects_assignment_return_elif_and_empty_body():
 
     with pytest.raises(ConstraintSyntaxError, match="elif"):
         class BadElif(SvObject):
-            addr = Bit(8)
-            flag = Bit(1)
+            addr = Bit[8]()
+            flag = Bit[1]()
 
             @constraint
             def legal(self):
@@ -61,7 +61,7 @@ def test_frontend_rejects_assignment_return_elif_and_empty_body():
 
     with pytest.raises(ConstraintSyntaxError, match="empty"):
         class BadEmpty(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @constraint
             def legal(self):
@@ -71,7 +71,7 @@ def test_frontend_rejects_assignment_return_elif_and_empty_body():
 def test_frontend_rejects_lambda_fstring_part_select_and_extra_decorator():
     with pytest.raises(ConstraintSyntaxError, match="lambda"):
         class BadLambda(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @constraint
             def legal(self):
@@ -79,7 +79,7 @@ def test_frontend_rejects_lambda_fstring_part_select_and_extra_decorator():
 
     with pytest.raises(ConstraintSyntaxError, match="f-string"):
         class BadFString(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @constraint
             def legal(self):
@@ -87,7 +87,7 @@ def test_frontend_rejects_lambda_fstring_part_select_and_extra_decorator():
 
     with pytest.raises(ConstraintUnsupportedError, match="part-select"):
         class BadSlice(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @constraint
             def legal(self):
@@ -98,7 +98,7 @@ def test_frontend_rejects_lambda_fstring_part_select_and_extra_decorator():
 
     with pytest.raises(ConstraintSyntaxError, match="decorator stack"):
         class BadStack(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @constraint
             @deco
@@ -109,7 +109,7 @@ def test_frontend_rejects_lambda_fstring_part_select_and_extra_decorator():
 def test_frontend_rejects_python_calls_pass_is_and_extra_args():
     with pytest.raises(ConstraintSyntaxError, match="function calls"):
         class BadCall(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @constraint
             def legal(self):
@@ -117,7 +117,7 @@ def test_frontend_rejects_python_calls_pass_is_and_extra_args():
 
     with pytest.raises(ConstraintSyntaxError, match="pass"):
         class BadPass(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @constraint
             def legal(self):
@@ -126,7 +126,7 @@ def test_frontend_rejects_python_calls_pass_is_and_extra_args():
 
     with pytest.raises(ConstraintSyntaxError, match="is / is not"):
         class BadIs(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @constraint
             def legal(self):
@@ -134,7 +134,7 @@ def test_frontend_rejects_python_calls_pass_is_and_extra_args():
 
     with pytest.raises(ConstraintSyntaxError, match="exactly one parameter"):
         class BadArgs(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @constraint
             def legal(self, extra=1):
@@ -144,7 +144,7 @@ def test_frontend_rejects_python_calls_pass_is_and_extra_args():
 def test_frontend_rejects_range_step_and_for_else():
     with pytest.raises(ConstraintUnsupportedError, match="step"):
         class BadStep(SvObject):
-            words = Array(Bit(8), 4)
+            words = Array[Bit[8], 4]()
 
             @constraint
             def legal(self):
@@ -153,7 +153,7 @@ def test_frontend_rejects_range_step_and_for_else():
 
     with pytest.raises(ConstraintSyntaxError, match="for-else"):
         class BadForElse(SvObject):
-            words = Array(Bit(8), 2)
+            words = Array[Bit[8], 2]()
 
             @constraint
             def legal(self):
@@ -165,13 +165,13 @@ def test_frontend_rejects_range_step_and_for_else():
 
 def test_frontend_legal_chained_boolean_membership_loop_ternary_and_paths():
     class Legal(SvObject):
-        addr = Bit(8)
-        length = Bit(8)
-        burst = Bit(1)
+        addr = Bit[8]()
+        length = Bit[8]()
+        burst = Bit[1]()
         mode = FrontMode()
         header = FrontHeader(rand=True)
-        words = Array(Bit(8), 3)
-        flag = Bit(8)
+        words = Array[Bit[8], 3]()
+        flag = Bit[8]()
 
         @constraint
         def legal(self):
@@ -220,7 +220,7 @@ def test_frontend_rejects_string_and_object_handle_paths():
                 self.label == 1
 
     class Inner(SvObject):
-        addr = Bit(8)
+        addr = Bit[8]()
 
     with pytest.raises(ConstraintNameError, match="cannot access"):
         class Outer(SvObject):
@@ -234,7 +234,7 @@ def test_frontend_rejects_string_and_object_handle_paths():
 def test_constraint_on_svstruct_is_rejected():
     with pytest.raises(DeclarationError, match="SvStruct"):
         class BadStruct(SvStruct):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @constraint
             def legal(self):

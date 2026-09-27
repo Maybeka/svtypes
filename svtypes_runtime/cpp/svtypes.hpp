@@ -12,6 +12,7 @@
 #include <unordered_set>
 #include <iomanip>
 #include <iostream>
+#include <initializer_list>
 #include <sstream>
 
 namespace svtypes {
@@ -250,6 +251,9 @@ struct BitValue {
         return !(*this == other);
     }
 
+    bool operator==(const BitValue&) const = default;
+    bool operator!=(const BitValue&) const = default;
+
 private:
     void mask_unused_bits() {
         constexpr size_t used_bits = Width % 8;
@@ -258,6 +262,20 @@ private:
         }
     }
 };
+
+// Generated enums whose SystemVerilog storage width does not match a native
+// C++ integral type are small value wrappers around BitValue.  Keep their
+// contract structural so generated headers do not need to specialize a
+// runtime trait in this namespace.
+template <typename T, typename = void>
+struct is_enum_wrapper : std::false_type {};
+
+template <typename T>
+struct is_enum_wrapper<T, std::void_t<typename T::svtypes_enum_wrapper_tag>>
+    : std::true_type {};
+
+template <typename T>
+inline constexpr bool is_enum_wrapper_v = is_enum_wrapper<T>::value;
 
 // Base class for all modeled objects
 struct SvObject {
@@ -331,6 +349,11 @@ std::string dump_value(const BitValue<Width, Signed>& value) {
         stream << std::setw(2) << std::setfill('0') << static_cast<unsigned>(*it);
     }
     return stream.str();
+}
+
+template <typename T, std::enable_if_t<is_enum_wrapper_v<T>, int> = 0>
+std::string dump_value(const T& value) {
+    return dump_value(value.value);
 }
 
 template <size_t Width, bool Signed>
@@ -772,6 +795,16 @@ void unpack(BitValue<Width, Signed>& v, const std::vector<uint8_t>& b, size_t& o
     require_available(b, o, BitValue<Width, Signed>::byte_count);
     std::copy_n(b.begin() + static_cast<std::ptrdiff_t>(o), BitValue<Width, Signed>::byte_count, v.bytes.begin());
     o += BitValue<Width, Signed>::byte_count;
+}
+
+template <typename T, std::enable_if_t<is_enum_wrapper_v<T>, int> = 0>
+void pack(const T& v, std::vector<uint8_t>& b) {
+    pack(v.value, b);
+}
+
+template <typename T, std::enable_if_t<is_enum_wrapper_v<T>, int> = 0>
+void unpack(T& v, const std::vector<uint8_t>& b, size_t& o) {
+    unpack(v.value, b, o);
 }
 
 template <typename T, size_t N>

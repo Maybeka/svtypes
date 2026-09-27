@@ -14,6 +14,7 @@ class Int(Bit):
             intelli=intelli,
             pack_bytes=pack_bytes,
             randc=randc,
+            _svtypes_internal=True,
         )
 
     def sv_decl(self, name: str):
@@ -47,6 +48,7 @@ class LongInt(Bit):
             intelli=intelli,
             pack_bytes=pack_bytes,
             randc=randc,
+            _svtypes_internal=True,
         )
 
     def sv_decl(self, name: str):

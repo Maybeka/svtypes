@@ -1,11 +1,11 @@
 import subprocess
 from pathlib import Path
 
-from svtypes import Logic, LogicValue, Reg, SvObject, encoding_descriptor, schema_descriptor, unified_type_name
+from svtypes import Logic, LogicValue, Reg, Signed, SvObject, encoding_descriptor, schema_descriptor, unified_type_name
 
 
 def test_four_state_truth_table_and_three_plane_bytes():
-    codec = Logic(4)
+    codec = Logic[4]()
     value = LogicValue.from_string("10xz")
     assert str(value) == "10xz"
     assert codec.pack(value) == bytes([0b1000, 0b0010, 0b0001])
@@ -14,8 +14,8 @@ def test_four_state_truth_table_and_three_plane_bytes():
 
 
 def test_multidimensional_logic_shape_is_preserved_with_flat_bytes():
-    shaped = Logic((2, 4))
-    flat = Logic(8)
+    shaped = Logic[(2, 4)]()
+    flat = Logic[8]()
     value = LogicValue.from_string("10xz01zx")
     assert shaped.width == 8
     assert shaped.shape == (2, 4)
@@ -46,8 +46,8 @@ def test_cpp_logic_bits_three_plane_roundtrip(tmp_path: Path):
 
 
 def test_logic_bits_signed_changes_identity_and_declarations():
-    unsigned = Logic(4)
-    signed = Logic(4, signed=True)
+    unsigned = Logic[4]()
+    signed = Logic[4, Signed]()
     assert unsigned.signed is False
     assert signed.signed is True
     assert unsigned.sv_decl("x") == "logic [3:0] x"
@@ -63,8 +63,8 @@ def test_logic_bits_signed_changes_identity_and_declarations():
 
 
 def test_reg_is_a_logic_runtime_value_with_legacy_sv_declaration_spelling():
-    logic = Logic(4, signed=True)
-    reg = Reg(4, signed=True)
+    logic = Logic[4, Signed]()
+    reg = Reg[4, Signed]()
 
     assert type(reg) is type(logic)
     assert isinstance(logic, Reg)
@@ -79,7 +79,7 @@ def test_reg_is_a_logic_runtime_value_with_legacy_sv_declaration_spelling():
 
 def test_generated_reg_field_preserves_legacy_keyword():
     class LegacyRegister(SvObject):
-        data = Reg(8)
+        data = Reg[8]()
 
     code = LegacyRegister.to_sv_obj()
     assert "rand reg [7:0] data;" in code
@@ -87,7 +87,7 @@ def test_generated_reg_field_preserves_legacy_keyword():
 
 def test_generated_signed_logic_field():
     class SignedLogic(SvObject):
-        data = Logic(8, signed=True)
+        data = Logic[8, Signed]()
 
     code = SignedLogic.to_sv_obj()
     assert "rand logic signed [7:0] data;" in code
@@ -95,7 +95,7 @@ def test_generated_signed_logic_field():
 
 def test_generated_logic_field_supports_rand_plusarg_and_coverage():
     class LogicPayload(SvObject):
-        data = Logic((2, 4))
+        data = Logic[(2, 4)]()
 
     code = LogicPayload.to_sv_obj()
     assert "rand logic [1:0] [3:0] data;" in code

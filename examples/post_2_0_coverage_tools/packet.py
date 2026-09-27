@@ -7,6 +7,7 @@ from svtypes import (
     Cross,
     CrossOption,
     Enum,
+    Int,
     Object,
     ObjectRegistry,
     Parameter,
@@ -24,7 +25,7 @@ from svtypes import (
 DESIGN_REGISTRY = ObjectRegistry()
 
 
-class PacketKind(Enum, width=8, signed=False):
+class PacketKind(Enum[Bit[8]]):
     """Packet operation category used by the enum coverage example."""
 
     request = 0
@@ -33,14 +34,14 @@ class PacketKind(Enum, width=8, signed=False):
 
 
 class Packet(SvObject):
-    opcode = Bit(4)
-    address = Bit(16)
-    mode = Bit(2)
+    opcode = Bit[4]()
+    address = Bit[16]()
+    mode = Bit[2]()
     kind = PacketKind()
-    length = Bit(4)
-    valid = Bit(1)
-    reserved_first = Parameter()(4)
-    reserved_last = Parameter()(7)
+    length = Bit[4]()
+    valid = Bit[1]()
+    reserved_first = Parameter[Int](4)
+    reserved_last = Parameter[Int](7)
 
     @covergroup
     def cg(self):
@@ -123,14 +124,14 @@ class Packet(SvObject):
 class Top(SvObject):
     """Static top-level composition used by the GUI hierarchy example."""
 
-    packet = Object("Packet", registry=DESIGN_REGISTRY)
-    enabled = Bit(1)
+    packet = Object["Packet"](registry=DESIGN_REGISTRY)
+    enabled = Bit[1]()
 
 
 class Monitor(SvObject):
     """Standalone sibling type: discovered beside Top/Packet from the same module."""
 
-    observed = Bit(2)
+    observed = Bit[2]()
 
     @covergroup
     def activity(self):

@@ -3,11 +3,11 @@ from svtypes import SvObject, SvStruct, Queue, Int, Bit, svobj
 @svobj
 class MyPacket(SvStruct):
     id = Int()
-    data = Bit(16)
+    data = Bit[16]()
 
 @svobj
 class PacketManager(SvObject):
-    queue = Queue(MyPacket())
+    queue = Queue[MyPacket]()
 
 def test_recursive_serialization():
     pm = PacketManager()

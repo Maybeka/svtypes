@@ -21,6 +21,7 @@ from svtypes import (
     Parameter,
     RandomContext,
     SCHEMA_FORMAT_VERSION,
+    Signed,
     SvObject,
     SvStruct,
     constraint,
@@ -30,27 +31,27 @@ from svtypes.constraint.eval import eval_bool
 from svtypes.constraint.leaves import iter_class_leaves, leaf_unsigned, resolve_attr
 
 
-class Mode(Enum, width=8, signed=False):
+class Mode(Enum[Bit[8]]):
     READ = 0
     WRITE = 1
     IDLE = 2
 
 
 class Header(SvStruct):
-    addr = Bit(16)
-    extra = Bit(8)
+    addr = Bit[16]()
+    extra = Bit[8]()
 
 
 class Packet(SvObject):
-    addr = Bit(32)
-    length = Bit(16)
-    burst = Bit(1)
-    data = Logic(32)
-    limit = Bit(32, rand=False)
-    unused = Bit(8)
+    addr = Bit[32]()
+    length = Bit[16]()
+    burst = Bit[1]()
+    data = Logic[32]()
+    limit = Bit[32](rand=False)
+    unused = Bit[8]()
     mode = Mode()
     header = Header(rand=True)
-    words = Array(Bit(8), 4)
+    words = Array[Bit[8], 4]()
 
     @constraint
     def legal(self):
@@ -114,7 +115,7 @@ def _assert_enabled_predicates(obj):
 def test_constraint_frontend_rejects_runtime_and_python():
     with pytest.raises(ConstraintSyntaxError):
         class BadValue(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @constraint
             def legal(self):
@@ -122,7 +123,7 @@ def test_constraint_frontend_rejects_runtime_and_python():
 
     with pytest.raises(ConstraintSyntaxError):
         class BadCall(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @constraint
             def legal(self):
@@ -151,10 +152,10 @@ def test_packet_constraint_compiles_and_randomizes():
 
 def test_logicbits_state_xz_is_transactional():
     class StatePkt(SvObject):
-        addr = Bit(8)
-        unused = Bit(8)
-        status = Logic(8, rand=False)
-        payload = Logic(4)
+        addr = Bit[8]()
+        unused = Bit[8]()
+        status = Logic[8](rand=False)
+        payload = Logic[4]()
 
         @constraint
         def legal(self):
@@ -174,7 +175,7 @@ def test_logicbits_state_xz_is_transactional():
 
 def test_rand_logic_with_xz_is_overwritten():
     class Payload(SvObject):
-        data = Logic(4)
+        data = Logic[4]()
 
     obj = Payload()
     obj.data.value = LogicValue.from_string("xxzz")
@@ -198,11 +199,11 @@ def test_sat_logicbits_writeback_has_no_xz():
 
 def test_unsat_is_transactional_for_every_leaf():
     class Clash(SvObject):
-        addr = Bit(8)
-        data = Logic(8)
+        addr = Bit[8]()
+        data = Logic[8]()
         mode = Mode()
         header = Header(rand=True)
-        words = Array(Bit(8), 2)
+        words = Array[Bit[8], 2]()
 
         @constraint
         def a(self):
@@ -234,7 +235,7 @@ def test_unsat_is_transactional_for_every_leaf():
 
 def test_constraint_mode_disables_block_at_randomize_time():
     class Clash(SvObject):
-        addr = Bit(8)
+        addr = Bit[8]()
 
         @constraint
         def a(self):
@@ -345,10 +346,10 @@ def test_inheritance_override_and_extra():
 
 def test_schema_constraints_and_encoding_isolation():
     class Plain(SvObject):
-        addr = Bit(8)
+        addr = Bit[8]()
 
     class Constrained(SvObject):
-        addr = Bit(8)
+        addr = Bit[8]()
 
         @constraint
         def zebra(self):
@@ -371,10 +372,10 @@ def test_schema_constraints_and_encoding_isolation():
     assert SCHEMA_FORMAT_VERSION == 1
 
     class TwinA(SvObject):
-        addr = Bit(8)
+        addr = Bit[8]()
 
     class TwinB(SvObject):
-        addr = Bit(8)
+        addr = Bit[8]()
 
         @constraint
         def legal(self):
@@ -388,14 +389,14 @@ def test_schema_constraints_and_encoding_isolation():
     assert "constraints" not in schema_descriptor(Header).schema
 
     class SameA(SvObject):
-        addr = Bit(8)
+        addr = Bit[8]()
 
         @constraint
         def legal(self):
             self.addr == 1
 
     class SameB(SvObject):
-        addr = Bit(8)
+        addr = Bit[8]()
 
         @constraint
         def legal(self):
@@ -416,7 +417,7 @@ def test_ir_marks_logicbits_projection_and_unrolls_paths():
     assert by_path["limit"].declared_rand is False
 
     class Arr(SvObject):
-        data = Array(Bit(8), 3)
+        data = Array[Bit[8], 3]()
 
         @constraint
         def legal(self):
@@ -438,10 +439,10 @@ def test_ir_marks_logicbits_projection_and_unrolls_paths():
 
 def test_mixed_width_sign_and_logic_vs_bits():
     class Mix(SvObject):
-        small = Bit(8, signed=False)
+        small = Bit[8]()
         wide = Int()
-        bits = Bit(8)
-        logic = Logic(8, signed=True)
+        bits = Bit[8]()
+        logic = Logic[8, Signed]()
 
         @constraint
         def legal(self):
@@ -496,8 +497,8 @@ def test_unconstrained_field_is_still_written():
 
 def test_template_and_specialize():
     class Template(SvObject):
-        WIDTH = Parameter(Int)
-        addr = Bit(8)
+        WIDTH = Parameter[Int]()
+        addr = Bit[8]()
 
         @constraint
         def legal(self):
@@ -554,9 +555,9 @@ def _walk_stable(node):
 
 def test_specialize_requires_every_unbound_parameter():
     class Template(SvObject):
-        A = Parameter(Int)
-        B = Parameter(Int)
-        addr = Bit(8)
+        A = Parameter[Int]()
+        B = Parameter[Int]()
+        addr = Bit[8]()
 
         @constraint
         def legal(self):
@@ -572,8 +573,8 @@ def test_specialize_requires_every_unbound_parameter():
 
 def test_template_cannot_be_used_as_field_type():
     class Template(SvObject):
-        WIDTH = Parameter(Int)
-        addr = Bit(8)
+        WIDTH = Parameter[Int]()
+        addr = Bit[8]()
 
     with pytest.raises(DeclarationError, match="parameterized template"):
         class Holder(SvObject):
@@ -585,12 +586,12 @@ def test_type_parameter_in_constraint_is_rejected_at_class_creation():
     # parameter references; a type parameter cannot enter the solver domain,
     # so the template class itself is rejected.
     class Payload(SvObject):
-        x = Bit(4)
+        x = Bit[4]()
 
     with pytest.raises(ConstraintTypeError, match="cannot be used in constraints"):
         class Template(SvObject):
-            T = Parameter(type)
-            addr = Bit(8)
+            T = Parameter[type]()
+            addr = Bit[8]()
 
             @constraint
             def legal(self):
@@ -599,8 +600,8 @@ def test_type_parameter_in_constraint_is_rejected_at_class_creation():
 
 def test_unbound_int_parameter_template_randomize_is_rejected():
     class Template(SvObject):
-        WIDTH = Parameter(Int)
-        addr = Bit(8)
+        WIDTH = Parameter[Int]()
+        addr = Bit[8]()
 
     with pytest.raises(DeclarationError, match="parameterized template"):
         Template().randomize()
@@ -608,8 +609,8 @@ def test_unbound_int_parameter_template_randomize_is_rejected():
 
 def test_parameter_value_is_folded_into_ir_digest():
     class Template(SvObject):
-        WIDTH = Parameter(Int)
-        addr = Bit(8)
+        WIDTH = Parameter[Int]()
+        addr = Bit[8]()
 
         @constraint
         def legal(self):
@@ -627,7 +628,7 @@ def test_source_unavailable_fails_at_class_creation():
     source = (
         "from svtypes import SvObject, Bit, constraint\n"
         "class Missing(SvObject):\n"
-        "    addr = Bit(8)\n"
+            "    addr = Bit[8]()\n"
         "    @constraint\n"
         "    def legal(self):\n"
         "        self.addr == 1\n"
@@ -654,7 +655,7 @@ def test_randomize_with_inline_function():
 def test_name_conflict_with_method_and_field():
     with pytest.raises(DeclarationError):
         class ClashMethod(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @constraint
             def pack(self):
@@ -662,7 +663,7 @@ def test_name_conflict_with_method_and_field():
 
     with pytest.raises(DeclarationError, match="field or parameter"):
         class BaseField(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
         class ClashField(BaseField):
             @constraint
@@ -671,7 +672,7 @@ def test_name_conflict_with_method_and_field():
 
     with pytest.raises(DeclarationError, match="reserved"):
         class ClashReserved(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @constraint
             def _svtypes_secret(self):
@@ -681,7 +682,7 @@ def test_name_conflict_with_method_and_field():
 def test_unknown_field_is_a_name_error():
     with pytest.raises(ConstraintNameError):
         class Missing(SvObject):
-            addr = Bit(8)
+            addr = Bit[8]()
 
             @constraint
             def legal(self):
@@ -690,8 +691,8 @@ def test_unknown_field_is_a_name_error():
 
 def test_sv_codegen_emits_constraint_and_signed_logic():
     class Sample(SvObject):
-        addr = Bit(8)
-        data = Logic(8, signed=True)
+        addr = Bit[8]()
+        data = Logic[8, Signed]()
 
         @constraint
         def legal(self):
@@ -725,8 +726,8 @@ def test_symbolic_for_loop_renders_on_template():
     """range() bounds that are unbound parameters stay a loop and render as a
     target-language for; constant bounds are unrolled for Python randomize."""
     class Loop(SvObject):
-        WIDTH = Parameter(Int)
-        words = Array(Bit(8), 4)
+        WIDTH = Parameter[Int]()
+        words = Array[Bit[8], 4]()
 
         @constraint
         def legal(self):
@@ -757,21 +758,21 @@ def test_symbolic_for_loop_renders_on_template():
 
 def test_constraints_render_only_on_declaring_class():
     class CBase(SvObject):
-        W = Parameter(Int)
-        addr = Bit(8)
+        W = Parameter[Int]()
+        addr = Bit[8]()
 
         @constraint
         def legal(self):
             self.addr < W
 
     class Kid(CBase.specialize(W=8)):
-        y = Bit(4)
+        y = Bit[4]()
 
     # The subclass inherits the constraint via extends; it must not re-render it.
     assert "constraint legal {" not in Kid.to_sv_obj()
 
     class Same(CBase.specialize(W=ParamRef())):
-        W = Parameter(Int)
+        W = Parameter[Int]()
 
         @constraint
         def extra(self):
@@ -785,8 +786,8 @@ def test_constraints_render_only_on_declaring_class():
 def test_symbolic_range_without_array_fails_at_class_creation():
     with pytest.raises(ConstraintUnsupportedError, match="must index an array"):
         class Bad(SvObject):
-            W = Parameter(Int)
-            addr = Bit(8)
+            W = Parameter[Int]()
+            addr = Bit[8]()
 
             @constraint
             def legal(self):

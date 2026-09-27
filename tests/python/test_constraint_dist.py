@@ -8,9 +8,9 @@ from svtypes.constraint.leaves import iter_class_leaves, leaf_unsigned, resolve_
 
 
 class DistPacket(SvObject):
-    choice = Bit(4)
-    base = Bit(4, rand=False)
-    weight = Bit(4, rand=False)
+    choice = Bit[4]()
+    base = Bit[4](rand=False)
+    weight = Bit[4](rand=False)
 
     @constraint
     def legal(self):
@@ -26,12 +26,12 @@ dist_handle_pkg = get_package("dist_handle_randomization")
 
 @svobj(registry=dist_handle_pkg)
 class DistHandleChild(SvObject):
-    choice = Bit(2)
+    choice = Bit[2]()
 
 
 @svobj(registry=dist_handle_pkg)
 class HandleDistPacket(SvObject):
-    child = Object("DistHandleChild", registry=dist_handle_pkg, rand=True)
+    child = Object["DistHandleChild"](registry=dist_handle_pkg, rand=True)
 
     @constraint
     def legal(self):
@@ -70,7 +70,7 @@ def test_dist_accepts_integral_expression_everywhere_and_renders_sv():
 
 def test_dist_range_each_and_total_have_observable_different_distributions():
     class Weighted(SvObject):
-        choice = Bit(3)
+        choice = Bit[3]()
 
         @constraint
         def legal(self):
@@ -93,7 +93,7 @@ def test_dist_range_each_and_total_have_observable_different_distributions():
 
 def test_sparse_wide_singleton_dist_uses_weighted_sat_fallback():
     class Sparse(SvObject):
-        choice = Bit(32)
+        choice = Bit[32]()
 
         @constraint
         def legal(self):
@@ -116,7 +116,7 @@ def test_sparse_wide_singleton_dist_uses_weighted_sat_fallback():
 
 def test_sparse_wide_range_dist_uses_total_range_weight_fallback():
     class SparseRange(SvObject):
-        choice = Bit(32)
+        choice = Bit[32]()
 
         @constraint
         def legal(self):
@@ -141,7 +141,7 @@ def test_sparse_wide_range_dist_uses_total_range_weight_fallback():
 
 def test_large_direct_range_dist_is_sampled_without_support_expansion():
     class LargeRange(SvObject):
-        choice = Bit(32)
+        choice = Bit[32]()
 
         @constraint
         def legal(self):
@@ -170,8 +170,8 @@ def test_large_direct_range_dist_is_sampled_without_support_expansion():
 
 def test_interacting_direct_distributions_use_the_product_of_declared_weights():
     class Correlated(SvObject):
-        first = Bit(1)
-        second = Bit(1)
+        first = Bit[1]()
+        second = Bit[1]()
 
         @constraint
         def legal(self):
@@ -193,8 +193,8 @@ def test_interacting_direct_distributions_use_the_product_of_declared_weights():
 
 def test_conditional_dist_uses_branch_local_weight_normalization():
     class Conditional(SvObject):
-        gate = Bit(1)
-        choice = Bit(8)
+        gate = Bit[1]()
+        choice = Bit[8]()
 
         @constraint
         def legal(self):
@@ -219,9 +219,9 @@ def test_conditional_dist_uses_branch_local_weight_normalization():
 
 def test_unconditional_and_conditional_dist_are_weighted_together():
     class Mixed(SvObject):
-        gate = Bit(1)
-        direct = Bit(1)
-        branch = Bit(2)
+        gate = Bit[1]()
+        direct = Bit[1]()
+        branch = Bit[2]()
 
         @constraint
         def legal(self):
@@ -249,8 +249,8 @@ def test_unconditional_and_conditional_dist_are_weighted_together():
 
 def test_dist_weight_can_depend_on_another_random_leaf():
     class DependentWeight(SvObject):
-        gate = Bit(2)
-        choice = Bit(8)
+        gate = Bit[2]()
+        choice = Bit[8]()
 
         @constraint
         def legal(self):
@@ -270,8 +270,8 @@ def test_dist_weight_can_depend_on_another_random_leaf():
 
 def test_dist_range_bounds_can_depend_on_another_random_leaf():
     class DependentBounds(SvObject):
-        base = Bit(2)
-        choice = Bit(8)
+        base = Bit[2]()
+        choice = Bit[8]()
 
         @constraint
         def legal(self):
@@ -294,7 +294,7 @@ def test_dist_range_bounds_can_depend_on_another_random_leaf():
 
 def test_dist_applies_after_dynamic_element_expansion():
     class DynamicDist(SvObject):
-        data = DynArray(Bit(2), rand=True, max_length=2)
+        data = DynArray[Bit[2]](rand=True, max_length=2)
 
         @constraint
         def legal(self):
@@ -324,7 +324,7 @@ def test_dist_applies_to_an_allocated_rand_handle_leaf():
 def test_dist_rejects_negative_weights_and_boolean_composition():
     with pytest.raises(ConstraintTypeError, match="non-negative"):
         class Negative(SvObject):
-            choice = Bit(4)
+            choice = Bit[4]()
 
             @constraint
             def legal(self):
@@ -332,8 +332,8 @@ def test_dist_rejects_negative_weights_and_boolean_composition():
 
     with pytest.raises(ConstraintTypeError, match="complete constraint statement"):
         class Combined(SvObject):
-            choice = Bit(4)
-            flag = Bit(1)
+            choice = Bit[4]()
+            flag = Bit[1]()
 
             @constraint
             def legal(self):
@@ -341,7 +341,7 @@ def test_dist_rejects_negative_weights_and_boolean_composition():
 
     with pytest.raises(ConstraintTypeError, match="at least one rand"):
         class Fixed(SvObject):
-            choice = Bit(4, rand=False)
+            choice = Bit[4](rand=False)
 
             @constraint
             def legal(self):

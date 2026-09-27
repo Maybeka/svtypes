@@ -7,9 +7,9 @@ from svtypes import Bit, ConstraintError, ConstraintTypeError, RandomContext, Sv
 
 def test_solve_before_accepts_scalar_groups_and_renders_sv():
     class Ordered(SvObject):
-        first = Bit(2)
-        second = Bit(2)
-        third = Bit(2)
+        first = Bit[2]()
+        second = Bit[2]()
+        third = Bit[2]()
 
         @constraint
         def order(self):
@@ -26,8 +26,8 @@ def test_solve_before_accepts_scalar_groups_and_renders_sv():
 def test_solve_before_rejects_non_rand_randc_overlap_and_cycles():
     with pytest.raises(ConstraintTypeError, match="declared rand"):
         class Fixed(SvObject):
-            first = Bit(2, rand=False)
-            second = Bit(2)
+            first = Bit[2](rand=False)
+            second = Bit[2]()
 
             @constraint
             def order(self):
@@ -35,16 +35,16 @@ def test_solve_before_rejects_non_rand_randc_overlap_and_cycles():
 
     with pytest.raises(ConstraintTypeError, match="cannot include randc"):
         class Cyclic(SvObject):
-            first = Bit(2, randc=True)
-            second = Bit(2)
+            first = Bit[2](randc=True)
+            second = Bit[2]()
 
             @constraint
             def order(self):
                 solve_before(self.first, self.second)
 
     class Cycle(SvObject):
-        first = Bit(2)
-        second = Bit(2)
+        first = Bit[2]()
+        second = Bit[2]()
 
         @constraint
         def first_order(self):
@@ -60,8 +60,8 @@ def test_solve_before_rejects_non_rand_randc_overlap_and_cycles():
 
 def test_solve_before_randomizes_a_wide_feasible_domain_without_enumeration():
     class WideOrdered(SvObject):
-        first = Bit(13)
-        second = Bit(13)
+        first = Bit[13]()
+        second = Bit[13]()
 
         @constraint
         def order(self):

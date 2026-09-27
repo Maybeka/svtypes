@@ -34,7 +34,7 @@ def test_runtime_capabilities_include_constraint_names():
 
 def test_generated_types_expose_runtime_capabilities():
     class Payload(SvObject):
-        value = Bit(8)
+        value = Bit[8]()
 
     assert "svtypes_runtime_capabilities" in Payload.to_sv_obj()
     assert "svtypes_runtime_capabilities" in Payload.to_cpp_obj()

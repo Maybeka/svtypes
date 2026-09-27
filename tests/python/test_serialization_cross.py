@@ -3,12 +3,12 @@ from svtypes import SvObject, Int, Array, DynArray, svobj, Queue
 @svobj
 class Base(SvObject):
     id = Int()
-    data = Array(Int(), 2)
+    data = Array[Int, 2]()
 
 @svobj
 class Derived(Base):
     extra = Int()
-    q = Queue(Int())
+    q = Queue[Int]()
 
 def test_cross_serialization():
     # 1. Generate Code

@@ -1,7 +1,7 @@
 from svtypes import *
 
 
-t = Parameter(1)
+t = Parameter[Int](1)
 
 @svobj
 class A(SvObject):
