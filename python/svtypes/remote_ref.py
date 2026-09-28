@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 import json
 import struct
 from typing import Any
@@ -31,7 +32,8 @@ class RemoteRef(BuiltInType):
     _default_cov = False
 
     @classmethod
-    def __class_getitem__(cls, target_type_name: str):
+    @lru_cache(maxsize=None)
+    def __class_getitem__(cls, target_type_name: str) -> "TypeSpec":
         from .typespec import TypeSpec
 
         if not isinstance(target_type_name, str) or not target_type_name:

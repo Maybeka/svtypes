@@ -2,7 +2,16 @@ from .base import FieldOptions, TypeBase, BuiltInType, UserDefinedType
 
 from .bit import Bit
 from .logic import Logic, LogicValue, Reg
-from .typespec import Signed, Unsigned, SignedFamily, TypeSpec
+from .typespec import (
+    Signed,
+    Unsigned,
+    SignedFamily,
+    TypeSpec,
+    is_type_spec,
+    is_materializable_type,
+    materialize_type_spec,
+    type_spec_identity,
+)
 BitSigned = SignedFamily(Bit)
 LogicSigned = SignedFamily(Logic)
 RegSigned = SignedFamily(Logic, declaration_style="reg")
@@ -139,7 +148,7 @@ from .generator import GenerationResult, generate
 from pathlib import Path
 import sysconfig
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 
 def package_root() -> Path:

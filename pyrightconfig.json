@@ -1,0 +1,8 @@
+{
+  "include": ["tests/typing"],
+  "extraPaths": ["python"],
+  "venvPath": ".",
+  "venv": ".venv",
+  "typeCheckingMode": "strict",
+  "reportMissingTypeStubs": "none"
+}

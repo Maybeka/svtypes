@@ -2569,7 +2569,7 @@ class _ObjectFactory:
 
         return ObjectDescriptor(cls_name, registry=registry, strict_set=strict_set, rand=rand)
 
-    def __getitem__(self, target: str | type[SvObject]):
+    def __getitem__(self, target: str | type[SvObject]) -> "TypeSpec":
         if isinstance(target, str):
             cls_name = target
         elif isinstance(target, type) and issubclass(target, SvObject):

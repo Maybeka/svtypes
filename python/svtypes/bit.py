@@ -16,7 +16,7 @@ class Bit(BuiltInType):
     Bin = 'b'
 
     @classmethod
-    def __class_getitem__(cls, item):
+    def __class_getitem__(cls, item: object) -> "TypeSpec":
         from .typespec import packed_spec
 
         return packed_spec(cls, item)

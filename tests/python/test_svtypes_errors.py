@@ -150,7 +150,7 @@ def test_type_registry_rejects_duplicate_name_for_different_type():
 
 
 def test_public_version_matches_project_metadata():
-    assert __version__ == "1.4.0"
+    assert __version__ == "1.4.1"
 
 
 def test_public_exception_hierarchy_is_importable():
