@@ -1,0 +1,20 @@
+{
+  "policy": "中文版本是面向用户的正本；英文镜像与中文版本必须在同一变更中同步更新。source_sha256 记录英文镜像在完成同步时的内容摘要。",
+  "pairs": [
+    {
+      "english": "SVTYPES_1_4_ADVANCED_SCALAR_RANDOMIZATION.md",
+      "chinese": "SVTYPES_1_4_ADVANCED_SCALAR_RANDOMIZATION_ZH.md",
+      "source_sha256": "8c8af6fb62c6f0435a41cff4e5fef84337522934b65917f7f94e534fb9c1d639"
+    },
+    {
+      "english": "svtypes_binary_format.md",
+      "chinese": "svtypes_binary_format_ZH.md",
+      "source_sha256": "2456fff984481424e35d1af994365e5de23d9fb1f98fce39e6361311a492a83e"
+    },
+    {
+      "english": "reference.md",
+      "chinese": "reference_ZH.md",
+      "source_sha256": "6ad75523a9cc2d3c4221f9e31b0ddd893356f3fd03fb686c64aacaa8e4dedc86"
+    }
+  ]
+}

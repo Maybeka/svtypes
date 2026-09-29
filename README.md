@@ -13,6 +13,8 @@ SvTypes does not depend on SVX.
 ## Documentation
 
 公开接口、格式和运行时能力说明位于 [docs](docs/README.md)。
+希望按可运行步骤学习建模、随机化、覆盖率和代码生成，请从
+[Cookbook](docs/cookbook.md) 开始。
 
 ## Layout
 
