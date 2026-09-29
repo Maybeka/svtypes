@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from svtypes import Bit, CovPoint, CovPointArray, CoverGroupOption, CoverInput, CoverRef, Cross, CrossOption, DynArray, Enum, Int, Logic, LogicValue, Parameter, SvObject, bins, coverage_init, covergroup, default_bins, ignore_bins, illegal_bins, repeat, transition_bins
+from svtypes import Bit, CovPoint, CovPointArray, CoverGroupOption, CoverGroupTypeOption, CoverInput, CoverRef, Cross, CrossOption, DynArray, Enum, Int, Logic, LogicValue, Parameter, SvObject, bins, coverage_init, covergroup, default_bins, ignore_bins, illegal_bins, repeat, transition_bins
 from svtypes.coverage.observation import compare_manifest_hits, parse_observation
 from svtypes.coverage.sv import observation_manifest
 
@@ -393,6 +393,23 @@ class CrossLocalPacket(SvObject):
         self.cg.instantiate()
 
 
+class MergeInstancesPacket(SvObject):
+    opcode = Bit[1](cov=False)
+
+    @covergroup
+    def cg(self):
+        class type_option(CoverGroupTypeOption):
+            merge_instances = 1
+
+        class opcode_cp(CovPoint, source=self.opcode):
+            zero = bins[0]
+            one = bins[1]
+
+    def __init__(self):
+        super().__init__()
+        self.cg.instantiate()
+
+
 @pytest.mark.remote_sv
 def test_remote_cross_local_covpoint_is_private_and_matches_python():
     out = REPO_ROOT / ".tmp" / "coverage_cross_local"
@@ -414,6 +431,27 @@ def test_remote_cross_local_covpoint_is_private_and_matches_python():
     manifest = observation_manifest([CrossLocalPacket])
     group = manifest["covergroups"][0]
     assert [item["python_name"] for item in group["points"]] == ["mode_cp", "opcode_cp"]
+    _compare_single_instance_remote(packet, remote["observation"])
+
+
+@pytest.mark.remote_sv
+def test_remote_merge_instances_option_emits_and_matches_python() -> None:
+    out = REPO_ROOT / ".tmp" / "coverage_merge_instances"
+    if out.exists():
+        shutil.rmtree(out)
+    samples = (0, 1) * 5_000
+    out.mkdir(parents=True)
+    payloads: list[bytes] = []
+    for opcode in samples:
+        packet = MergeInstancesPacket()
+        packet.opcode.value = opcode
+        payloads.append(packet.pack(packet))
+    _write_codec_sync_fixture(out, MergeInstancesPacket, payloads)
+    remote = _remote_compile_run(out, "coverage_packet.sv tb.sv")
+    packet = MergeInstancesPacket()
+    for opcode in samples:
+        packet.opcode.value = opcode
+        packet.cg.sample()
     _compare_single_instance_remote(packet, remote["observation"])
 
 

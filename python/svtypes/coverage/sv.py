@@ -295,6 +295,14 @@ def _option_lines(prefix: str, options: dict[str, Any], indent: str, names: set[
     ]
 
 
+def _type_option_lines(options: dict[str, Any], indent: str) -> list[str]:
+    """Render type options, omitting the target-default merge policy."""
+    names = set(_TYPE_OPTION_DEFAULTS) - {"merge_instances"}
+    if int(options.get("merge_instances", 0)):
+        names.add("merge_instances")
+    return _option_lines("type_option", options, indent, names)
+
+
 def _formal_type(type_name: str) -> str:
     if type_name.startswith("CoverInput[") and type_name.endswith("]"):
         type_name = type_name[len("CoverInput["):-1].strip()
@@ -408,11 +416,6 @@ def render_type_coverage(cls: type[Any], indent: str, unit: str) -> list[str]:
                 "SVT-COV-SV-BACKEND",
                 "get_inst_coverage requires a SystemVerilog target capability that is not configured",
             )
-        if int(dict(ir.type_options).get("merge_instances", 0)):
-            raise CoverageDeclarationError(
-                "SVT-COV-SV-BACKEND",
-                "type_option.merge_instances requires a SystemVerilog target capability that is not configured",
-            )
         queue_cross = next((cross for cross in ir.crosses if cross.queue_functions), None)
         if queue_cross is not None:
             raise CoverageDeclarationError(
@@ -443,7 +446,7 @@ def render_type_coverage(cls: type[Any], indent: str, unit: str) -> list[str]:
                     f"{indent}{unit * 2}covergroup cg{covergroup_formals} with function sample({sample_type} item);"
                 )
                 lines.extend(_option_lines("option", {**_GROUP_OPTION_DEFAULTS, **dict(ir.options)}, indent + unit * 3, set(_GROUP_OPTION_DEFAULTS) - {"get_inst_coverage"}))
-                lines.extend(_option_lines("type_option", {**_TYPE_OPTION_DEFAULTS, **dict(ir.type_options)}, indent + unit * 3, set(_TYPE_OPTION_DEFAULTS) - {"merge_instances"}))
+                lines.extend(_type_option_lines({**_TYPE_OPTION_DEFAULTS, **dict(ir.type_options)}, indent + unit * 3))
                 for point in scalar_points:
                     lines.extend(_point_lines(point, indent + unit * 3))
                 public_point_map = {point.name: point for point in ir.points}
@@ -480,7 +483,7 @@ def render_type_coverage(cls: type[Any], indent: str, unit: str) -> list[str]:
                 group_name = f"cg_{_identifier(point.name)}"
                 lines.append(f"{indent}{unit * 2}covergroup {group_name} with function sample({value_type} value);")
                 lines.extend(_option_lines("option", {**_GROUP_OPTION_DEFAULTS, **dict(ir.options)}, indent + unit * 3, set(_GROUP_OPTION_DEFAULTS) - {"get_inst_coverage"}))
-                lines.extend(_option_lines("type_option", {**_TYPE_OPTION_DEFAULTS, **dict(ir.type_options)}, indent + unit * 3, set(_TYPE_OPTION_DEFAULTS) - {"merge_instances"}))
+                lines.extend(_type_option_lines({**_TYPE_OPTION_DEFAULTS, **dict(ir.type_options)}, indent + unit * 3))
                 value_expression = {"kind": "name", "name": "value"}
                 if point.expression.get("kind") in {"container_nullness", "assoc_nullness"}:
                     value_expression = {

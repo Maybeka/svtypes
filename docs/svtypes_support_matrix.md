@@ -18,7 +18,7 @@ Status legend:
 |---|---|---|---|---|
 | `@covergroup`, `CovPoint`, bins, `iff`, transition bins and crosses | covered | covered for the configured target subset | covered for supported constructs | `CrossQueueType`、非零 illegal hit、显式 4-state hit 与部分 option 仍有 capability gate |
 | `cov=True` automatic coverage | covered | covered | covered | `Object[...]` handle 字段没有默认 nullness point 是有意的 2.0 范围边界 |
-| `@coverage_init`, `CoverInput` and instance layouts | covered | covered where the target supports the declared semantics | covered for supported constructs | 非缺省 `get_inst_coverage` / `merge_instances` 的 target 发射受 capability gate 约束 |
+| `@coverage_init`, `CoverInput` and instance layouts | covered | covered where the target supports the declared semantics | covered for supported constructs | 非缺省 `get_inst_coverage` 的 target 发射受 capability gate 约束 |
 | UCIS interchange | covered for the documented subset | generated projection | target-run projection import covered | 原生 UCIS dump 是 capability gate；loss report 明确未投影构造 |
 
 | Type | Python Pack/Unpack | Generated SV Pack/Unpack | C++ Codegen | Optional SVX Channel | Failure Mode |

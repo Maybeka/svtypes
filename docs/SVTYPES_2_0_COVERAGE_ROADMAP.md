@@ -307,11 +307,12 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
    后一次写入覆盖前一次；`comment` 写入当前报告注释。两者可在任意 `.sample()` 前后修改，数据库导出
    时只保存当前名称/注释快照，不保存变更历史；先前和后续 hit 始终归属于同一个覆盖组实例。
 
-   **当前 target capability gate：** Python database 保留 `get_inst_coverage` 与
-   `type_option.merge_instances` 的 LRM 同形语义；但配置的 SystemVerilog conformance target
-   不能接受它们的显式 covergroup option 发射。renderer 对二者为缺省 `0` 时不发射该 option，
-   以 target 的同一缺省语义运行；任一非缺省值在生成期以 `SVT-COV-SV-BACKEND` 失败，不得生成
-   静默降级的 SV。该 gate 解除前，这两个非缺省选项不得宣称 target parity 已完成。
+   **当前 target capability gate：** Python database 保留 `get_inst_coverage` 的 LRM 同形语义；
+   配置的 SystemVerilog conformance target 不能接受它的显式 covergroup option 发射。renderer 在其
+   缺省 `0` 时不发射该 option，以 target 的同一缺省语义运行；非缺省值在生成期以
+   `SVT-COV-SV-BACKEND` 失败，不得生成静默降级的 SV。`type_option.merge_instances` 已可显式
+   发射并有 remote codec-sync 对照。该 gate 解除前，非缺省 `get_inst_coverage` 不得宣称 target
+   parity 已完成。
 
    **明确不支持的 option / 设置方式：**
 
@@ -641,7 +642,7 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
     `target_label`，不得从 handle、对象编号或报告名称推导。
     - **按汇总方式选择对拍证据。** `merge_instances=0`（缺省）时，类型覆盖率是实例覆盖率的
       加权平均，类型层没有统一 bin 表；对拍该百分比与非法命中，并以单实例 fixture 的具名 bin hit
-      证明分类规则。`merge_instances=1` 不在当前范围；它不阻塞 input 驱动实例布局的 fixture。两种方式都不要求 target 把类型覆盖率拆成
+      证明分类规则。`merge_instances=1` 已具备单实例的生成与 codec-sync 对照；多实例类型汇总不阻塞 input 驱动实例布局的 fixture。两种方式都不要求 target 把类型覆盖率拆成
       实例覆盖率。
     - **`CoverGroupOption.per_instance = 1` 的用例按实例覆盖率对拍。** 仅这些用例打开该选项。
       Python 解析后的逻辑实例键与 target observation instance 标签经 observation manifest 一一对应，

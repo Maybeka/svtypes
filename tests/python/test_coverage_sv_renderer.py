@@ -252,7 +252,7 @@ def test_renderer_explicitly_emits_supported_coverage_options():
     assert "option.at_least = 2;" in code
 
 
-def test_renderer_gates_target_unsupported_instance_type_options():
+def test_renderer_gates_target_unsupported_instance_option_and_emits_merge_instances():
     class InstCoverage(SvObject):
         opcode = Bit[1]()
 
@@ -278,8 +278,7 @@ def test_renderer_gates_target_unsupported_instance_type_options():
             class opcode_cp(CovPoint, source=self.opcode):
                 zero = bins[0]
 
-    with pytest.raises(CoverageDeclarationError, match="merge_instances"):
-        MergeInstances.to_sv_obj()
+    assert "type_option.merge_instances = 1;" in MergeInstances.to_sv_obj()
 
 
 def test_renderer_rejects_cross_queue_when_configured_target_lacks_type_support():

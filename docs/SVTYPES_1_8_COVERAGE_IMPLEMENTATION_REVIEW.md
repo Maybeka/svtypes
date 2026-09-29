@@ -10,12 +10,12 @@
 | 里程碑 | 当前实现 | 能否宣布完成 | 剩余约束 |
 |---|---|---|---|
 | 1.8 Python core | 声明、采样、内存库、比较域、transition 与 target 微型对照均已交付。 | **Python 语义完成** | 显式 4-state value bin 的 target 具名 hit 有 capability gate。 |
-| 1.9 cross 与 SV parity | 远程 10⁴ 次 codec-sync、实例覆盖率、cross 规则、`CoverInput`/`CoverRef` 与 `repeat` 对照均已交付。 | **受支持 target 子集完成** | illegal 非零 hit 中止仿真；`CrossQueueType`、`get_inst_coverage=1`、`merge_instances=1` 为生成期 gate。 |
+| 1.9 cross 与 SV parity | 远程 10⁴ 次 codec-sync、实例覆盖率、cross 规则、`CoverInput`/`CoverRef` 与 `repeat` 对照均已交付。 | **受支持 target 子集完成** | illegal 非零 hit 中止仿真；`CrossQueueType`、`get_inst_coverage=1` 为生成期 gate。 |
 | 1.10 UCIS bridge | 二进制库、UCIS 子集导入/导出、外部样本诊断和 target-run 计数导回均已交付。 | **受支持 interchange 子集完成** | 原生 UCIS dump 不一定可用；adapter 可投影同一 run 的 target 计数。 |
 
 相对上次审阅已关闭的条目：§5.12 target 微型对照并写回路线图；`per_instance=1` 远程实例对拍；外部 UCIS 样本与不兼容诊断；target 计数的 UCIS 导入；transition 与 value bin 同 point 分类；§5.9 / §5.13 / §10 所列剩余 target 微型夹具；§5.13 无损扩展条文。其余见第 18 节。
 
-不得表述为已完成：`CrossQueueType` target parity、非缺省 `get_inst_coverage` / `merge_instances` 发射、illegal 非零 hit 的 target 对拍、4-state value bin 的 target 具名 hit、原生 UCIS dump（在 gate 解除前）。
+不得表述为已完成：`CrossQueueType` target parity、非缺省 `get_inst_coverage` 发射、illegal 非零 hit 的 target 对拍、4-state value bin 的 target 具名 hit、原生 UCIS dump（在 gate 解除前）。
 
 ---
 
@@ -344,7 +344,7 @@ Python 侧已有：有界序列、`repeat(term, m, n)`、首次 sample 不命中
 - **X/Z：** Python 中 `bins["1x"]` 按四态相等命中；range 仍不匹配含 X/Z 的 sample。生成文本为 `2'b1x`。远程夹具证明 2-state `0 => 1` 不能经由 X/Z sample 完成。
 - **illegal：** 有 `has_illegal_hits()`。覆盖率数字仍按 normal/default/transition 计算。transition-only coverpoint 在命中前是 0%，命中后是 100%。
 - **§5.12：** `test_remote_transition_history_iff_ignore_default_and_xz` 用 10⁴ 次 codec-sync 对照 coverpoint `iff`、同 point ignore/`default`/illegal 声明、以及 X/Z 打断 2-state transition。规则已写回路线图 §5.12。求值器在匹配 transition 之后仍按当前值分类 ignore/illegal/normal/default。
-- **生成 option：** 受支持的静态 option 会写进 SV。`get_inst_coverage=1` 与 `merge_instances=1` 各自单独生成失败。动态槽位带 `iff (path.size() > i)`；transition 写成 `(0 => 1)`。`CoverInput` 作为 covergroup 构造形参发射，`CoverRef` 采样路径为 `item.<field>`，`repeat(term, m, n)` 发射为 `term[*m:n]`。
+- **生成 option：** 受支持的静态 option 会写进 SV。`type_option.merge_instances=1` 已有生成与 remote codec-sync 对照；`get_inst_coverage=1` 仍在生成期失败。动态槽位带 `iff (path.size() > i)`；transition 写成 `(0 => 1)`。`CoverInput` 作为 covergroup 构造形参发射，`CoverRef` 采样路径为 `item.<field>`，`repeat(term, m, n)` 发射为 `term[*m:n]`。
 - **observation：** 单实例为 `{"items","summary"}`；`per_instance=1` 为 `{"instances": {logical_key: {items, summary}}}`。
 - **UCIS：** 绑定导入；子集 `default` 为 0 hit。`tests/python/data/ucis/` 提供外部 1.0 样本（含命名空间）以及版本/未知 bin 失败。`test_remote_target_ucis_export_imports_into_coverage_database` 把一次 target run 的计数经 UCIS 1.0 XML 导回 `CoverageDatabase`。
 - **§9 / per_instance：** 原 cross 夹具仍在。`test_remote_per_instance_covergroups_compare_instance_coverage` 用两个 collector、逻辑实例键和 `get_inst_coverage()` 对拍实例覆盖率。
@@ -361,7 +361,7 @@ Python 侧已有：有界序列、`repeat(term, m, n)`、首次 sample 不命中
 ### 仍为 capability gate（不是缺子系统）
 
 - `CrossQueueType` 的配置 target 对拍（当前 target 不能生成）。
-- 非缺省 `get_inst_coverage=1` / `merge_instances=1` 的 option 发射。
+- 非缺省 `get_inst_coverage=1` 的 option 发射。
 - illegal 非零 hit 的完整 target 对拍。
 - 4-state value bin 的 target 具名 hit。
 - 原生 UCIS dump（在配置恢复该能力之前）。
