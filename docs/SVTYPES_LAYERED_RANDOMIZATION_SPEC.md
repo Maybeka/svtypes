@@ -1,8 +1,8 @@
 # SvTypes 分优先级随机化规格与设计
 
-**状态：Draft，等待批准。**
+**状态：已实现并具备 Python / 生成 SystemVerilog 回归。**
 **范围：Python constrained-random 运行时与生成的 SystemVerilog。**
-**非范围：本文件不包含实现改动。**
+**说明：本文件记录已冻结的语义契约；它本身不改变实现。**
 
 ## 1. 目标
 

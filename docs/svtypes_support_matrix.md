@@ -16,10 +16,10 @@ Status legend:
 
 | Feature | Python | Generated SystemVerilog | Remote conformance | Status |
 |---|---|---|---|---|
-| `@covergroup`, `CovPoint`, bins, `iff`, transition bins and crosses | covered | covered | required on the configured target | partial: documented capability gates remain |
-| `cov=True` automatic coverage | covered | covered | required on the configured target | partial: `Object[...]` handle fields intentionally have no default nullness point |
-| `@coverage_init`, `CoverInput` and instance layouts | covered | covered where the target supports the declared semantics | required on the configured target | partial |
-| UCIS interchange | covered for the documented subset | generated projection | target export/import is capability-gated | partial |
+| `@covergroup`, `CovPoint`, bins, `iff`, transition bins and crosses | covered | covered for the configured target subset | covered for supported constructs | `CrossQueueType`、非零 illegal hit、显式 4-state hit 与部分 option 仍有 capability gate |
+| `cov=True` automatic coverage | covered | covered | covered | `Object[...]` handle 字段没有默认 nullness point 是有意的 2.0 范围边界 |
+| `@coverage_init`, `CoverInput` and instance layouts | covered | covered where the target supports the declared semantics | covered for supported constructs | 非缺省 `get_inst_coverage` / `merge_instances` 的 target 发射受 capability gate 约束 |
+| UCIS interchange | covered for the documented subset | generated projection | target-run projection import covered | 原生 UCIS dump 是 capability gate；loss report 明确未投影构造 |
 
 | Type | Python Pack/Unpack | Generated SV Pack/Unpack | C++ Codegen | Optional SVX Channel | Failure Mode |
 |---|---|---|---|---|---|
@@ -53,7 +53,7 @@ Status legend:
 | template instance cross-language encoding | covered | covered | covered | covered | int/longint value-parameter instances encode with the same `$sformatf`/`std::to_string` type-name expression as Python (`Tpl[W:int=4]`); bare type-parameter instances have no stable cross-language name (C++ `typeid().name()` is mangled, SV `$typename` is qualified) — their cross-language unpack is not supported; `specialize()` products never emit generated classes |
 | symbolic `range()` loop in constraints | covered (constant bounds) | covered (SV `foreach` + bounds) | excluded (no C++ randomize) | deferred | constant bounds unroll for Python SMT/randomize; unbound bounds render as `foreach (arr[i]) if (i >= start && i < stop)`, since SV constraints have no `for` statement |
 | dependent parameterized field shapes | covered | covered | covered | covered | field descriptors such as `Bit[WIDTH]()` and lambda layout expressions materialize on `specialize()`; unbound layouts remain target-language symbolic only |
-| constrained-random (`@constraint`, `randomize()`, `@rand_layer`, `layered_randomize()`) | covered | covered (generated `constraint {}` and `layered_randomize()`) | excluded (no C++ `randomize()`) | deferred | Python SAT/UNSAT/`state_xz` and layered status; SV simulator sampling need not match Python bit-for-bit. `DynArray`/`Queue` support `size()` plus `foreach` and may join a `rand_layer` as a whole: the generated helper snapshots and controls current elements individually, never queries a non-singular container mode. |
+| constrained-random (`@constraint`, `randomize()`, `@rand_layer`, `layered_randomize()`) | covered | covered (generated `constraint {}` and `layered_randomize()`) | excluded (no C++ `randomize()`) | covered for the Python/SV scope | Python SAT/UNSAT/`state_xz` and layered status; SV simulator sampling need not match Python bit-for-bit. `DynArray`/`Queue` support `size()` plus `foreach` and may join a `rand_layer` as a whole: the generated helper snapshots and controls current elements individually, never queries a non-singular container mode. |
 | `Logic.signed` | covered | covered | covered | not yet qualified in SVX | default unsigned identity string includes `signed=false`; three-plane bytes unchanged |
 
 M3 is complete for tree-shaped Python <-> SystemVerilog typed-channel

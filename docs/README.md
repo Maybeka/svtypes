@@ -12,6 +12,8 @@
 - [reference.md](reference.md): 公共 API 使用参考。
 - [SVTYPES_2_0_COVERAGE_ROADMAP.md](SVTYPES_2_0_COVERAGE_ROADMAP.md):
   functional coverage DSL、IR、数据库、UCIS 与 SystemVerilog 对拍路线图。
+- [SVTYPES_1_8_COVERAGE_IMPLEMENTATION_REVIEW.md](SVTYPES_1_8_COVERAGE_IMPLEMENTATION_REVIEW.md):
+  1.8–1.10 当前实现基线、已关闭证据与 target capability gate。
 - [SVTYPES_POST_2_0_EXTENSION_ARCHITECTURE.md](SVTYPES_POST_2_0_EXTENSION_ARCHITECTURE.md):
   后 2.0 独立扩展（Design Manifest、coverage tools、backend SDK）。
 - [SVTYPES_POST_2_0_EXTENSION_IMPLEMENTATION.md](SVTYPES_POST_2_0_EXTENSION_IMPLEMENTATION.md):
