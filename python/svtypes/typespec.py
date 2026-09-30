@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+from importlib import import_module
 from typing import Any, Callable
 
 from .errors import UnsupportedTypeError
@@ -46,6 +47,10 @@ class TypeSpec:
 
     def __repr__(self) -> str:
         name = getattr(self.factory, "__name__", type(self.factory).__name__)
+        if self.declaration_style == "reg":
+            # Declaration spelling is semantic: ``Reg`` and ``Logic`` emit
+            # different generated SystemVerilog keywords.
+            name = "Reg"
         return f"{name}[{', '.join(_format_arg(arg) for arg in self.args)}]"
 
 
@@ -234,6 +239,20 @@ def _class_identity(
         raise _boundary_error(annotation, location, "packed type requires a concrete bracket specification")
     if issubclass(annotation, (SvObject, SvStruct)):
         _require_concrete_object_type(annotation, location)
+        if "_SvObject__svtypes_emit_specialization_class" in annotation.__dict__:
+            template = annotation.__dict__["_SvObject__svtypes_specialized_from"]
+            overrides = annotation.__dict__["_SvObject__svtypes_parameter_overrides"]
+            return {
+                "kind": "struct" if issubclass(annotation, SvStruct) else "object",
+                "template": {
+                    "module": template.__module__,
+                    "qualname": template.__qualname__,
+                },
+                "parameters": {
+                    name: _identity_argument(value, location)
+                    for name, value in overrides.items()
+                },
+            }
         return {
             "kind": "struct" if issubclass(annotation, SvStruct) else "object",
             "module": annotation.__module__,
@@ -296,6 +315,157 @@ def type_spec_identity(annotation: Any, *, location: str = "type") -> dict[str, 
             identity["declaration_style"] = annotation.declaration_style
         return identity
     raise _boundary_error(annotation, location, "type specification factory is not supported")
+
+
+def _identity_object(value: Any, location: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise _boundary_error(value, location, "type identity must be an object")
+    return value
+
+
+def _import_identity_class(identity: dict[str, Any], location: str) -> type:
+    """Import a class by its source identity, never a generated class name."""
+
+    module_name = identity.get("module")
+    qualname = identity.get("qualname")
+    if not isinstance(module_name, str) or not isinstance(qualname, str):
+        raise _boundary_error(identity, location, "class identity requires module and qualname")
+    try:
+        value: Any = import_module(module_name)
+        for part in qualname.split("."):
+            value = getattr(value, part)
+    except (ImportError, AttributeError, ValueError) as error:
+        raise _boundary_error(identity, location, "class identity cannot be imported") from error
+    if not isinstance(value, type):
+        raise _boundary_error(identity, location, "class identity does not resolve to a type")
+    return value
+
+
+def _identity_class(identity: dict[str, Any], location: str) -> type:
+    """Resolve a manifest class identity and verify it has not drifted."""
+
+    if "template" in identity:
+        from .object import SvObject
+
+        template = _import_identity_class(_identity_object(identity["template"], location), location)
+        if not issubclass(template, SvObject):
+            raise _boundary_error(identity, location, "specialization template must be an SvObject type")
+        parameters = _identity_object(identity.get("parameters"), location)
+        if any(not isinstance(name, str) for name in parameters):
+            raise _boundary_error(identity, location, "parameter names must be strings")
+        value = template.specialize(**{
+            name: _argument_from_identity(argument, location)
+            for name, argument in parameters.items()
+        })
+    else:
+        value = _import_identity_class(identity, location)
+    if type_spec_identity(value, location=location) != identity:
+        raise _boundary_error(identity, location, "resolved class identity differs from manifest")
+    return value
+
+
+def _argument_from_identity(argument: Any, location: str) -> Any:
+    """Restore nested type arguments and tuple shapes from their JSON forms."""
+
+    if isinstance(argument, dict):
+        return _annotation_from_identity(argument, location)
+    if isinstance(argument, list):
+        return tuple(_argument_from_identity(item, location) for item in argument)
+    return argument
+
+
+def _annotation_from_identity(identity: Any, location: str) -> Any:
+    """Rebuild one supported public annotation from canonical identity data."""
+
+    if isinstance(identity, str):
+        return identity
+    raw = _identity_object(identity, location)
+    kind = raw.get("kind")
+    if kind == "scalar":
+        from .int import Int, LongInt
+        from .real import Real, RealTime, ShortReal
+        from .string import String
+
+        scalars = {
+            "Int": Int,
+            "LongInt": LongInt,
+            "Real": Real,
+            "ShortReal": ShortReal,
+            "RealTime": RealTime,
+            "String": String,
+        }
+        result = scalars.get(raw.get("name"))
+        if result is None:
+            raise _boundary_error(raw, location, "unknown scalar identity")
+        return result
+    if kind in {"object", "struct", "enum"}:
+        return _identity_class(raw, location)
+    if kind == "specialization":
+        base = _identity_object(raw.get("base"), location)
+        if base.get("kind") != "packed":
+            raise _boundary_error(raw, location, "unsupported specialization identity")
+        from .bit import Bit
+        from .logic import Logic, Reg
+
+        packed = {"Bit": Bit, "Logic": Logic, "Reg": Reg}
+        factory = packed.get(base.get("name"))
+        if factory is Logic and raw.get("declaration_style") == "reg":
+            factory = Reg
+        args = raw.get("args")
+        if factory is None or not isinstance(args, list) or len(args) != 2:
+            raise _boundary_error(raw, location, "invalid packed specialization identity")
+        shape = _argument_from_identity(args[0], location)
+        signedness = _identity_object(args[1], location)
+        if signedness.get("kind") != "signedness" or signedness.get("value") not in {"signed", "unsigned"}:
+            raise _boundary_error(raw, location, "invalid packed signedness identity")
+        marker = Signed if signedness["value"] == "signed" else Unsigned
+        result = factory[shape, marker]
+        if type_spec_identity(result, location=location) != raw:
+            raise _boundary_error(raw, location, "packed specialization identity differs after reconstruction")
+        return result
+    if kind == "collection":
+        from .collection import Array, AssocArray, DynArray, Queue
+
+        factories = {"Array": Array, "DynArray": DynArray, "Queue": Queue, "AssocArray": AssocArray}
+        factory = factories.get(raw.get("name"))
+        args = raw.get("args")
+        if factory is None or not isinstance(args, list):
+            raise _boundary_error(raw, location, "invalid collection identity")
+        result = factory[tuple(_argument_from_identity(arg, location) for arg in args)]
+        if type_spec_identity(result, location=location) != raw:
+            raise _boundary_error(raw, location, "collection identity differs after reconstruction")
+        return result
+    if kind == "remote_ref":
+        from .remote_ref import RemoteRef
+
+        target = raw.get("target")
+        if not isinstance(target, str):
+            raise _boundary_error(raw, location, "RemoteRef target must be a string")
+        return RemoteRef[target]
+    if kind == "object_handle":
+        from .object import Object
+
+        target = raw.get("target")
+        result = Object[_annotation_from_identity(target, location)]
+        if type_spec_identity(result, location=location) != raw:
+            raise _boundary_error(raw, location, "object handle identity differs after reconstruction")
+        return result
+    raise _boundary_error(raw, location, "unsupported type identity kind")
+
+
+def type_spec_from_identity(identity: dict[str, Any], *, location: str = "type") -> Any:
+    """Rebuild a validated public boundary annotation from manifest identity.
+
+    This is the inverse of :func:`type_spec_identity` for concrete boundary
+    types. It lets a manifest be the only input retained by consumers such as
+    SVX: no executable factory, source expression, or process-local cache key
+    needs to be embedded in generated artifacts.
+    """
+
+    result = _annotation_from_identity(identity, location)
+    if type_spec_identity(result, location=location) != identity:
+        raise _boundary_error(identity, location, "reconstructed type identity differs from manifest")
+    return result
 
 
 def is_materializable_type(annotation: Any) -> bool:

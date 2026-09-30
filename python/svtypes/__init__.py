@@ -10,6 +10,7 @@ from .typespec import (
     is_type_spec,
     is_materializable_type,
     materialize_type_spec,
+    type_spec_from_identity,
     type_spec_identity,
 )
 BitSigned = SignedFamily(Bit)

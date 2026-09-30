@@ -6,9 +6,11 @@ from dataclasses import dataclass
 from math import prod
 from typing import Any
 
-from .base import BuiltInType
+from .base import BuiltInType, _require_single_bit_value
 from .errors import DeclarationError
 from .limits import DEFAULT_MAX_PACKED_BITS
+
+_UNSET = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,16 +99,43 @@ class Logic(BuiltInType):
 
     def __init__(
         self,
-        width: int | tuple[int, ...] = 1,
+        _width_or_value: int | tuple[int, ...] | object = _UNSET,
         value: LogicValue | str | int | None = None,
-        signed: bool = False,
+        signed: bool | object = _UNSET,
         *,
+        width: int | tuple[int, ...] | object = _UNSET,
         _sv_declaration_style: str = "logic",
         _svtypes_internal: bool = False,
         **kwargs: Any,
     ) -> None:
+        if width is not _UNSET:
+            if not _svtypes_internal:
+                raise TypeError("width= is no longer supported; use Logic[width](value)")
+            if _width_or_value is not _UNSET:
+                raise TypeError("Logic width was supplied twice")
+        else:
+            width = _width_or_value
         if not _svtypes_internal:
-            raise TypeError("Logic(...) no longer accepts a width; use Logic[width](...) instead")
+            # The unsubscripted declaration always declares one bit, and its
+            # positional argument is the value -- the same role the argument
+            # plays in ``Logic[width](value)``.
+            if width is not _UNSET:
+                if value is not None:
+                    raise TypeError(
+                        "Logic() takes at most one positional value; "
+                        "use Logic[width](value) to declare a wider field"
+                    )
+                value = width
+            if signed is not _UNSET:
+                raise TypeError(
+                    "signed is fixed by the bracket specialization; use LogicSigned[width]()"
+                )
+            _require_single_bit_value("Logic", value)
+            width = 1
+            signed = False
+            _svtypes_internal = True
+        if signed is _UNSET:
+            signed = False
         super().__init__(**kwargs)
         if not isinstance(signed, bool):
             raise TypeError("Logic signed must be a bool")
@@ -212,7 +241,20 @@ class _RegMeta(type):
     """Virtual type facade for SystemVerilog ``reg`` declaration style."""
 
     def __call__(cls, *args: Any, **kwargs: Any) -> Logic:
-        raise TypeError("Reg(...) no longer accepts a width; use Reg[width](...) instead")
+        # ``Reg(...)`` declares one bit and its positional argument is the
+        # value, mirroring ``Reg[width](value)``.
+        if len(args) > 1:
+            raise TypeError(
+                "Reg() takes at most one positional value; "
+                "use Reg[width](value) to declare a wider field"
+            )
+        if args:
+            _require_single_bit_value("Reg", args[0])
+        elif "value" in kwargs:
+            _require_single_bit_value("Reg", kwargs["value"])
+        if "width" in kwargs:
+            raise TypeError("width= is no longer supported; use Reg[width](value)")
+        return cls[1](*args, **kwargs)
 
     def __getitem__(cls, item: Any):
         from .typespec import packed_spec

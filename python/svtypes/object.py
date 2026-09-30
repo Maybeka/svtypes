@@ -303,6 +303,75 @@ class ReadOnlyMetaclass(type):
         super().__setattr__(name, value)
 
 
+def _unmaterialized_declaration_hint(value: Any) -> str | None:
+    """Return a repair hint when a class-body value declares no field.
+
+    An uncalled bracket specification (``data = Bit[8]``) or a bare type class
+    (``data = Bit``) would otherwise be accepted and then silently omitted from
+    schema, packing, randomization and generated target code.  This mirrors the
+    annotation guard in ``SvObject.__init_subclass__``.
+
+    Returning ``None`` means *value* is not a declaration-like SvTypes value, so
+    ordinary Python metadata in a class body is never rejected.  Only own class
+    bodies are inspected; inherited attributes are intentionally left alone.
+    """
+
+    from .base import TypeBase
+    from .bit import Bit
+    from .collection import Array, AssocArray, DynArray, Queue
+    from .enum import Enum, _EnumBaseSpec
+    from .logic import Logic, Reg
+    from .parameter import Parameter
+    from .remote_ref import RemoteRef
+    from .typespec import TypeSpec
+
+    # Materialized declarations are collected normally by the member pass.
+    if isinstance(value, (TypeBase, ObjectDescriptor)):
+        return None
+    if isinstance(value, TypeSpec):
+        # ``repr`` is valid bracket syntax; the implicit unsigned marker is
+        # dropped because it is the default spelling.
+        text = repr(value).replace(", Unsigned]", "]")
+        return f"add the initializer call: {text}()"
+    if isinstance(value, _EnumBaseSpec):
+        return "use an Enum[Bit[width]] subclass and instantiate it"
+    # ``SvStruct`` and ``_ObjectFactory`` are defined later in this module, and
+    # the guard also runs while this module itself is importing, so they are
+    # resolved from the module namespace instead of by global name.
+    struct_cls = globals().get("SvStruct")
+    factory_cls = globals().get("_ObjectFactory")
+    if factory_cls is not None and isinstance(value, factory_cls):
+        return 'use Object["Target"]()'
+
+    if not isinstance(value, type):
+        return None
+    if value is Bit or value is Logic or value is Reg:
+        # Only these packed types take a bracket width; fixed-width scalars
+        # such as ``Int`` subclass ``Bit`` but have no width to bind.
+        return (
+            f"use {value.__name__}() for a single bit or "
+            f"{value.__name__}[width](...)"
+        )
+    if value is Enum:
+        return "use an Enum[Bit[width]] subclass and instantiate it"
+    bracket_signatures = {
+        Array: "Array[ElementType, size]",
+        DynArray: "DynArray[ElementType]",
+        Queue: "Queue[ElementType]",
+        AssocArray: "AssocArray[KeyType, ValueType]",
+        RemoteRef: 'RemoteRef["target"]',
+        Parameter: "Parameter[Int]",
+    }
+    signature = bracket_signatures.get(value)
+    if signature is not None:
+        return f"use {signature}()"
+    if value is SvObject or value is struct_cls:
+        return 'use Object["Target"]() or a concrete SvObject subclass'
+    if issubclass(value, (SvObject, TypeBase)):
+        return f"use {value.__name__}()"
+    return None
+
+
 from typing import TypeVar
 T = TypeVar('T')
 
@@ -671,6 +740,20 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 raise DeclarationError(
                     f"{cls.__name__}.{annotation_name} has an SvTypes type annotation but no field value; "
                     "declare it with an initializer such as Bit[8]()"
+                )
+
+        # The same hazard exists for values: ``data = Bit[8]`` or ``data = Bit``
+        # is accepted today yet silently dropped from schema, packing,
+        # randomization and generated target code.  Class-level metadata stays
+        # available under a leading underscore, which the member pass also skips.
+        for value_name, value_attr in cls.__dict__.items():
+            if value_name.startswith("_"):
+                continue
+            hint = _unmaterialized_declaration_hint(value_attr)
+            if hint is not None:
+                raise DeclarationError(
+                    f"{cls.__name__}.{value_name} declares no field: {hint}; "
+                    'prefix the name with "_" to keep it as class-level metadata'
                 )
 
         seen = set()

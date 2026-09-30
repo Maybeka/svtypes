@@ -64,6 +64,23 @@ parameterized class。
 - `Real`：64-bit float，映射 SV `real`、C++ `double`，编码为 8-byte IEEE 754。
 - `String`：variable-length string，映射 SV `string`、C++ `std::string`。
 
+单比特简写：`Bit()`、`Logic()`、`Reg()` 声明一个比特。无下标形式的位置参数是 **value**，与 `Bit[width](value)` 中该参数的
+角色一致，因此 `Bit(0)`、`Bit(1)` 声明取值 0 或 1 的单比特，`Bit(rand=False)` 声明一个不参与随机的单比特。宽度只能来自
+下标：单比特无法精确表示的整数会被拒绝而不是被截断（`Bit(8)` 报错并指向 `Bit[width]()`），因为它更可能是一个遗留的
+位宽。signedness 由 `*Signed` 家族而非 `signed=` 关键字选择。括号写法保留其 packed-value 截断语义（`Bit[1](8)` 为 `0`）。
+
+class body 中的每个 SvTypes 声明都必须物化。未调用的括号规格（`data = Bit[8]`）或裸类型类（`data = Bit`、
+`child = Packet`）会在类创建期被拒绝并给出修复提示，而不是被静默地从 schema、packing、randomization 和生成的目标
+代码中略过。普通 class-level metadata 不受影响：非 SvTypes 值始终允许，以前导下划线命名则把 SvTypes 值保留为
+metadata（`_Payload = Bit[8]`）。
+
+单比特简写拒绝遗留的 `width=` 关键字，请改用 `Bit[1]()`。`Bit()`、`Logic()` 和 `Reg()` 的位置参数及
+`value=` 整数初值都必须是 0 或 1。
+
+`type_spec_identity(type)` 返回 JSON 可序列化的边界类型身份；`type_spec_from_identity(identity, location=...)`
+重建类型注解，包括多维 packed/array shape 和 `Reg` 声明样式。`specialize()` 返回的类通过源模板及参数绑定标识，
+而非生成的类名。模板与其他引用的类一样，必须能够通过模块名及限定名称导入；不依赖生成类注册或进程内缓存。
+
 ### 枚举：`Enum`
 
 Enum declaration 显式冻结 encoding width 与 signedness：

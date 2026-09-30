@@ -56,6 +56,14 @@ These types wrap standard Python values with hardware-specific constraints:
 - **`Real`**: Models a 64-bit float. Maps to SV `real` and C++ `double`. Serialized as 8-byte IEEE 754.
 - **`String`**: Models a variable-length string. Maps to SV `string` and C++ `std::string`.
 
+Single-bit shorthand: `Bit()`, `Logic()` and `Reg()` declare one bit. The positional argument of the unsubscripted form is the **value**, exactly as it is for `Bit[width](value)`, so `Bit(0)` and `Bit(1)` declare a single bit holding 0 or 1, and `Bit(rand=False)` declares a non-random single bit. Width comes only from the subscript: an integer that a single bit cannot represent exactly is rejected instead of being truncated (`Bit(8)` raises and points at `Bit[width]()`), because it is far more likely to be a legacy width. Signedness is selected by the `*Signed` families rather than a `signed=` keyword. The bracket spelling keeps its packed-value truncation semantics (`Bit[1](8)` is `0`).
+
+Every SvTypes declaration in a class body must materialize. An uncalled bracket specification (`data = Bit[8]`) or a bare type class (`data = Bit`, `child = Packet`) is rejected at class creation with a repair hint, instead of being silently omitted from schema, packing, randomization and generated target code. Ordinary class-level metadata is unaffected: non-SvTypes values are always allowed, and a leading underscore keeps an SvTypes value as metadata (`_Payload = Bit[8]`).
+
+The single-bit shorthand rejects the legacy `width=` keyword; use `Bit[1]()` instead. Both positional and `value=` integer initializers must be 0 or 1 for `Bit()`, `Logic()` and `Reg()`.
+
+`type_spec_identity(type)` returns a JSON-compatible boundary identity; `type_spec_from_identity(identity, location=...)` rebuilds the annotation, including multidimensional packed/array shapes and `Reg` declaration style. A class returned by `specialize()` is identified by its source template and parameter bindings rather than its generated class name. The template (like other referenced classes) must be importable by module and qualified name; no generated-class registration or process-local cache is needed.
+
 ### 3. Enumerations (`Enum`)
 `Enum` declarations explicitly freeze their encoding width and signedness:
 

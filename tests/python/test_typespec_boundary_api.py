@@ -1,26 +1,40 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+import subprocess
+import sys
 from typing import get_type_hints
 
 import pytest
 
 from svtypes import (
     Array,
+    AssocArray,
     Bit,
     Int,
     Logic,
+    Queue,
     Object,
     Parameter,
     Reg,
     RemoteRef,
     SvObject,
+    Signed,
     UnsupportedTypeError,
     is_materializable_type,
     is_type_spec,
     materialize_type_spec,
+    type_spec_from_identity,
     type_spec_identity,
 )
+from svtypes.schema import schema_descriptor
+
+
+class IdentityTemplate(SvObject):
+    width = Parameter[Int]()
+    element = Parameter[type](Bit[4])
+    data = Bit[width]()
 
 
 def test_public_boundary_api_has_a_narrow_and_stable_surface() -> None:
@@ -74,6 +88,64 @@ def test_remote_ref_specs_are_cached_and_have_canonical_identity() -> None:
         "kind": "remote_ref",
         "target": "sv://tb/Driver",
     }
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    (
+        Int,
+        Bit[8],
+        Bit[(2, 4)],
+        Logic[(2, 4), Signed],
+        Reg[(2, 4)],
+        Array[Bit[8], 16],
+        Array[Bit[(2, 4)], (2, 3)],
+        Queue[Array[Reg[(2, 4)], (2, 3)]],
+        AssocArray[Int, Bit[(2, 4)]],
+        RemoteRef["sv://tb/Driver"],
+    ),
+)
+def test_public_boundary_identity_round_trips_without_a_factory(annotation) -> None:
+    identity = json.loads(json.dumps(type_spec_identity(annotation)))
+    rebuilt = type_spec_from_identity(identity, location="manifest parameter")
+    assert type_spec_identity(rebuilt) == identity
+    assert type(materialize_type_spec(rebuilt, location="manifest parameter")) is type(
+        materialize_type_spec(annotation, location="source parameter")
+    )
+
+
+def test_specialized_class_identity_reconstructs_from_template() -> None:
+    concrete = IdentityTemplate.specialize(width=8)
+    identity = json.loads(json.dumps(type_spec_identity(concrete), sort_keys=True))
+    rebuilt = type_spec_from_identity(identity, location="manifest parameter")
+    assert type_spec_identity(rebuilt) == identity
+    assert rebuilt().data.width == 8
+    # Object streams carry per-instance IDs; compare their encoding contract,
+    # not the unrelated runtime identities assigned to two fresh instances.
+    assert schema_descriptor(rebuilt).encoding_fingerprint == schema_descriptor(concrete).encoding_fingerprint
+
+
+def test_specialized_class_identity_needs_no_generated_class_or_cache() -> None:
+    concrete = IdentityTemplate.specialize(width=8, element=Array[Logic[(2, 4)], (2, 3)])
+    identity = type_spec_identity(concrete)
+    # Rebuild in a fresh interpreter, importing only the source template. JSON
+    # key ordering must not make generated class names part of the contract.
+    script = f"""
+import json, sys
+sys.path.insert(0, {str(Path(__file__).parent)!r})
+from svtypes import type_spec_from_identity, type_spec_identity
+identity = json.load(sys.stdin)
+rebuilt = type_spec_from_identity(identity, location="manifest parameter")
+assert type_spec_identity(rebuilt) == identity
+assert rebuilt().data.width == 8
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        input=json.dumps(identity, sort_keys=True),
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_identity_preserves_reg_declaration_style() -> None:

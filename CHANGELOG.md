@@ -1,5 +1,20 @@
 # 变更记录
 
+## 1.4.1 — 2026-09-28
+
+- 稳定 SVX 类型规格 API：新增公开边界 `is_type_spec`、`is_materializable_type`、`materialize_type_spec`、`type_spec_identity`，使集成方无需持有工厂对象即可比较与重建类型身份；`tests/typing/svx_type_specs.py` 提供静态类型基线。
+
+## 1.4.0 — 2026-09-28
+
+- 类型声明迁移为括号式类型规格（**破坏性变更**）：`Bit[width]`、`Logic[width_or_shape]`、`Reg[...]`、`Enum[Bit[w]]`、`Array[T, N]`、`Queue[T]`、`AssocArray[K, V]`、`RemoteRef["..."]` 取代旧的调用式宽度写法；`Bit(8)` 等旧写法明确报错并提示新形式。新增 `Signed` / `Unsigned` / `SignedFamily` 与 `BitSigned` / `LogicSigned` / `RegSigned`。
+- 受约束随机推进到 1.3–1.6 里程碑：新增 `dist`、`soft`、`solve_before`、`unique` 约束构造与 `randc` 循环随机字段，覆盖表达式、稀疏、有限、条件与加权分布；动态数组与队列可声明 `rand=True` 并约束 `size()`，元素 mode 与生成 SV 对齐；非空 `rand` handle 与其所指对象参与同一次联合求解，支持容器内 handle 约束。
+- 分层随机增强：priority 专属 `pre_randomize` / `post_randomize` hook 交接、分层随机上下文暴露、动态集合元素按层随机化。
+- 功能覆盖率（2.0 前置能力）：`@covergroup`、`CovPoint` / `CovPointArray`、`bins` / `illegal_bins` / `ignore_bins` / `default_bins`、`iff` 条件采样、有界 transition、`Cross` / `CrossQueueType`、内存 `CoverageDatabase`、`CoverInput` / `CoverRef` / `@coverage_init` 与实例 bin 布局、`cov=True` 自动默认覆盖组、按类型与实例的加权汇总、有限用例来源与受控 merge，以及 UCIS XML 导入导出。新增 `CoverageError` / `CoverageDeclarationError`。
+- 新增 owner-scoped 外部字段存储：`ExternalFieldStorage` / `MemoryExternalFieldStorage`、字段路径与身份描述（`FieldPath` / `FieldIdentity` / `FieldKey` / `FieldIndex` / `FieldMember` / `FieldOperation`）、`bind_external_value`；运行时宣称 `svtypes.external-field-storage.v1`。新增 `ExternalStorageError` / `ExternalStorageClosedError`。
+- 依赖参数的字段形状（如 `Bit[WIDTH]()` 与 lambda 布局表达式）在 `specialize()` 时物化；未绑定布局只保留目标语言符号。
+- 远程 SystemVerilog 一致性回归升级为必需门槛：未配置或不可达的远程目标使 `remote_sv` 测试失败而非跳过；覆盖生成类型的 pack/unpack 字节对等、对象图身份、字段策略、plusarg、覆盖率采样与截断流失败。
+- 文档：新增 cookbook、`reference_ZH` / `svtypes_binary_format_ZH` 中文对照、2.0 功能覆盖率路线图、1.3–1.6 随机设计文档、外部字段存储需求、扩展架构与实现说明；支持矩阵新增功能覆盖率表与括号类型规格条目，并逐项标注 capability gate。
+
 ## 1.2.0 — 2026-08-22
 
 - 增加 `@rand_layer` 与 `layered_randomize()`：按 priority 从高到低分批调用普通 `randomize()`，支持 `builtin` 默认组、固定 unpacked-array 元素 target、同名 `super()` 合并、进入前 mode 忽略与退出恢复、`pre_randomize` / `post_randomize` 生命周期，以及源 schema `rand_layers`（不进入 `ir_digest` 或编码布局）。生成的 SV 方法为 `virtual function int layered_randomize()`。

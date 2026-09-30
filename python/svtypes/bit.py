@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from functools import cached_property
 from math import prod
-from .base import BuiltInType
+from .base import BuiltInType, _require_single_bit_value
 from .errors import DeclarationError
 from .limits import DEFAULT_MAX_PACKED_BITS
+
+
+_UNSET = object()
 
 
 class Bit(BuiltInType):
@@ -44,9 +47,9 @@ class Bit(BuiltInType):
 
     def __init__(
         self,
-        width: int | tuple[int, ...] = 1,
+        _width_or_value: int | tuple[int, ...] | object = _UNSET,
         value: int | None=None,
-        signed=False,
+        signed: bool | object = _UNSET,
         radix=Hex,
         rand: bool | None = None,
         plusarg: bool | None = None,
@@ -56,9 +59,37 @@ class Bit(BuiltInType):
         pack_bytes: bool | None = True,
         randc: bool = False,
         _svtypes_internal: bool = False,
+        *,
+        width: int | tuple[int, ...] | object = _UNSET,
     ) -> None:
+        if width is not _UNSET:
+            if not _svtypes_internal:
+                raise TypeError("width= is no longer supported; use Bit[width](value)")
+            if _width_or_value is not _UNSET:
+                raise TypeError("Bit width was supplied twice")
+        else:
+            width = _width_or_value
         if not _svtypes_internal:
-            raise TypeError("Bit(...) no longer accepts a width; use Bit[width](...) instead")
+            # The unsubscripted declaration always declares one bit, and its
+            # positional argument is the value -- the same role the argument
+            # plays in ``Bit[width](value)``.
+            if width is not _UNSET:
+                if value is not None:
+                    raise TypeError(
+                        "Bit() takes at most one positional value; "
+                        "use Bit[width](value) to declare a wider field"
+                    )
+                value = width
+            if signed is not _UNSET:
+                raise TypeError(
+                    "signed is fixed by the bracket specialization; use BitSigned[width]()"
+                )
+            _require_single_bit_value("Bit", value)
+            width = 1
+            signed = False
+            _svtypes_internal = True
+        if signed is _UNSET:
+            signed = False
         super().__init__(
             rand=rand,
             plusarg=plusarg,

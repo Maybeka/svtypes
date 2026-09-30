@@ -24,6 +24,7 @@ Status legend:
 | Type | Python Pack/Unpack | Generated SV Pack/Unpack | C++ Codegen | Optional SVX Channel | Failure Mode |
 |---|---|---|---|---|---|
 | `Bit[width]()` | covered | covered | covered | covered | truncated byte streams raise explicit unpack errors |
+| `Bit()` / `Logic()` / `Reg()` single-bit shorthand | covered | covered | covered | covered | positional argument is the value (`Bit(0)`/`Bit(1)`); an integer a single bit cannot hold is rejected instead of truncated, because it is more likely a legacy width |
 | `Bit[shape]()` | covered | covered | covered | not yet qualified in SVX | shape is retained in identity/declarations and bytes flatten rightmost-dimension-fastest |
 | `Logic[width_or_shape]()` | covered | covered | covered | not yet qualified in SVX | three-plane value/X/Z encoding; malformed streams fail |
 | `Reg[width_or_shape]()` | covered | covered | covered | not yet qualified in SVX | Python-equivalent to `Logic`; only the generated SV declaration spelling is `reg` |

@@ -2,6 +2,24 @@ from dataclasses import dataclass
 from typing import Any
 
 
+def _require_single_bit_value(type_name: str, value: Any) -> None:
+    """Reject an integer that a single bit cannot represent exactly.
+
+    The unsubscripted packed declarations (``Bit(1)``, ``Logic(0)``, ``Reg(1)``)
+    declare one bit, so their positional argument is a value.  A bracket
+    specialization truncates silently (``Bit[1](8)`` is ``0``); the shorthand
+    must not, because ``Bit(8)`` is far more likely to mean a legacy width.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, int):
+        return
+    if value not in (0, 1):
+        raise TypeError(
+            f"{type_name}({value}) is out of range for a single bit; "
+            f"declare a wider field as {type_name}[width]()"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class FieldOptions:
     rand: bool | None = None

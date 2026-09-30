@@ -63,3 +63,72 @@ def test_migration_tool_expands_source_directories_deterministically(tmp_path: P
     ignored.write_text("not Python", encoding="utf-8")
 
     assert _MODULE._source_paths([tmp_path]) == [source]
+
+
+def test_migration_tool_reports_single_bit_literals_as_ambiguous(tmp_path: Path) -> None:
+    """``Bit(1)`` is a legacy width and a current single-bit value.
+
+    Rewriting it to ``Bit[1]()`` would silently turn value 1 into value 0, so
+    the tool must report it instead of patching.
+    """
+
+    source = tmp_path / "model.py"
+    source.write_text(
+        "from svtypes import Bit, Logic, Reg\n"
+        "a = Bit(0)\n"
+        "b = Bit(1)\n"
+        "c = Logic(1, rand=True)\n"
+        "d = Reg(0)\n"
+        "e = Bit(8)\n",
+        encoding="utf-8",
+    )
+    rendered, findings, replacements = _MODULE.transform(source)
+
+    assert replacements == 1
+    assert [finding.message for finding in findings] == [
+        "Bit(0) is ambiguous: a legacy width or a single-bit value; "
+        "confirm the intended meaning before migrating",
+        "Bit(1) is ambiguous: a legacy width or a single-bit value; "
+        "confirm the intended meaning before migrating",
+        "Logic(1) is ambiguous: a legacy width or a single-bit value; "
+        "confirm the intended meaning before migrating",
+        "Reg(0) is ambiguous: a legacy width or a single-bit value; "
+        "confirm the intended meaning before migrating",
+    ]
+    assert "a = Bit(0)" in rendered
+    assert "b = Bit(1)" in rendered
+    assert "c = Logic(1, rand=True)" in rendered
+    assert "d = Reg(0)" in rendered
+    assert "e = Bit[8]()" in rendered
+
+
+def test_migration_tool_leaves_the_single_bit_shorthand_runnable(tmp_path: Path) -> None:
+    """A width-less call has no legacy width, so the tool leaves it alone.
+
+    The unchanged ``Bit()``/``Logic()``/``Reg()`` spelling must stay valid at
+    runtime, otherwise the tool would recommend code that cannot execute.
+    """
+
+    source = tmp_path / "model.py"
+    source.write_text(
+        "from svtypes import Bit, Logic, Reg\n"
+        "one = Bit()\n"
+        "flag = Logic()\n"
+        "historical = Reg()\n",
+        encoding="utf-8",
+    )
+    rendered, findings, replacements = _MODULE.transform(source)
+
+    assert replacements == 0
+    assert [finding.message for finding in findings] == [
+        "Bit() has no legacy width; leave unchanged",
+        "Logic() has no legacy width; leave unchanged",
+        "Reg() has no legacy width; leave unchanged",
+    ]
+
+    namespace: dict = {}
+    exec(compile(rendered, str(source), "exec"), namespace)
+    assert namespace["one"].width == 1
+    assert namespace["flag"].width == 1
+    assert namespace["historical"].width == 1
+    assert namespace["historical"].sv_declaration_style == "reg"

@@ -186,6 +186,22 @@ class Transformer(ast.NodeVisitor):
         if not node.args:
             self._report(node, f"{base}() has no legacy width; leave unchanged")
             return
+        # A literal 0 or 1 reads as a legacy width and as a single-bit value
+        # under the current API (``Bit(1)`` is ``1``, ``Bit[1]()`` is ``0``),
+        # so rewriting it could silently change the value.
+        first = node.args[0]
+        if (
+            isinstance(first, ast.Constant)
+            and isinstance(first.value, int)
+            and not isinstance(first.value, bool)
+            and first.value in (0, 1)
+        ):
+            self._report(
+                node,
+                f"{base}({first.value}) is ambiguous: a legacy width or a single-bit value; "
+                "confirm the intended meaning before migrating",
+            )
+            return
         if len(node.args) > 2:
             self._report(node, f"{base} positional signed/radix/policy arguments require manual migration")
             return

@@ -74,12 +74,6 @@ def test_collection_bracket_specs_materialize_descriptor_templates() -> None:
 
 
 def test_legacy_type_declaring_constructors_are_rejected() -> None:
-    with pytest.raises(TypeError, match=r"Bit\[width\]"):
-        Bit(8)
-    with pytest.raises(TypeError, match=r"Logic\[width\]"):
-        Logic(8)
-    with pytest.raises(TypeError, match=r"Reg\[width\]"):
-        Reg(8)
     with pytest.raises(TypeError, match=r"Array\[ElementType, size\]"):
         Array(Bit[8](), 2)
     with pytest.raises(TypeError, match=r"DynArray\[ElementType\]"):
@@ -88,6 +82,106 @@ def test_legacy_type_declaring_constructors_are_rejected() -> None:
         Queue(Bit[8]())
     with pytest.raises(TypeError, match=r"AssocArray\[KeyType, ValueType\]"):
         AssocArray(Bit[8](), Bit[8]())
+
+
+@pytest.mark.parametrize(
+    "shorthand, bracket",
+    (
+        (lambda: Bit(), lambda: Bit[1]()),
+        (lambda: Bit(0), lambda: Bit[1](0)),
+        (lambda: Bit(1), lambda: Bit[1](1)),
+        (lambda: Logic(), lambda: Logic[1]()),
+        (lambda: Logic(0), lambda: Logic[1](0)),
+        (lambda: Logic(1), lambda: Logic[1](1)),
+        (lambda: Reg(), lambda: Reg[1]()),
+        (lambda: Reg(0), lambda: Reg[1](0)),
+        (lambda: Reg(1), lambda: Reg[1](1)),
+        (lambda: Bit(value=1), lambda: Bit[1](1)),
+        (lambda: Bit(rand=False), lambda: Bit[1](rand=False)),
+        (lambda: Bit(cov=True), lambda: Bit[1](cov=True)),
+    ),
+)
+def test_single_bit_shorthand_matches_the_bracket_spec(shorthand, bracket) -> None:
+    left, right = shorthand(), bracket()
+
+    assert type(left) is type(right)
+    missing = object()
+    for attribute in ("width", "shape", "signed", "radix", "value", "rand", "cov", "plusarg", "dump"):
+        assert getattr(left, attribute, missing) == getattr(right, attribute, missing)
+    assert left.sv_decl("x") == right.sv_decl("x")
+
+
+def test_single_bit_shorthand_takes_a_value_not_a_width() -> None:
+    # A single bit holds exactly 0 and 1.  A larger integer is far more likely
+    # to be a legacy width, so it is refused instead of being truncated the way
+    # the bracket spelling truncates ``Bit[1](8)``.
+    for build, name in ((Bit, "Bit"), (Logic, "Logic"), (Reg, "Reg")):
+        for value in (2, 8, 32, -1):
+            with pytest.raises(TypeError, match=rf"{name}\({value}\) is out of range for a single bit"):
+                build(value)
+            with pytest.raises(TypeError, match=rf"{name}\[width\]"):
+                build(value)
+    # ``Logic`` keeps accepting the literal forms a single bit can carry.
+    assert Logic("1").value == Logic[1]("1").value
+
+
+def test_single_bit_shorthand_rejects_a_second_positional_value() -> None:
+    with pytest.raises(TypeError, match=r"at most one positional value"):
+        Bit(1, 1)
+    with pytest.raises(TypeError, match=r"at most one positional value"):
+        Logic(0, 0)
+    with pytest.raises(TypeError, match=r"at most one positional value"):
+        Reg(1, 1)
+
+
+@pytest.mark.parametrize("factory", (Bit, Logic, Reg))
+def test_single_bit_shorthand_checks_keyword_values(factory) -> None:
+    for value in (2, 8, 32, -1):
+        with pytest.raises(TypeError, match="out of range for a single bit"):
+            factory(value=value)
+    assert factory(value=1).width == 1
+    assert factory(value=0).width == 1
+
+
+@pytest.mark.parametrize("factory", (Bit, Logic, Reg))
+@pytest.mark.parametrize("width", (0, 1, 8))
+def test_single_bit_shorthand_rejects_legacy_width_keyword(factory, width) -> None:
+    with pytest.raises(TypeError, match=r"width= is no longer supported"):
+        factory(width=width)
+
+
+def test_single_bit_shorthand_fixes_signed_by_the_bracket_family() -> None:
+    with pytest.raises(TypeError, match="signed is fixed"):
+        Bit(signed=True)
+    with pytest.raises(TypeError, match="signed is fixed"):
+        Logic(signed=True)
+    assert BitSigned[1]().signed is True
+    assert LogicSigned[1]().signed is True
+
+
+def test_single_bit_shorthand_generates_the_same_declaration() -> None:
+    from svtypes import SvObject
+
+    class Shorthand(SvObject):
+        a = Bit()
+        b = Logic()
+        c = Reg()
+
+    class Bracketed(SvObject):
+        a = Bit[1]()
+        b = Logic[1]()
+        c = Reg[1]()
+
+    def declared(source: str) -> list[str]:
+        return [line.strip() for line in source.splitlines() if line.strip().startswith("rand ")]
+
+    assert declared(Shorthand.to_sv_obj()) == declared(Bracketed.to_sv_obj())
+    assert declared(Shorthand.to_sv_obj()) == [
+        "rand bit [0:0] a;",
+        "rand logic [0:0] b;",
+        "rand reg [0:0] c;",
+    ]
+
 
 
 def test_handle_specs_keep_existing_descriptor_identity() -> None:

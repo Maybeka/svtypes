@@ -60,7 +60,7 @@ class LargeMixedTx(SvObject):
 
 @svobj
 class ManyTypesTx(SvObject):
-    u1 = Bit[1]()
+    u1 = Bit()
     u7 = Bit[7]()
     u9 = Bit[9]()
     u33 = Bit[33]()

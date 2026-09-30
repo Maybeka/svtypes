@@ -410,6 +410,11 @@ parameter function。这样既保持 target-language 模板能力，也保持 Py
 这是主版本破坏性修改。正式版本不得静默接受 `Bit(8)` 后再猜测用户意图；
 应报出明确迁移错误，例如“位宽移至 `Bit[8](...)`”。
 
+无下标形式保留为单比特简写：它声明一个比特，且其位置参数是 **value**（与 `Bit[width](value)` 一致），
+因此 `Bit(0)` / `Bit(1)` 合法。宽度只能来自下标，单比特无法精确表示的整数（如 `Bit(8)`）按上面的
+迁移错误拒绝，不做截断——否则 `Bit(8)` 会静默退化成 1 比特。括号写法保留 packed-value 截断语义
+（`Bit[1](8)` 为 `0`）。
+
 可在开发分支提供独立、非默认的 AST 迁移工具，转换明显的字面量场景：
 
 ```python
@@ -422,6 +427,7 @@ DynArray(Object("Child"))       -> DynArray[Object["Child"]]()
 
 - 宽度/shape/元素类型由变量、参数、工厂函数或条件表达式决定；
 - positional `value`、`signed`、`radix` 的旧调用；
+- 字面量 `0` / `1`：在遗留代码里它们是宽度，在当前 API 里它们是单比特的 value，两种读法都成立；
 - 多维 `Array(T, (M, N))`；
 - import alias、用户自己的同名 `Bit`、反射和 `getattr`。
 
