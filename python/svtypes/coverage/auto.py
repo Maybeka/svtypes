@@ -100,6 +100,40 @@ def _point(name: str, expression: dict[str, Any], descriptor: Any, *, value_doma
     return CoveragePointIR(name, expression, _automatic_bins(descriptor), options=options)
 
 
+def _container_point(name: str, descriptor: Any, *, indices: tuple[int, ...] = ()) -> CoveragePointIR:
+    kinds = []
+    leaf = descriptor
+    while isinstance(leaf, (Array, DynArray, Queue, AssocArray)):
+        associative = isinstance(leaf, AssocArray)
+        kinds.append("mapping" if associative else "sequence")
+        leaf = leaf._val_template if associative else leaf._elem_template
+    nullness = _object_element(leaf)
+    kind = "assoc" if isinstance(descriptor, AssocArray) else "container"
+    expression: dict[str, Any] = _value_domain_expression(name, kind + ("_nullness" if nullness else "_values"))
+    if len(kinds) > 1:
+        expression["container_kinds"] = kinds
+    if indices:
+        expression["indices"] = list(indices)
+    point_name = name + "".join(f"[{index}]" for index in indices)
+    return _point(point_name, expression, None if nullness else leaf, value_domain=True)
+
+
+def _indexed_points(name: str, descriptor: Any, indices: tuple[int, ...]) -> list[CoveragePointIR]:
+    if isinstance(descriptor, Array):
+        return [
+            point for index in range(len(descriptor))
+            for point in _indexed_points(name, descriptor._elem_template, (*indices, index))
+        ]
+    if isinstance(descriptor, (DynArray, Queue, AssocArray)):
+        return [_container_point(name, descriptor, indices=indices)]
+    nullness = _object_element(descriptor)
+    expression = (_slot_nullness_expression if nullness else _slot_expression)(name, indices[0])
+    if len(indices) > 1:
+        expression["indices"] = list(indices)
+    point_name = name + "".join(f"[{index}]" for index in indices)
+    return [_point(point_name, expression, None if nullness else descriptor)]
+
+
 def auto_coverage_ir(cls: type["SvObject"]) -> CoverageIR | None:
     """Compile the default group implied by effective field ``cov`` policies.
 
@@ -137,32 +171,15 @@ def auto_coverage_ir(cls: type["SvObject"]) -> CoverageIR | None:
                     "SVT-COV-SLOTS",
                     f"{cls.__name__}.{name} is fixed-size; its array length defines coverage slots",
                 )
-            points.extend(
-                _point(
-                    f"{name}[{index}]",
-                    _slot_nullness_expression(name, index) if _object_element(descriptor._elem_template) else _slot_expression(name, index),
-                    None if _object_element(descriptor._elem_template) else descriptor._elem_template,
-                )
-                for index in range(len(descriptor))
-            )
+            points.extend(_indexed_points(name, descriptor, ()))
         elif isinstance(descriptor, (DynArray, Queue)):
             if slots is None:
-                points.append(
-                    _point(
-                        name,
-                        _value_domain_expression(name, "container_nullness" if _object_element(descriptor._elem_template) else "container_values"),
-                        None if _object_element(descriptor._elem_template) else descriptor._elem_template,
-                        value_domain=True,
-                    )
-                )
+                points.append(_container_point(name, descriptor))
             else:
                 points.extend(
-                    _point(
-                        f"{name}[{index}]",
-                        _slot_nullness_expression(name, index) if _object_element(descriptor._elem_template) else _slot_expression(name, index),
-                        None if _object_element(descriptor._elem_template) else descriptor._elem_template,
-                    )
+                    point
                     for index in range(slots)
+                    for point in _indexed_points(name, descriptor._elem_template, (index,))
                 )
         elif isinstance(descriptor, AssocArray):
             if slots is not None:
@@ -170,15 +187,7 @@ def auto_coverage_ir(cls: type["SvObject"]) -> CoverageIR | None:
                     "SVT-COV-SLOTS",
                     f"{cls.__name__}.{name} is associative and has no stable numeric slots",
                 )
-            object_values = _object_element(descriptor._val_template)
-            points.append(
-                _point(
-                    name,
-                    _value_domain_expression(name, "assoc_nullness" if object_values else "assoc_values"),
-                    None if object_values else descriptor._val_template,
-                    value_domain=True,
-                )
-            )
+            points.append(_container_point(name, descriptor))
         elif isinstance(descriptor, (Bit, Logic, Enum)):
             if slots is not None:
                 raise CoverageDeclarationError(

@@ -28,13 +28,26 @@ def eval_expr(expression: Any, context: dict[str, Any]) -> Any:
             descriptor = next((base.__dict__[field_name] for base in type(item).mro() if field_name in base.__dict__), None)
             return int(item.__dict__.get(getattr(descriptor, "_cache_key", "")) is None)
         value = getattr(item, field_name)
+        if kind in {"container_values", "container_nullness", "assoc_values", "assoc_nullness"}:
+            for index in expression.get("indices", ()):
+                value = value[index]
+        if expression.get("container_kinds"):
+            values = [value.value]
+            for container_kind in expression["container_kinds"]:
+                values = [child for container in values for child in
+                          (container.values() if container_kind == "mapping" else container)]
+            if kind in {"container_nullness", "assoc_nullness"}:
+                return [int(child is None) for child in values]
+            return values
         if kind == "field":
             return _value(value)
-        if kind == "slot":
-            return _value(value[expression["index"]])
-        if kind == "slot_is_null":
-            return int(value[expression["index"]] is None)
-        if kind in {"container_values", "assoc_values"}:
+        if kind in {"slot", "slot_is_null"}:
+            for index in expression.get("indices", (expression["index"],)):
+                value = value[index]
+            return int(value is None) if kind == "slot_is_null" else _value(value)
+        if kind == "assoc_values":
+            return value.value.values()
+        if kind == "container_values":
             return value.value
         if kind == "container_nullness":
             return [int(item is None) for item in value.value]

@@ -44,10 +44,11 @@ def _expr(expression: Any) -> str:
     kind = expression["kind"]
     if kind == "field":
         return expression["path"]
-    if kind == "slot":
-        return f"{expression['path']}[{expression['index']}]"
-    if kind == "slot_is_null":
-        return f"({expression['path']}[{expression['index']}] == null)"
+    if kind in {"slot", "slot_is_null"}:
+        value = expression["path"] + "".join(
+            f"[{index}]" for index in expression.get("indices", (expression["index"],))
+        )
+        return f"({value} == null)" if kind == "slot_is_null" else value
     if kind == "is_null":
         return f"({expression['path']} == null)"
     if kind == "enum_literal":
@@ -66,6 +67,11 @@ def _expr(expression: Any) -> str:
             return json.dumps(value)
         if isinstance(value, LogicValue):
             return f"{value.width}'b{value}"
+        if isinstance(value, int) and not -(1 << 31) <= value < (1 << 31):
+            if value < 0:
+                width = (~value).bit_length() + 1
+                return f"{width}'sh{value & ((1 << width) - 1):x}"
+            return f"{value.bit_length()}'h{value:x}"
         return str(value)
     if kind == "name":
         name = expression["name"]
@@ -165,12 +171,14 @@ def _dynamic_slot_guard(expression: Any) -> str | None:
     """Skip out-of-range dynamic slots the same way Python IndexError does."""
     if not isinstance(expression, dict):
         return None
-    if expression.get("kind") == "slot":
-        return f"({expression['path']}.size() > {expression['index']})"
+    if expression.get("indices"):
+        return f"($size({expression['path']}) > {expression['indices'][0]})"
+    if expression.get("kind") in {"slot", "slot_is_null"}:
+        return f"($size({expression['path']}) > {expression['index']})"
     if expression.get("kind") == "subscript":
         index = expression.get("index")
         if isinstance(index, dict) and index.get("kind") == "constant" and isinstance(index.get("value"), int):
-            return f"({_expr(expression['base'])}.size() > {index['value']})"
+            return f"($size({_expr(expression['base'])}) > {index['value']})"
     return None
 
 
@@ -385,11 +393,18 @@ def _value_domain_declaration(cls: type[Any], point: CoveragePointIR) -> tuple[s
         raise ValueError(f"coverage point {point.name!r} is not a value-domain point")
     _, field = expression["path"].split(".", 1)
     descriptor = next((base.__dict__[field] for base in cls.mro() if field in base.__dict__), None)
+    for index in expression.get("indices", ()):
+        descriptor = getattr(descriptor, "_elem_template", None)
+        field += f"[{index}]"
     template = getattr(descriptor, "_val_template", None)
     if template is None:
         template = getattr(descriptor, "_elem_template", None)
     if template is None:
         raise ValueError(f"coverage point {point.name!r} has no renderable value-domain descriptor")
+    from ..collection import Array, AssocArray, DynArray, Queue
+
+    while isinstance(template, (Array, DynArray, Queue, AssocArray)):
+        template = template._val_template if isinstance(template, AssocArray) else template._elem_template
     marker = "__svtypes_cov_value"
     declaration = template.sv_decl(marker).strip().rstrip(";")
     # ``rand`` / ``randc`` describe a field declaration. A covergroup sample
@@ -511,9 +526,22 @@ def render_type_coverage(cls: type[Any], indent: str, unit: str) -> list[str]:
                 lines.append(f"{indent}{unit * 3}cg.sample(item);")
             for point in value_points:
                 field, _, index = _value_domain_declaration(cls, point)
-                lines.append(f"{indent}{unit * 3}foreach (item.{field}[{index}]) begin")
-                lines.append(f"{indent}{unit * 4}cg_{_identifier(point.name)}.sample(item.{field}[{index}]);")
-                lines.append(f"{indent}{unit * 3}end")
+                depth = len(point.expression.get("container_kinds", ("sequence",)))
+                access = f"item.{field}"
+                base_level = 3
+                guard = _dynamic_slot_guard(point.expression)
+                if guard is not None:
+                    lines.append(f"{indent}{unit * base_level}if ({guard}) begin")
+                    base_level += 1
+                for level in range(depth):
+                    variable = index if level == 0 else f"{index}_{level}"
+                    lines.append(f"{indent}{unit * (base_level + level)}foreach ({access}[{variable}]) begin")
+                    access += f"[{variable}]"
+                lines.append(f"{indent}{unit * (base_level + depth)}cg_{_identifier(point.name)}.sample({access});")
+                for level in reversed(range(depth)):
+                    lines.append(f"{indent}{unit * (base_level + level)}end")
+                if guard is not None:
+                    lines.append(f"{indent}{unit * 3}end")
             lines.append(f"{indent}{unit * 2}endfunction")
             lines.append("")
             parts: list[tuple[str, int]] = []

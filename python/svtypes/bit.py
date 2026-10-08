@@ -258,6 +258,12 @@ class Bit(BuiltInType):
     def sv_repr(self):
         return Bit._gen_sv_repr(self)
 
+    def sv_initializer(self) -> str | None:
+        """Render the declared initial value, independently of later writes."""
+        if self._init_value is None:
+            return None
+        return Bit._gen_sv_repr(self._init_value, self.width, self.radix)
+
     def sv_decl(self, name: str):
         ranges = (
             "".join(f" [{size - 1}:0]" for size in self.shape)

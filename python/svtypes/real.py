@@ -65,6 +65,9 @@ class Real(BuiltInType):
     def sv_repr(self):
         return f'{self.value}'
 
+    def sv_initializer(self) -> str | None:
+        return None if self._init_value is None else str(self._init_value)
+
     def sv_decl(self, name: str):
         return f"real {name}"
 

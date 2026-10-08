@@ -447,16 +447,6 @@ def _require_actual(obj: Any) -> type:
 
 def randomize_object(obj: Any, extra: ConstraintIR | None = None) -> bool:
     cls = _require_actual(obj)
-    # External storage is observable: a solver must never expose trial
-    # assignments.  Solve an ordinary detached clone, then publish each bound
-    # root once after SAT.  The common local path stays allocation-free.
-    if getattr(obj, "_SvObject__svtypes_external_storage", None) is not None:
-        detached = copy.deepcopy(obj)
-        ok = randomize_object(detached, extra=extra)
-        if ok:
-            obj.value = detached
-        obj._SvObject__svtypes_randomize_status = detached._SvObject__svtypes_randomize_status
-        return ok
     ctx = current_context()
     _, seed = ctx.consume_call()
     stream = BitStream(seed)
@@ -464,12 +454,31 @@ def randomize_object(obj: Any, extra: ConstraintIR | None = None) -> bool:
     active_nodes = [node for node in graph.nodes if node.active]
     for node in active_nodes:
         node.obj.pre_randomize()
+    # External storage is observable: a solver must never expose trial
+    # assignments.  Solve an ordinary detached clone, then publish each bound
+    # root once after SAT.  The common local path stays allocation-free.
+    external = getattr(obj, "_SvObject__svtypes_external_storage", None) is not None
+    solve_obj, solve_graph = obj, graph
+    if external:
+        live_nodes = {node.path: node.obj for node in _collect_random_graph(obj, cls, extra).nodes}
+        detached = copy.deepcopy(obj, {"__svtypes_defer_identity__": True})
+        detached._SvObject__svtypes_layered_randomize_active = obj._SvObject__svtypes_layered_randomize_active
+        detached._SvObject__svtypes_layered_randomize_priority = obj._SvObject__svtypes_layered_randomize_priority
+        solve_obj, solve_graph = detached, _collect_random_graph(detached, cls, extra)
     try:
-        ok = _solve(obj, cls, stream, extra, graph=graph)
+        ok = _solve(solve_obj, cls, stream, extra, graph=solve_graph)
     except ConstraintBackendError:
         raise
     except ConstraintError:
         raise
+    if external:
+        if ok:
+            obj.value = solve_obj
+            for node in solve_graph.nodes:
+                target = live_nodes.get(node.path)
+                if target is not None:
+                    target._SvObject__svtypes_randc_state = copy.deepcopy(node.obj._SvObject__svtypes_randc_state)
+        obj._SvObject__svtypes_randomize_status = solve_obj._SvObject__svtypes_randomize_status
     if ok:
         for node in reversed(active_nodes):
             node.obj.post_randomize()

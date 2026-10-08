@@ -49,7 +49,7 @@ def test_rand_generation_and_supported_default_matrix():
     code = RandomPayload.to_sv_obj()
     assert "rand int scalar;" in code
     assert "rand bit [1:0] [7:0] packed;" in code
-    assert "rand int fixed [2];" in code
+    assert "rand int fixed [2] = '{default: 32'd0};" in code
     assert "\n  string text;" in code
     assert 'virtual function void apply_plusargs(string prefix = "");' in code
     assert '"scalar=%d"' in code

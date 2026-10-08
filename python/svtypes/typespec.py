@@ -259,12 +259,13 @@ def _class_identity(
             "qualname": annotation.__qualname__,
         }
     if issubclass(annotation, Enum):
+        codec = annotation()
         return {
             "kind": "enum",
             "module": annotation.__module__,
             "qualname": annotation.__qualname__,
-            "width": annotation.width,
-            "signed": annotation.signed,
+            "width": codec.width,
+            "signed": codec.signed,
         }
     if issubclass(annotation, TypeBase):
         raise _boundary_error(annotation, location, "SvTypes descriptor class is not an approved boundary type")

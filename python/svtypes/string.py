@@ -74,7 +74,16 @@ class String(BuiltInType):
 
 
     def sv_repr(self):
-        return f'"{self.value}"'
+        return self._sv_literal(self.value)
+
+    @staticmethod
+    def _sv_literal(value: str) -> str:
+        escapes = {34: '\\"', 92: '\\\\', 10: '\\n', 13: '\\r', 9: '\\t'}
+        return '"' + ''.join(escapes.get(byte, chr(byte) if 32 <= byte < 127 else f'\\{byte:03o}')
+                             for byte in value.encode('utf-8')) + '"'
+
+    def sv_initializer(self) -> str | None:
+        return None if self._init_value is None else self._sv_literal(self._init_value)
 
     def cpp_decl(self, name: str):
         return f"std::string {name}"
@@ -88,7 +97,7 @@ class String(BuiltInType):
         if self._init_value is None:
             return f'{ind_str}string {name};'
         else:
-            return f'{ind_str}string {name} = "{self._init_value}";'
+            return f'{ind_str}string {name} = {self.sv_initializer()};'
 
     def to_cpp_code(self, level=0, name: str | None = None):
         name = name or self._attr_name

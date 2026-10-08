@@ -206,7 +206,9 @@ class _ExternalBinding:
         self._check_open()
         if self.readonly:
             raise ExternalStorageError("external value binding is read-only")
-        payload = None if value is None else _pack_value(_operation_payload_descriptor(self.leaf.codec, operation), value)
+        needs_value = operation in (FieldOperation.APPEND, FieldOperation.INSERT)
+        payload = (_pack_value(_operation_payload_descriptor(self.leaf.codec, operation), value)
+                   if value is not None or needs_value else None)
         try:
             returned = self.storage.write(self.key, self.root, self.path, operation, payload)
         except ExternalStorageError:
@@ -224,7 +226,8 @@ def _operation_payload_descriptor(descriptor: Any, operation: FieldOperation) ->
         from .int import Int
 
         return Int()
-    if operation in (FieldOperation.APPEND, FieldOperation.INSERT):
+    # INSERT already addresses the new element; APPEND addresses its container.
+    if operation is FieldOperation.APPEND:
         if isinstance(descriptor, (Array, DynArray, Queue)):
             return descriptor._elem_template
         if isinstance(descriptor, AssocArray):
@@ -306,6 +309,10 @@ def is_externally_bound(value: Any) -> bool:
 def _bind_loaded_object(value: Any, binding: _ExternalBinding) -> Any:
     from .object import SvObject
 
+    if isinstance(value, list):
+        return _ExternalSequence(binding)
+    if isinstance(value, dict):
+        return _ExternalMapping(binding)
     if isinstance(value, SvObject):
         # Object decode can resolve an existing object from a codec session.
         # Never attach an owner-specific backend binding to that shared
@@ -331,7 +338,9 @@ class _ExternalSequence(MutableSequence[Any]):
 
     def __getitem__(self, index):
         if isinstance(index, slice):
-            return self._values()[index]
+            values = self._values()
+            return [_bind_loaded_object(values[position], self._binding.child_index(position))
+                    for position in range(*index.indices(len(values)))]
         if index < 0:
             index += len(self)
         if index < 0 or index >= len(self):
@@ -342,21 +351,51 @@ class _ExternalSequence(MutableSequence[Any]):
     def __iter__(self) -> Iterator[Any]:
         # A traversal is one backend read rather than one round-trip per
         # element.  Indexed writes still remain leaf operations.
-        return iter(self._values())
+        return iter(_bind_loaded_object(value, self._binding.child_index(index))
+                    for index, value in enumerate(self._values()))
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _ExternalSequence):
+            other = other._values()
+        return self._values() == other
+
+    def __deepcopy__(self, memo):
+        # Snapshot values, never the backend, its opaque key, or live bindings.
+        return copy.deepcopy(self._values(), memo)
 
     def __setitem__(self, index, value) -> None:
         if isinstance(index, slice):
             values = self._values()
-            values[index] = value
-            self._binding.write_value(values)
+            updates = list(value)
+            replacement = values.copy()
+            replacement[index] = updates
+            if self._binding.readonly:
+                raise ExternalStorageError("external value binding is read-only")
+            # Validate the complete resulting shape before issuing local writes.
+            _pack_value(self._binding.leaf.codec, replacement)
+            start, stop, step = index.indices(len(values))
+            positions = list(range(start, stop, step))
+            for position, item in zip(positions, updates):
+                self._binding.child_index(position).write_value(item)
+            if step == 1:
+                for offset in range(len(positions), len(updates)):
+                    self._binding.child_index(start + offset).write_operation(FieldOperation.INSERT, updates[offset])
+                for _ in range(len(updates), len(positions)):
+                    self._binding.child_index(start + len(updates)).write_operation(FieldOperation.DELETE)
             return
         self._binding.child_index(index).write_value(value)
 
     def __delitem__(self, index) -> None:
         if isinstance(index, slice):
             values = self._values()
-            del values[index]
-            self._binding.write_value(values)
+            replacement = values.copy()
+            del replacement[index]
+            if self._binding.readonly:
+                raise ExternalStorageError("external value binding is read-only")
+            _pack_value(self._binding.leaf.codec, replacement)
+            positions = range(*index.indices(len(values)))
+            for position in sorted(positions, reverse=True):
+                self._binding.child_index(position).write_operation(FieldOperation.DELETE)
             return
         self._binding.child_index(index).write_operation(FieldOperation.DELETE)
 
@@ -402,6 +441,9 @@ class _ExternalMapping(MutableMapping[Any, Any]):
 
     def __len__(self) -> int:
         return len(self._values())
+
+    def __deepcopy__(self, memo):
+        return copy.deepcopy(self._values(), memo)
 
 
 def collection_view(binding: _ExternalBinding) -> MutableSequence[Any] | MutableMapping[Any, Any]:

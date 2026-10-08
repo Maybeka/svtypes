@@ -339,11 +339,9 @@ package svtypes_pkg;
         object_number[i * 8 +: 8] = bytes[offset + i];
       end
       offset += 8;
-      if (value == null) begin
-        value = new("", object_number);
-      end else begin
-        value.object_number = object_number;
-      end
+      // Reference records are values; a reused collection temporary must not
+      // mutate records already assigned to earlier elements.
+      value = new(value == null ? "" : value.target_type_name, object_number);
     endfunction
   endclass
 

@@ -30,8 +30,8 @@ def test_multi_dim():
     sv_code = MultiDim.to_sv_obj()
     print("--- SV MultiDim ---")
     print(sv_code)
-    assert "int matrix [3] [2];" in sv_code
-    assert "int matrix_v2 [3] [2];" in sv_code
+    assert "int matrix [3] [2] = '{default: '{default: 32'd0}};" in sv_code
+    assert "int matrix_v2 [3] [2] = '{default: '{default: 32'd0}};" in sv_code
     assert "bit [1:0] [7:0] packed_matrix;" in sv_code
     assert "bit [1:0] [7:0] packed_matrix_array [3];" in sv_code
 

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import contextmanager
 import hashlib
 import json
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Mapping, Iterator
 
 from .base import TypeBase
 from .errors import CompatibilityError, DeclarationError
@@ -542,8 +543,12 @@ def sv_packer_expression(codec: Any) -> str:
     return SvObject._sv_packer_expr(codec)
 
 
-def sv_declaration(codec: Any, name: str) -> str:
-    """Render one canonical generated-SystemVerilog member declaration."""
+def sv_declaration(codec: Any, name: str, *, include_initializer: bool = False) -> str:
+    """Render a member, optionally including its explicit declared initializer.
+
+    Initializers use the codec's public sv_initializer() hook, not its current
+    mutable value. Codecs without this hook retain declaration-only output.
+    """
 
     if not isinstance(name, str) or not name:
         raise TypeError("SV declaration name must be a non-empty string")
@@ -553,13 +558,59 @@ def sv_declaration(codec: Any, name: str) -> str:
     rendered = declaration(name)
     if not isinstance(rendered, str) or not rendered.strip():
         raise TypeError("SvTypes codec produced an invalid SV declaration")
-    return rendered.strip().rstrip(";")
+    rendered = rendered.strip().rstrip(";")
+    if include_initializer:
+        initializer_method = getattr(codec, 'sv_initializer', None)
+        initializer = initializer_method() if callable(initializer_method) else None
+        if initializer is not None:
+            if not isinstance(initializer, str) or not initializer:
+                raise TypeError("SvTypes codec produced an invalid SV initializer")
+            rendered += ' = ' + initializer
+    return rendered
+
+
+@contextmanager
+def sv_codegen_context(codec: Any, *, prefix: str = '__svtypes_value') -> Iterator[tuple[str, ...]]:
+    """Yield ordered local typedefs for consistent nested collection rendering.
+
+    Emit the yielded declarations in the scope containing expressions rendered
+    inside this context. Separate equivalent codec instances share aliases.
+    Nested contexts restore their caller's rendering state on exit.
+    """
+    import re
+    from .collection import AssocArray, CollectionBase
+    from .object import _sv_render_aliases
+
+    if not isinstance(prefix, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_$]*', prefix):
+        raise ValueError('SV code-generation prefix must be an SV identifier')
+    aliases = dict(_sv_render_aliases.get() or {})
+    declarations = []
+    token = _sv_render_aliases.set(aliases)
+    try:
+        def visit(value):
+            if not isinstance(value, CollectionBase):
+                return
+            child = value._val_template if isinstance(value, AssocArray) else value._elem_template
+            visit(child)
+            if isinstance(child, CollectionBase):
+                identity = unified_type_name(child)
+                if identity not in aliases:
+                    alias = f'{prefix}_{len(declarations)}_t'
+                    while alias in aliases.values():
+                        alias += '_'
+                    declarations.append('typedef ' + sv_declaration(child, alias) + ';')
+                    aliases[identity] = alias
+        visit(codec)
+        yield tuple(declarations)
+    finally:
+        _sv_render_aliases.reset(token)
 
 
 def checked_unpack(
     codec: TypeBase,
     data: bytes,
     received_descriptor: EncodingDescriptor | Mapping[str, Any],
+    context: Any = None,
 ) -> tuple[Any, int]:
     """Verify public encoding identity before invoking a bare value codec."""
     received = (
@@ -582,4 +633,11 @@ def checked_unpack(
         raise CompatibilityError(
             "SvTypes encoding fingerprint mismatch for " + expected.unified_type_name
         )
+    if context is not None:
+        from .object import SvObject, SvStruct, UnpackContext
+
+        if not isinstance(context, UnpackContext):
+            raise TypeError("checked_unpack context must be an UnpackContext")
+        if isinstance(codec, SvObject) and not isinstance(codec, SvStruct):
+            return codec.unpack(data, context)
     return codec.unpack(data)

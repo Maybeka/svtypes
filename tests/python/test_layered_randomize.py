@@ -31,6 +31,19 @@ def _batches(cls):
     return cls._SvObject__svtypes_layer_batches
 
 
+def test_nested_dynamic_layer_modes_only_query_singular_leaves():
+    from svtypes import Queue
+
+    class Packet(SvObject):
+        matrix = Queue[Queue[Bit[2]]]()
+
+    code = Packet.to_sv_obj()
+    assert "int __svtypes_rand_dyn_matrix[string];" in code
+    assert "matrix[i].rand_mode()" not in code
+    assert "matrix[__svtypes_index_0][__svtypes_index_1].rand_mode()" in code
+    assert "__svtypes_rand_dyn_matrix.exists(" in code
+
+
 def test_rand_layer_alias_is_function_name_and_rejects_illegal_api():
     class Packet(SvObject):
         addr = Bit[32]()

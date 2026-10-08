@@ -8,6 +8,39 @@ from svtypes.coverage.observation import compare_manifest_hits, parse_observatio
 from svtypes.coverage.sv import _queue_function_lines, observation_manifest
 
 
+@pytest.mark.parametrize("value, literal", [
+    (0, "0"),
+    (2**31 - 1, "2147483647"),
+    (-2**31, "-2147483648"),
+    (2**31, "32'h80000000"),
+    (2**64 - 1, "64'hffffffffffffffff"),
+    (-2**63, "64'sh8000000000000000"),
+    (-2**31 - 1, "33'sh17fffffff"),
+    (2**128 - 1, "128'hffffffffffffffffffffffffffffffff"),
+])
+def test_integer_coverage_literals_preserve_width_and_sign(value, literal):
+    from svtypes.coverage.sv import _expr
+
+    assert _expr({"kind": "constant", "value": value}) == literal
+
+
+def test_wide_auto_bins_use_sized_boundaries_without_changing_ir_values():
+    class WidePacket(SvObject):
+        unsigned = Bit[64]()
+        from svtypes import Signed
+        signed = Bit[64, Signed]()
+
+    code = WidePacket.to_sv_obj()
+    assert "64'hffffffffffffffff" in code
+    assert "64'sh8000000000000000" in code
+    assert "63'h7fffffffffffffff" in code
+    from svtypes.coverage.auto import auto_coverage_ir
+
+    points = {point.name: point for point in auto_coverage_ir(WidePacket).points}
+    assert max(bin_.selector["upper"]["value"] for bin_ in points["unsigned"].bins) == 2**64 - 1
+    assert min(bin_.selector["lower"]["value"] for bin_ in points["signed"].bins) == -2**63
+
+
 class _RendererPacketKind(Enum[Bit[8]]):
     request = 0
     response = 1
@@ -128,8 +161,8 @@ def test_renderer_guards_dynamic_slot_coverpoints_by_size():
                 low = bins[0:1]
 
     code = Packet.to_sv_obj()
-    assert "slots_0_: coverpoint item.values[0] iff ((item.values.size() > 0)) {" in code
-    assert "slots_2_: coverpoint item.values[2] iff ((item.values.size() > 2)) {" in code
+    assert "slots_0_: coverpoint item.values[0] iff (($size(item.values) > 0)) {" in code
+    assert "slots_2_: coverpoint item.values[2] iff (($size(item.values) > 2)) {" in code
     assert "function real get_coverage();" in code
     assert "return cg.get_coverage();" in code
 

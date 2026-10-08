@@ -55,6 +55,7 @@ from svtypes import (
     constraint,
     encoding_descriptor,
     svobj,
+    sv_declaration,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -601,6 +602,31 @@ module tb;
     $fatal(2, "truncated unpack must not succeed");
   endtask
 
+  task automatic run_remote_ref_records();
+    byte unsigned bytes[$];
+    remote_ref values[string], decoded[string];
+    remote_ref scalar, retained;
+    int offset;
+    values["first"] = new("acme.Device", 11);
+    values["second"] = new("acme.Device", 22);
+    values["null"] = new("acme.Device", 0);
+    assoc_array_packer#(string, remote_ref, string_packer, remote_ref_packer)::pack(values, bytes);
+    offset = 0;
+    assoc_array_packer#(string, remote_ref, string_packer, remote_ref_packer)::unpack(decoded, bytes, offset);
+    if (decoded["first"].object_number != 11 || decoded["second"].object_number != 22 ||
+        decoded["null"].object_number != 0 || decoded["first"] == decoded["second"])
+      $fatal(2, "RemoteRef associative elements share a mutable record");
+    scalar = new("acme.Device", 7);
+    retained = scalar;
+    bytes.delete();
+    remote_ref_packer::pack(values["second"], bytes);
+    offset = 0;
+    remote_ref_packer::unpack(scalar, bytes, offset);
+    if (scalar.target_type_name != "acme.Device" || scalar.object_number != 22 || retained.object_number != 7)
+      $fatal(2, "RemoteRef unpack mutated a retained record or lost its target");
+    $display("SVTYPES_REMOTE_REF_RECORD_PASS");
+  endtask
+
   initial begin
     string which;
     if (!$value$plusargs("SVTYPES_CASE=%s", which)) which = "core";
@@ -608,6 +634,7 @@ module tb;
       run_tree();
       run_graph();
       run_policies();
+      run_remote_ref_records();
       $display("SVTYPES_CORE_PASS");
     end else if (which == "plusarg") begin
       run_plusarg();
@@ -641,6 +668,69 @@ def _ssh(host: str, command: str) -> subprocess.CompletedProcess[str]:
     )
     remote = prefix + f"bash -ilc {command!r}"
     return subprocess.run(["ssh", host, remote], capture_output=True, text=True)
+
+
+def test_remote_nested_struct_declared_defaults():
+    class DefaultHeader(SvStruct):
+        tag = Bit[8](7)
+        flags = Logic[4]()
+
+    class DefaultPacket(SvStruct):
+        header = DefaultHeader()
+        count = Bit[8](9)
+
+    host = _host_or_skip()
+    out = REPO_ROOT / ".tmp" / "target_struct_defaults"
+    out.mkdir(parents=True, exist_ok=True)
+    codec = DefaultPacket()
+    codec.header.tag.value = 99
+    codec.count.value = 42
+    headers = Array[DefaultHeader, 2]()
+    matrix = Array[DefaultHeader, (2, 3)]()
+    integers = Array[Int, 2]()
+    headers[0].tag.value = 99
+    matrix[1][2].tag.value = 42
+    source = "\n".join([
+        DefaultHeader.to_sv_obj(),
+        DefaultPacket.to_sv_obj(),
+        "class DefaultOwner;",
+        "  " + sv_declaration(codec, "packet", include_initializer=True) + ";",
+        "  " + sv_declaration(headers, "headers", include_initializer=True) + ";",
+        "  " + sv_declaration(matrix, "matrix", include_initializer=True) + ";",
+        "  " + sv_declaration(integers, "integers", include_initializer=True) + ";",
+        "endclass",
+        "module tb;",
+        "  DefaultOwner owner;",
+        "  initial begin",
+        "    owner = new;",
+        "    if (owner.packet.header.tag !== 7 || owner.packet.count !== 9)",
+        '      $fatal(1, "nested declared defaults were lost");',
+        "    if (owner.packet.header.flags !== 4'bxxxx)",
+        '      $fatal(1, "unspecified four-state default was changed");',
+        "    foreach (owner.headers[i])",
+        "      if (owner.headers[i].tag !== 7 || owner.headers[i].flags !== 4'bxxxx)",
+        '        $fatal(1, "array element defaults were lost");',
+        "    foreach (owner.matrix[i,j])",
+        "      if (owner.matrix[i][j].tag !== 7 || owner.matrix[i][j].flags !== 4'bxxxx)",
+        '        $fatal(1, "multidimensional element defaults were lost");',
+        "    foreach (owner.integers[i])",
+        "      if (owner.integers[i] !== 0)",
+        '        $fatal(1, "integer template defaults were lost");',
+        '    $display("SVTYPES_ARRAY_DECLARED_DEFAULTS_PASS");',
+        '    $display("SVTYPES_STRUCT_DECLARED_DEFAULTS_PASS");',
+        "    $finish;",
+        "  end",
+        "endmodule",
+    ])
+    (out / "tb.sv").write_text(source, encoding="utf-8")
+    remote = f"{REMOTE_ROOT}/.tmp/target_struct_defaults"
+    compiled = _ssh(host, f"cd {shlex.quote(remote)} && {REMOTE_RUNNER} compile tb.sv")
+    assert compiled.returncode == 0, compiled.stdout + compiled.stderr
+    result = _ssh(host, f"cd {shlex.quote(remote)} && {REMOTE_RUNNER} run")
+    log = result.stdout + result.stderr
+    assert result.returncode == 0, log
+    assert "SVTYPES_STRUCT_DECLARED_DEFAULTS_PASS" in log, log
+    assert "SVTYPES_ARRAY_DECLARED_DEFAULTS_PASS" in log, log
 
 
 def _write_inputs(out: Path) -> None:

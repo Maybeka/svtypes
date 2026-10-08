@@ -1,5 +1,15 @@
 # 变更记录
 
+## 1.4.2 — 2026-10-08
+
+- 补齐集成方所需的公开 codec 接口：`AssocArray.key_codec` / `value_codec`、`sv_codegen_context()`、声明初始化值查询、`SvObject.codec_template()` 和带会话上下文的 `checked_unpack()`。codec prototype、解码和复制不执行用户构造器；导入的同源对象编号不会被重新分配。
+- 新增预实例化类装配后的 `refresh_declarations()`；显式 RecordSchema 的下划线字段保留正常字段行为；修正 enum 类型身份中的 JSON 编码。
+- 修正嵌套集合的 SV typedef 与 packer 生成、RemoteRef 集合解包时的记录别名，以及生成的成员打印引用。字段初始化使用声明默认值，保留四态、字符串转义和嵌套 struct / 定长数组默认值。
+- 外部嵌套容器的索引、迭代与切片取得的子容器保留路径绑定；切片赋值使用局部操作。复制及随机化快照只复制值，不复制后端或不透明 key；结果发布支持空、共享、循环和容器内 handle，保留已有对象身份。
+- 外部随机化在原对象上执行 pre/post hook，成功后同步 randc 历史，失败不消耗循环值；分层 hook 保留当前层级上下文。用户 hook 的显式写入不回滚，多个后端写入仍不承诺事务性。
+- 自动覆盖率递归采样嵌套容器的叶值；多维定长数组保留完整槽位索引，动态子容器跳过缺失槽位与空值域。生成 SV 保留宽整数 bin 边界的位宽和符号；嵌套分层随机恢复逐元素 mode。
+- 为外部存储快照、handle 发布、constructor-free codec 及嵌套切片补入专项回归，并同步中英文参考文档。
+
 ## 1.4.1 — 2026-09-28
 
 - 稳定 SVX 类型规格 API：新增公开边界 `is_type_spec`、`is_materializable_type`、`materialize_type_spec`、`type_spec_identity`，使集成方无需持有工厂对象即可比较与重建类型身份；`tests/typing/svx_type_specs.py` 提供静态类型基线。

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import functools
 import struct
+from contextvars import ContextVar
 from typing import Any, TypeVar, Callable, overload
 from collections.abc import Mapping
 
@@ -10,6 +11,14 @@ from .base import TypeBase, UserDefinedType
 from .enum import Enum
 from .errors import DeclarationError, EncodeError, RegistryError, ResourceLimitError, UnsupportedTypeError
 from .limits import DecodeLimits
+
+
+_sv_collection_aliases: ContextVar[dict[int, str] | None] = ContextVar(
+    'svtypes_sv_collection_aliases', default=None
+)
+_sv_render_aliases: ContextVar[dict[str, str] | None] = ContextVar(
+    'svtypes_sv_render_aliases', default=None
+)
 
 
 class ObjectRegistry:
@@ -67,6 +76,8 @@ class CodecSession:
         self.reset_object_number_allocator(counter_start)
 
     def allocate_object_number(self) -> int:
+        while ((self.origin << 48) | self._next_object_counter) in self._objects:
+            self._next_object_counter += 1
         if self._next_object_counter > SVX_OBJECT_ID_COUNTER_MASK:
             raise RuntimeError("SvTypes Python object number counter exhausted")
         object_number = (self.origin << 48) | self._next_object_counter
@@ -87,6 +98,9 @@ class CodecSession:
                     f"{existing.__class__.__name__} and {obj.__class__.__name__}"
                 )
             self._objects[obj.svtypes_object_number] = obj
+            if obj.svtypes_object_number >> 48 == self.origin:
+                imported_counter = obj.svtypes_object_number & SVX_OBJECT_ID_COUNTER_MASK
+                self._next_object_counter = max(self._next_object_counter, imported_counter + 1)
 
     def get(self, object_number: int) -> "SvObject" | None:
         return self._objects.get(object_number)
@@ -424,6 +438,26 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         if not _defer_identity:
             register_object(self)
 
+    @classmethod
+    def codec_template(cls, *, session: CodecSession | None = None) -> "SvObject":
+        """Create a codec prototype without allocating or registering an identity."""
+        return cls._new_value_state(session=session, defer_identity=True)
+
+    @classmethod
+    def _new_value_state(cls, *, session=None, defer_identity=False):
+        """Initialize codec state without replaying user or foreign construction."""
+        value = object.__new__(cls)
+        struct_type = globals().get("SvStruct")
+        if struct_type is not None and issubclass(cls, struct_type):
+            SvStruct.__init__(value)
+        else:
+            object.__setattr__(value, "_svtypes_coverage_construction_depth", 1)
+            try:
+                SvObject.__init__(value, session=session, _defer_identity=defer_identity)
+            finally:
+                object.__setattr__(value, "_svtypes_coverage_construction_depth", 0)
+        return value
+
     def __deepcopy__(self, memo):
         cls = self.__class__
         session = memo.get("__svtypes_session__")
@@ -435,12 +469,17 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 session = self.codec_session
             except AttributeError:
                 session = None
-        copied = cls(session=session) if session is not None else cls()
+        copied = cls._new_value_state(
+            session=session, defer_identity=bool(memo.get("__svtypes_defer_identity__"))
+        )
         memo[id(self)] = copied
         for name, _ in self.__svtypes_members:
             desc = dict(self.__svtypes_members)[name]
             if isinstance(desc, ObjectDescriptor):
-                if desc._cache_key in self.__dict__:
+                binding = self._external_field_binding(name, desc)
+                if binding is not None:
+                    setattr(copied, name, copy.deepcopy(binding.read_value(), memo))
+                elif desc._cache_key in self.__dict__:
                     setattr(copied, name, copy.deepcopy(getattr(self, name), memo))
                 continue
             source_value = getattr(self, name).value
@@ -551,14 +590,70 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
     @value.setter
     def value(self, val):
+        self._assign_value(val, {})
+
+    def _assign_value(self, val, memo):
         if val is None:
             self._value = None
             return
         if not isinstance(val, self.__class__):
              raise TypeError(f"Expected {self.__class__.__name__}, got {type(val)}")
-        for name, _ in self.__svtypes_fields:
-            # Copy values between objects
-            getattr(self, name).value = getattr(val, name).value
+        if id(val) in memo:
+            return
+        memo[id(val)] = self
+        # Resolve source values before publication; null handles are values, not
+        # scalar descriptors. Do not allocate previously untouched handles.
+        pending = [(name, desc, val.__dict__.get(desc._cache_key)
+                    if isinstance(desc, ObjectDescriptor) else getattr(val, name).value)
+                   for name, desc in self.__svtypes_fields]
+        for name, desc, source in pending:
+            if isinstance(desc, ObjectDescriptor):
+                binding = self._external_field_binding(name, desc)
+                current = binding.read_value() if binding is not None else self.__dict__.get(desc._cache_key)
+                copied = self._copy_member_value(desc, source, current, memo)
+                if binding is not None:
+                    binding.write_value(copied)
+                else:
+                    setattr(self, name, copied)
+            else:
+                field = getattr(self, name)
+                field.value = self._copy_member_value(desc, source, field.value, memo)
+
+    @staticmethod
+    def _copy_member_value(desc, source, current, memo):
+        from .collection import Array, AssocArray, DynArray, Queue
+
+        if isinstance(desc, (ObjectDescriptor, SvObject)):
+            if source is None:
+                return None
+            if id(source) in memo:
+                return memo[id(source)]
+            if isinstance(current, type(source)):
+                current._assign_value(source, memo)
+                return current
+            return copy.deepcopy(source, memo)
+        if isinstance(desc, AssocArray):
+            return {key: SvObject._copy_member_value(desc._val_template, value, current.get(key), memo)
+                    for key, value in source.items()}
+        if isinstance(desc, (Array, DynArray, Queue)):
+            return [SvObject._copy_member_value(desc._elem_template, value,
+                    current[index] if index < len(current) else None, memo)
+                    for index, value in enumerate(source)]
+        return source
+
+    def _external_field_binding(self, name, desc):
+        from .external_storage import FieldDescriptor, _ExternalBinding
+
+        parent = self.__dict__.get("_svtypes_external_binding")
+        if parent is not None:
+            return parent.child_member(name)
+        storage = self.__dict__.get("_SvObject__svtypes_external_storage")
+        if storage is not None:
+            identity = self._svtypes_field_identity(name, desc)
+            keys = self.__dict__["_SvObject__svtypes_external_field_keys"]
+            if identity in keys:
+                return _ExternalBinding(storage, keys[identity], FieldDescriptor(desc, identity))
+        return None
 
     def __get__(self, instance, owner):
         if instance is None:
@@ -571,7 +666,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
     def __getattribute__(self, name):
         # We override __getattribute__ to handle returning cloned TypeBase members
         # while keeping the descriptor behavior for ObjectDescriptor/SvObject
-        if name.startswith('_'):
+        if name.startswith('_') and name not in getattr(type(self), '_svtypes_record_field_names', ()):
              return object.__getattribute__(self, name)
 
         # Check if it's a known SV member
@@ -678,7 +773,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         object.__setattr__(self, "_SvObject__svtypes_external_field_keys", {})
 
     def __setattr__(self, name, value):
-        if name.startswith('_'):
+        if name.startswith('_') and name not in getattr(type(self), '_svtypes_record_field_names', ()):
             super().__setattr__(name, value)
             return
 
@@ -716,8 +811,9 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         register_object(self)
         return count
 
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
+    def __init_subclass__(cls, *, _svtypes_refresh=False, **kwargs):
+        if not _svtypes_refresh:
+            super().__init_subclass__(**kwargs)
         from .parameter import Parameter, ParamRef, TypeParameterField, _construct_type_parameter_field
         from .symbolic import SymbolicPackedField, SymbolicArrayField, SymbolicCollectionField
         from .typespec import TypeSpec
@@ -817,7 +913,8 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         for base in reversed(mro):
             if base is object or base.__name__ in ('SvObject', 'SvStruct'): continue
             for name, attr in base.__dict__.items():
-                if name.startswith('_'): continue
+                if name.startswith('_') and name not in base.__dict__.get('_svtypes_record_field_names', ()):
+                    continue
                 if name in seen: continue
                 if isinstance(attr, Parameter):
                     # Parameters are never members; they are collected from the
@@ -1080,6 +1177,24 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 object.__setattr__(instance, "_svtypes_coverage_construction_depth", depth)
 
         cls.__init__ = managed_init
+
+    @classmethod
+    def refresh_declarations(cls) -> None:
+        """Revalidate field/constraint metadata after pre-instance class assembly.
+
+        This is for frameworks that finish a class's bases before creating any
+        instances. It does not migrate live values or external-storage bindings,
+        execute user class hooks, or replace the existing initializer.
+        """
+        initializer = cls.__dict__.get("__init__")
+        try:
+            SvObject.__init_subclass__.__func__(cls, _svtypes_refresh=True)
+        finally:
+            if initializer is None:
+                if "__init__" in cls.__dict__:
+                    delattr(cls, "__init__")
+            else:
+                cls.__init__ = initializer
 
     @classmethod
     def specialize(cls: type[T], **kwargs) -> type[T]:
@@ -1360,6 +1475,17 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
     @staticmethod
     def _sv_type_expr(desc: TypeBase) -> str:
+        render_aliases = _sv_render_aliases.get()
+        if render_aliases:
+            from .collection import CollectionBase
+            if isinstance(desc, CollectionBase):
+                from .schema import unified_type_name
+                alias = render_aliases.get(unified_type_name(desc))
+                if alias is not None:
+                    return alias
+        aliases = _sv_collection_aliases.get()
+        if aliases is not None and id(desc) in aliases:
+            return aliases[id(desc)]
         from .bit import Bit
         from .logic import Logic
         from .collection import AssocArray, DynArray, Queue, Array
@@ -1595,6 +1721,41 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
     @classmethod
     def to_sv_obj(cls, level=0):
+        from .collection import AssocArray, CollectionBase
+
+        aliases: dict[int, str] = {}
+        declarations: list[str] = []
+        by_type: dict[str, str] = {}
+        names = set(cls.__dict__)
+
+        def visit(descriptor, path):
+            if not isinstance(descriptor, CollectionBase):
+                return
+            child = descriptor._val_template if isinstance(descriptor, AssocArray) else descriptor._elem_template
+            if not isinstance(child, CollectionBase):
+                return
+            visit(child, path + '_element')
+            type_expression = SvObject._sv_type_expr(child)
+            alias = by_type.get(type_expression)
+            if alias is None:
+                alias = '__svtypes_' + path + '_element_t'
+                while alias in names:
+                    alias += '_'
+                names.add(alias)
+                by_type[type_expression] = alias
+                declarations.append(cls.IND * (level + 1) + 'typedef ' + child.sv_decl(alias) + ';')
+            aliases[id(child)] = alias
+
+        for name, descriptor in cls.__svtypes_members:
+            visit(descriptor, name)
+        token = _sv_collection_aliases.set(aliases)
+        try:
+            return cls._to_sv_obj_with_aliases(level, declarations)
+        finally:
+            _sv_collection_aliases.reset(token)
+
+    @classmethod
+    def _to_sv_obj_with_aliases(cls, level, collection_declarations):
         if "_SvObject__svtypes_emit_specialization_class" in cls.__dict__:
             raise DeclarationError(
                 f"{cls.__name__} is a Python-side binding of "
@@ -1614,13 +1775,13 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         else:
             header += " extends svtypes_pkg::sv_object"
         header += ";"
-        lines = [header]
+        lines = [header, *collection_declarations]
 
         local_members = []
         for name, attr in cls.__dict__.items():
             if (
                 (isinstance(attr, TypeBase) or isinstance(attr, ObjectDescriptor))
-                and not name.startswith('_')
+                and (not name.startswith('_') or name in cls.__dict__.get('_svtypes_record_field_names', ()))
                 and name not in {p_name for p_name, _ in cls.__svtypes_params}
             ):
                 local_members.append((name, attr))
@@ -1875,7 +2036,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             dump_body.append(
                 f'{ind_str}{cls.IND * 2}result = {{result, "{separator}{name}="}};'
             )
-            emit_dump_value(desc, name, ind_str + cls.IND * 2)
+            emit_dump_value(desc, "this." + name, ind_str + cls.IND * 2)
             dump_index += 1
 
         lines.append("")
@@ -1917,11 +2078,12 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         lines.append(f'{ind_str}{cls.IND}{cls.IND}svtypes_pkg::pack_object_header({cls._sv_encoding_type_expr()}, "{cls._encoding_fingerprint_hex()}", {field_count}, __svtypes_object_number, bytes);')
         for name, desc in cls.__svtypes_fields:
             if desc.pack_bytes:
+                expression = f'this.{name}' if hasattr(cls, '_svtypes_record_field_names') else name
                 from .collection import CollectionBase
                 if isinstance(desc, CollectionBase):
-                    lines.extend(desc.sv_pack_loop(name, level + 2, ind_str + cls.IND + cls.IND))
+                    lines.extend(desc.sv_pack_loop(expression, level + 2, ind_str + cls.IND + cls.IND))
                 else:
-                    lines.extend(cls._sv_pack_lines(name, desc, ind_str + cls.IND + cls.IND))
+                    lines.extend(cls._sv_pack_lines(expression, desc, ind_str + cls.IND + cls.IND))
         lines.append(f"{ind_str}{cls.IND}endfunction")
 
         lines.append("")
@@ -1948,11 +2110,12 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         lines.append(f"{ind_str}{cls.IND}{cls.IND}svtypes_pkg::register_object(this);")
         for name, desc in cls.__svtypes_fields:
             if desc.pack_bytes:
+                expression = f'this.{name}' if hasattr(cls, '_svtypes_record_field_names') else name
                 from .collection import CollectionBase
                 if isinstance(desc, CollectionBase):
-                    lines.extend(desc.sv_unpack_loop(name, level + 2, ind_str + cls.IND + cls.IND))
+                    lines.extend(desc.sv_unpack_loop(expression, level + 2, ind_str + cls.IND + cls.IND))
                 else:
-                    lines.extend(cls._sv_unpack_lines(name, desc, ind_str + cls.IND + cls.IND))
+                    lines.extend(cls._sv_unpack_lines(expression, desc, ind_str + cls.IND + cls.IND))
         lines.append(f"{ind_str}{cls.IND}endfunction")
 
         from .coverage.sv import render_type_coverage
@@ -2001,7 +2164,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         for name, attr in cls.__dict__.items():
             if (
                 (isinstance(attr, TypeBase) or isinstance(attr, ObjectDescriptor))
-                and not name.startswith('_')
+                and (not name.startswith('_') or name in cls.__dict__.get('_svtypes_record_field_names', ()))
                 and name not in {p_name for p_name, _ in cls.__svtypes_params}
             ):
                 local_members.append((name, attr))
@@ -2119,7 +2282,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 )
             if value is not None:
                 return value.pack(value, ctx)
-            return cls(session=ctx.session, _defer_identity=True).pack(None, ctx)
+            return cls.codec_template(session=ctx.session).pack(None, ctx)
         if isinstance(desc, SvStruct):
             return desc.pack(value)
         if isinstance(desc, SvObject):
@@ -2164,7 +2327,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                     f"Class name '{desc.cls_name}' not found in registry. "
                     f"Available types: {desc.registry.list_types()}"
                 )
-            return cls(session=ctx.session, _defer_identity=True).unpack(bytes_, ctx)
+            return cls.codec_template(session=ctx.session).unpack(bytes_, ctx)
         if isinstance(desc, SvStruct):
             return desc.unpack(bytes_)
         if isinstance(desc, SvObject):
@@ -2388,7 +2551,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 )
             new_inst = existing
         else:
-            new_inst = self.__class__(session=ctx.session, _defer_identity=True)
+            new_inst = self.__class__.codec_template(session=ctx.session)
             old_id = 0
         if _target is None and existing is not None:
             old_id = existing.svtypes_object_number
@@ -2471,6 +2634,11 @@ class SvStruct(SvObject):
     def __init__(self, **kwargs) -> None:
         TypeBase.__init__(self, **kwargs)
 
+    @classmethod
+    def codec_template(cls, *, session: CodecSession | None = None) -> "SvStruct":
+        """Create a value codec; structs have no session or object identity."""
+        return cls._new_value_state(defer_identity=True)
+
     @property
     def svtypes_object_number(self) -> int:
         raise AttributeError("SvStruct values do not have object numbers")
@@ -2511,7 +2679,7 @@ class SvStruct(SvObject):
         return bytes(output)
 
     def unpack(self, bytes_: bytes) -> tuple["SvStruct", int]:
-        result = self.__class__()
+        result = self.__class__.codec_template()
         offset = 0
         for name, desc in self._SvObject__svtypes_members:
             value, count = desc.unpack(bytes_[offset:])
@@ -2532,7 +2700,7 @@ class SvStruct(SvObject):
         ind_str = cls.IND * level
         lines = [f"{ind_str}typedef struct packed {{"]
         for name, desc in cls._SvObject__svtypes_members:
-             lines.append(desc.to_sv_code(level + 1, name=name))
+            lines.append(f"{ind_str}{cls.IND}{desc.sv_decl(name)};")
         lines.append(f"{ind_str}}} {cls.__name__}_t;")
         lines.append("")
         lines.append(f"{ind_str}class {cls.__name__}_packer;")
@@ -2562,6 +2730,37 @@ class SvStruct(SvObject):
 
     def sv_decl(self, name: str):
         return f"{self.__class__.__name__}_t {name}"
+
+    @classmethod
+    def _sv_declared_default(cls) -> tuple[str, bool]:
+        from .enum import Enum
+        from .logic import Logic
+
+        members = []
+        explicit = False
+        for name, desc in cls._SvObject__svtypes_members:
+            if isinstance(desc, SvStruct):
+                value, child_explicit = desc._sv_declared_default()
+                explicit |= child_explicit
+            else:
+                hook = getattr(desc, "sv_initializer", None)
+                value = hook() if callable(hook) else None
+                explicit |= value is not None
+                if value is None:
+                    value = "'x" if isinstance(desc, Logic) else "'0"
+                    if isinstance(desc, Enum):
+                        value = f"{desc.__class__.__name__}'({value})"
+            members.append(f"{name}: {value}")
+        return "'{" + ", ".join(members) + "}", explicit
+
+    def sv_initializer(self) -> str | None:
+        value, explicit = self._sv_declared_default()
+        return value if explicit else None
+
+    def to_sv_code(self, level=0, name: str | None = None):
+        from .schema import sv_declaration
+
+        return f"{self.IND * level}{sv_declaration(self, name or self._attr_name, include_initializer=True)};"
 
     def cpp_decl(self, name: str):
         return f"{self.__class__.__name__} {name}"

@@ -64,6 +64,10 @@ parameterized class。
 - `Real`：64-bit float，映射 SV `real`、C++ `double`，编码为 8-byte IEEE 754。
 - `String`：variable-length string，映射 SV `string`、C++ `std::string`。
 
+`AssocArray` 的只读属性 `key_codec` 和 `value_codec` 返回声明的 key/value codec，
+空数组同样可以查询。它们是 codec descriptor，不是条目值或独立副本；使用公共
+schema 和生成接口查询，不应修改其布局。
+
 单比特简写：`Bit()`、`Logic()`、`Reg()` 声明一个比特。无下标形式的位置参数是 **value**，与 `Bit[width](value)` 中该参数的
 角色一致，因此 `Bit(0)`、`Bit(1)` 声明取值 0 或 1 的单比特，`Bit(rand=False)` 声明一个不参与随机的单比特。宽度只能来自
 下标：单比特无法精确表示的整数会被拒绝而不是被截断（`Bit(8)` 报错并指向 `Bit[width]()`），因为它更可能是一个遗留的
@@ -123,9 +127,26 @@ naming 与 transport semantics；SvTypes 只验证并 materialize 给定 record 
 
 ### 生成 SV expression
 
+嵌套容器 adapter 使用 `sv_codegen_context(codec, prefix=...)`：上下文返回
+按依赖顺序排列的局部 `typedef` 声明。将这些声明放在同一作用域，再使用
+上下文内渲染的 type/packer expression。等价 codec 实例共享别名；退出或异常
+时恢复原渲染状态。`prefix` 必须是 SV 标识符；别名不改变数据编码。
+
 `sv_type_expression(codec)`、`sv_packer_expression(codec)`、`sv_declaration(codec, name)` 是为已有 SvTypes codec
 生成 typed adapter 的稳定 rendering entry point。前两项分别返回 type / packer expression；declaration 同时正确放置
 unpacked dimension：
+
+`sv_declaration(codec, name, include_initializer=True)` 还会包含 `Bit`、`Int`、
+`LongInt`、`Logic`、`String`、`Real`、`ShortReal`、`Enum`、`SvStruct` 或固定 `Array` 元素
+显式声明的初值；默认仍只输出声明。
+`codec.sv_initializer()` 返回原始声明初值（或 `None`），而 `codec.sv_repr()`
+返回当前值。运行时赋值不会改变声明初值；Logic 的初值保留 X/Z 和有符号属性。
+String 字面量转义引号、反斜杠、控制字符及 UTF-8 字节。packed struct 的
+typedef 只包含成员类型；字段初值通过嵌套赋值模式保留成员声明默认值，
+包括未指定的四态成员。没有显式成员初值的结构体仍只输出声明。
+固定数组通过 SV 的 `default` 赋值模式重复元素模板的声明初值，多维数组
+逐层处理。之后对某个元素的赋值不属于声明默认值。动态数组、queue 和
+关联数组仍保留原生的空容器默认值。
 
 ```python
 from svtypes import Int, Queue, sv_declaration, sv_packer_expression
@@ -136,6 +157,23 @@ assert sv_packer_expression(Queue[Int]()) == "svtypes_pkg::queue_packer#(int, sv
 
 这些函数不定义 transport、ownership、dispatch；只保留正常 SvTypes generated code 所用的 SystemVerilog spelling 与
 codec pairing。
+
+生成对象类时，嵌套固定数组、队列、动态数组及关联数组的值类型会先在类内
+生成 typedef，再作为 packer 类型实参引用。定义顺序确定，同类内相同类型
+去重，字段维度及二进制编码不变。这些名称只是内部生成细节，用户无需另行
+声明这些类型。
+
+### 解码模板与对象身份
+
+只需要对象类作为 pack/unpack codec 时，使用
+`MyObject.codec_template(session=session)`：其对象编号为零，不注册活对象，
+也不消耗编号。普通 `MyObject(session=session)` 仍创建有身份的对象。
+创建解码模板及解码值时跳过用户 `__new__` / `__init__`，包括必须传参的构造器。
+只初始化 SvTypes codec 状态和声明字段默认值；普通用户实例化行为不变。
+`checked_unpack(codec, data, descriptor, session.unpack_context())` 先检查编码
+契约，再在指定会话中解码。共享引用和循环引用保留身份，重复解码复用已注册
+对象。导入同 origin 的编号会推进本地分配器；不兼容或显式重复的活对象身份
+仍报错。
 
 ### 运行时能力协商
 
@@ -166,6 +204,11 @@ construction lifecycle 不属于 `RecordSchema` 或该协商接口。
 
 ### 外部字段存储
 
+`MyObject.refresh_declarations()` 用于框架在创建任何实例之前完成类的基类组装后，
+重新校验继承字段与约束。它保留已有 `__init__`，不执行用户类钩子。
+应先刷新已组装的基类，再刷新子类。它不是已有对象的迁移接口，不会更新
+现存实例的值或外部存储绑定。
+
 `SvObject.bind_external_storage(storage, field_keys)` 将一个 instance 的 selected field 绑定到 `ExternalFieldStorage`。
 key 对 SvTypes opaque；mapping 以 `FieldIdentity(declaring_type, name)` 为 key，避免 inherited declaration 与同名 field 混淆。
 该 instance 的 unbound field 和其他 instance 的全部 field 继续采用普通 local storage。
@@ -173,6 +216,21 @@ key 对 SvTypes opaque；mapping 以 `FieldIdentity(declaring_type, name)` 为 k
 backend 获得 `FieldDescriptor`、immutable typed `FieldPath`、`FieldOperation`、已 normalize 的 SvTypes byte；它不会获得 facade
 value，也不需复刻 SvTypes encoding。read 没有 implicit writable cache；indexed collection write 与 associative-key write 都是 leaf
 operation。`MemoryExternalFieldStorage` 是 test / simple embedder 的 standalone reference backend：
+
+按索引或键取得内层列表、映射时，保留同一外部 owner 并扩展路径。
+遍历序列取得的嵌套容器也保留绑定：修改取出的行会形成寻址写入，
+而不是只改变一个脱离后端的 Python 副本。遍历先读取一次父容器快照；
+已绑定子容器的后续访问仍读取后端当前值。
+序列切片返回普通的外层列表；其中的嵌套子容器保留原后端索引（包括反向切片）
+及关闭状态。深复制递归提取值快照，不复制后端或不透明 key，所得值不再绑定外部存储。
+
+`APPEND` 路径指向容器，编码该容器的一个元素。`INSERT` 路径指向新增元素
+所在索引，直接使用该位置的元素 codec；元素本身是容器时也不会再降一级类型。
+
+序列切片赋值使用逐元素 `SET`，可变长度序列还使用 `INSERT`/`DELETE`，
+不会回写整个容器。切片删除按索引降序执行，避免剩余元素的位置偏移。
+扩展切片遵循 Python 的长度规则，固定数组不能改变长度；所有写入之前
+先验证结果的类型与形状。若后端在写入过程中失败，这些复合操作不保证事务回滚。
 
 ```python
 storage.seed("packet.count", Packet.__dict__["count"], 3)
@@ -187,6 +245,17 @@ packet.count.value = 0x103  # Bit 宽度归一化仍然生效
 `bind_external_value(descriptor, storage, key)` 为 temporary value root 提供同样语义。`close()` 使 root 及全部 derived
 collection view 失效。external randomization 在 detached value snapshot 上求解，只有 success 后才发布每个 bound root；
 unsuccessful solve 不改变 backend。
+结果发布支持空、共享和循环 handle，包括容器内元素，不会用试算副本替换
+已经分配的原始存活对象。
+外部随机化成功后还会提交 owner 的 `randc` 周期历史。禁用字段保留暂停的
+周期；失败求解不会消耗该周期中的值。
+`pre_randomize()` 在创建试算快照前于原始存活实例上执行；成功发布求解结果后，
+`post_randomize()` 在同一实例上执行，求解失败时不调用它。嵌套随机对象的回调
+也保留原实例，分层回调可观察当前 active 标志与 priority。用户在回调中的显式
+赋值属于普通副作用而非试算写入，不会因为后续求解失败而回滚。
+值副本直接初始化 SvTypes 状态，不会重跑用户构造函数。随机化试算快照
+不分配已注册的对象身份，也不创建外部语言的配套实例；普通对象副本仍具有
+独立的 codec 身份。
 
 ## 类型映射摘要
 
@@ -248,6 +317,14 @@ parameter name。
 
 automatic `cov=True` coverage 进入与 explicit covergroup 相同的 CoverageIR pipeline。scalar/container value domain 会得到
 deterministic automatic bin；`Object[...]` handle field 不会得到 default nullness coverpoint。
+固定数组按每个叶元素槽位生成覆盖点，多维固定数组的覆盖点名称保留完整
+索引，例如 `matrix[0][1]`。生成 SV 的槽位边界使用 `$size(...)`，同时支持
+固定数组和动态数组。
+固定槽位或显式 `cov_slots` 槽位若包含动态或关联子容器，该槽位的覆盖点
+采样所选子容器的叶值域；不存在的外层槽位与空子容器不产生样本。
+动态或关联容器的 value-domain coverage 会逐层遍历嵌套容器并采样叶值，
+而不是关联数组的 key 或内层容器本身。空子容器不产生样本。Python 与生成
+SV 使用相同的遍历与叶值 bin；宽整数 bin 边界在生成 SV 中保持精确位宽和符号。
 
 `instance.get_coverage()` 返回 type coverage；`instance.get_inst_coverage()` 返回 individual covergroup instance。
 `instance.sample_count` 记录 accepted sample；`instance.has_illegal_hits()` 报告是否命中 illegal bin。

@@ -143,13 +143,14 @@ from .schema import (
     sv_type_expression,
     sv_packer_expression,
     sv_declaration,
+    sv_codegen_context,
 )
 from .generator import GenerationResult, generate
 
 from pathlib import Path
 import sysconfig
 
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 
 
 def package_root() -> Path:

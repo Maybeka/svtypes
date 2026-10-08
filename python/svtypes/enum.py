@@ -273,6 +273,9 @@ class Enum(UserDefinedType):
     def sv_decl(self, name: str):
         return f"{self.__class__.__name__} {name}"
 
+    def sv_initializer(self) -> str | None:
+        return None if self._init_value is None else self._init_value.name
+
     def to_sv_code(self, level=0, name: str | None = None) -> str:
         name = name or self._attr_name
         ind_str = self.IND * level

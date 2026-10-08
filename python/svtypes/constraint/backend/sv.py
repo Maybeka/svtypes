@@ -48,6 +48,42 @@ def _dynamic_layer_roots(cls: type, names: tuple[str, ...] | list[str]) -> tuple
     return dynamic_layer_roots(cls, names)
 
 
+def _nested_dynamic_shape(cls: type, root: str) -> tuple[str, ...]:
+    from ...collection import Array, AssocArray, DynArray, Queue
+
+    descriptor = dict(getattr(cls, "_SvObject__svtypes_members", ()))[root]
+    indices = []
+    while isinstance(descriptor, (Array, AssocArray, DynArray, Queue)):
+        indices.append(f"__svtypes_index_{len(indices)}")
+        descriptor = descriptor._val_template if isinstance(descriptor, AssocArray) else descriptor._elem_template
+    return tuple(indices)
+
+
+def _nested_dynamic_modes(root: str, indices: tuple[str, ...], tmp: str,
+                          indent: str, step: str, action: str) -> list[str]:
+    access = root
+    lines = []
+    for level, index in enumerate(indices):
+        lines.append(f"{indent}{step * level}foreach ({access}[{index}]) begin")
+        access += f"[{index}]"
+    key = '$sformatf("' + '/'.join('%p' for _ in indices) + '", ' + ', '.join(indices) + ')'
+    inner = indent + step * len(indices)
+    if action == "save":
+        lines.append(f"{inner}{tmp}[{key}] = {access}.rand_mode();")
+    elif action == "enable":
+        lines.append(f"{inner}if (!{tmp}.exists({key}) || {tmp}[{key}]) {access}.rand_mode(1);")
+    elif action == "close":
+        lines.append(f"{inner}if ({tmp}.exists({key})) {access}.rand_mode(0);")
+    elif action == "restore":
+        lines.append(f"{inner}if ({tmp}.exists({key})) {access}.rand_mode({tmp}[{key}]);")
+        lines.append(f"{inner}else {access}.rand_mode(1);")
+    else:
+        lines.append(f"{inner}{access}.rand_mode(0);")
+    for level in reversed(range(len(indices))):
+        lines.append(f"{indent}{step * level}end")
+    return lines
+
+
 def render_layered_randomize_context(indent: str, step: str) -> list[str]:
     """Emit hook-visible state for the generated layered entry point."""
     ind = indent + step
@@ -86,7 +122,8 @@ def render_layered_randomize(cls: type, indent: str, step: str) -> list[str]:
     for path in targets:
         lines.append(f"{inner}int {_mode_tmp('rand', path)};")
     for root in dynamic_roots:
-        lines.append(f"{inner}int {_mode_tmp('rand_dyn', root)}[$];")
+        dimension = "[string]" if len(_nested_dynamic_shape(cls, root)) > 1 else "[$]"
+        lines.append(f"{inner}int {_mode_tmp('rand_dyn', root)}{dimension};")
     for name in constraints:
         lines.append(f"{inner}int {_mode_tmp('cstr', name)};")
     lines.append(f"{inner}__svtypes_ok = 1;")
@@ -97,6 +134,12 @@ def render_layered_randomize(cls: type, indent: str, step: str) -> list[str]:
         lines.append(f"{inner}{_mode_tmp('rand', path)} = {path}.rand_mode();")
     for root in dynamic_roots:
         tmp = _mode_tmp("rand_dyn", root)
+        indices = _nested_dynamic_shape(cls, root)
+        if len(indices) > 1:
+            lines.extend(_nested_dynamic_modes(root, indices, tmp, inner, step, "save"))
+            lines.append(f"{inner}{root}.rand_mode(1);")
+            lines.extend(_nested_dynamic_modes(root, indices, tmp, inner, step, "disable"))
+            continue
         lines.append(f"{inner}foreach ({root}[i]) begin")
         lines.append(f"{inner}{step}{tmp}.push_back({root}[i].rand_mode());")
         lines.append(f"{inner}end")
@@ -120,6 +163,10 @@ def render_layered_randomize(cls: type, indent: str, step: str) -> list[str]:
             lines.append(f"{inner}{step}{path}.rand_mode(1);")
         for root in batch_dynamic_roots:
             tmp = _mode_tmp("rand_dyn", root)
+            indices = _nested_dynamic_shape(cls, root)
+            if len(indices) > 1:
+                lines.extend(_nested_dynamic_modes(root, indices, tmp, inner + step, step, "enable"))
+                continue
             lines.append(f"{inner}{step}foreach ({root}[i]) begin")
             lines.append(f"{inner}{step}{step}if (i < {tmp}.size()) begin")
             lines.append(f"{inner}{step}{step}{step}if ({tmp}[i]) {root}[i].rand_mode(1);")
@@ -135,6 +182,10 @@ def render_layered_randomize(cls: type, indent: str, step: str) -> list[str]:
             lines.append(f"{inner}{step}{step}{path}.rand_mode(0);")
         for root in batch_dynamic_roots:
             tmp = _mode_tmp("rand_dyn", root)
+            indices = _nested_dynamic_shape(cls, root)
+            if len(indices) > 1:
+                lines.extend(_nested_dynamic_modes(root, indices, tmp, inner + step * 2, step, "close"))
+                continue
             lines.append(f"{inner}{step}{step}foreach ({root}[i])")
             lines.append(f"{inner}{step}{step}{step}if (i < {tmp}.size()) {root}[i].rand_mode(0);")
         for name in batch.constraints:
@@ -145,6 +196,10 @@ def render_layered_randomize(cls: type, indent: str, step: str) -> list[str]:
         lines.append(f"{inner}{path}.rand_mode({_mode_tmp('rand', path)});")
     for root in dynamic_roots:
         tmp = _mode_tmp("rand_dyn", root)
+        indices = _nested_dynamic_shape(cls, root)
+        if len(indices) > 1:
+            lines.extend(_nested_dynamic_modes(root, indices, tmp, inner, step, "restore"))
+            continue
         lines.append(f"{inner}foreach ({root}[i]) begin")
         lines.append(f"{inner}{step}if (i < {tmp}.size()) {root}[i].rand_mode({tmp}[i]);")
         lines.append(f"{inner}{step}else {root}[i].rand_mode(1);")

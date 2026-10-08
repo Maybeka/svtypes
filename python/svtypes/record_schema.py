@@ -93,6 +93,7 @@ class RecordSchema:
         namespace: dict[str, Any] = {
             "__module__": "svtypes.generated",
             "_svtypes_unified_type_name": self.unified_type_name,
+            "_svtypes_record_field_names": frozenset(field.name for field in self.fields),
             "__doc__": f"Generated SvTypes record for {self.unified_type_name}.",
         }
         for field in self.fields:

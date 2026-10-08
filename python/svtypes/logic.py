@@ -164,6 +164,7 @@ class Logic(BuiltInType):
                 f"Logic width {self._width} exceeds declaration limit {DEFAULT_MAX_PACKED_BITS}"
             )
         self._value = self._normalize(0 if value is None else value)
+        self._init_value = None if value is None else self._value
 
     @property
     def width(self) -> int:
@@ -231,7 +232,19 @@ class Logic(BuiltInType):
         return f"svtypes::LogicValue<{self.width}, {signed}> {name}"
 
     def to_sv_code(self, level: int = 0, name: str | None = None) -> str:
-        return f"{self.IND * level}{self.sv_decl(name or self._attr_name)};"
+        declaration = f"{self.IND * level}{self.sv_decl(name or self._attr_name)}"
+        initializer = self.sv_initializer()
+        return declaration + (f" = {initializer}" if initializer is not None else "") + ";"
+
+    def sv_repr(self) -> str:
+        """Render the current four-state value as a sized SV literal."""
+        return f"{self.width}'{'s' if self.signed else ''}b{self.value}"
+
+    def sv_initializer(self) -> str | None:
+        """Render the declared initial value, independently of later writes."""
+        if self._init_value is None:
+            return None
+        return f"{self.width}'{'s' if self.signed else ''}b{self._init_value}"
 
     def to_cpp_code(self, level: int = 0, name: str | None = None) -> str:
         return f"{self.IND * level}{self.cpp_decl(name or self._attr_name)};"

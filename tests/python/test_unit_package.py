@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from svtypes import SvObject, Parameter, Int, svobj, get_package
 import sys
 

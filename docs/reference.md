@@ -56,6 +56,11 @@ These types wrap standard Python values with hardware-specific constraints:
 - **`Real`**: Models a 64-bit float. Maps to SV `real` and C++ `double`. Serialized as 8-byte IEEE 754.
 - **`String`**: Models a variable-length string. Maps to SV `string` and C++ `std::string`.
 
+`AssocArray` exposes read-only `key_codec` and `value_codec` properties for its
+declared codecs, including when the array is empty. These are codec descriptors,
+not entry values or detached copies; inspect them through public schema and
+generation APIs rather than modifying their layout.
+
 Single-bit shorthand: `Bit()`, `Logic()` and `Reg()` declare one bit. The positional argument of the unsubscripted form is the **value**, exactly as it is for `Bit[width](value)`, so `Bit(0)` and `Bit(1)` declare a single bit holding 0 or 1, and `Bit(rand=False)` declares a non-random single bit. Width comes only from the subscript: an integer that a single bit cannot represent exactly is rejected instead of being truncated (`Bit(8)` raises and points at `Bit[width]()`), because it is far more likely to be a legacy width. Signedness is selected by the `*Signed` families rather than a `signed=` keyword. The bracket spelling keeps its packed-value truncation semantics (`Bit[1](8)` is `0`).
 
 Every SvTypes declaration in a class body must materialize. An uncalled bracket specification (`data = Bit[8]`) or a bare type class (`data = Bit`, `child = Packet`) is rejected at class creation with a repair hint, instead of being silently omitted from schema, packing, randomization and generated target code. Ordinary class-level metadata is unaffected: non-SvTypes values are always allowed, and a leading underscore keeps an SvTypes value as metadata (`_Payload = Bit[8]`).
@@ -114,6 +119,22 @@ integration that generates a typed adapter around an existing SvTypes codec.
 The first two return a type or packer expression; the declaration form also
 places unpacked dimensions correctly after `name`.
 
+`sv_declaration(codec, name, include_initializer=True)` also includes an explicit
+initializer supplied by `Bit`, `Int`, `LongInt`, `Logic`, `String`, `Real`,
+`ShortReal`, `Enum`, `SvStruct`, or fixed `Array` elements. The default
+remains declaration-only. `codec.sv_initializer()` returns the original declared
+initializer (or `None`), while `codec.sv_repr()` renders the current value;
+changing a value does not change its declaration. Logic initializers preserve
+all X/Z bits and signedness. String literals escape quotes, backslashes, control
+characters and UTF-8 bytes. A packed struct typedef contains only member types;
+its field initializer is a nested assignment pattern preserving declared member
+defaults, including unspecified four-state members. Structs with no explicit
+member defaults retain declaration-only output.
+Fixed arrays repeat their element template's declared initializer through an
+SV `default` assignment pattern, recursively for multiple dimensions. Later
+changes to individual elements are not declaration defaults. Dynamic arrays,
+queues and associative arrays retain their empty native defaults.
+
 ```python
 from svtypes import Int, Queue, sv_declaration, sv_packer_expression
 
@@ -125,6 +146,33 @@ assert sv_packer_expression(codec) == "svtypes_pkg::queue_packer#(int, svtypes_p
 These functions do not define transport, ownership, or dispatch behavior.
 They only preserve the SystemVerilog spelling and codec pairing used by normal
 SvTypes generated code.
+
+For nested collection adapters, use `sv_codegen_context(codec, prefix=...)`.
+It yields dependency-ordered local `typedef` declarations. Emit them in the
+scope where type and packer expressions rendered inside the context are used.
+Equivalent codec instances share aliases; leaving the context restores the
+previous rendering state, including after an exception. `prefix` must be an
+SV identifier. The aliases are generation details and do not change wire data.
+
+Generated object classes declare local typedefs for nested fixed arrays, queues,
+dynamic arrays, and associative-array values before using them as packer type
+arguments. Definitions are deterministic and deduplicated within the class;
+field dimensions and the wire encoding are unchanged. These names are private
+generation details, not new user-declared types.
+
+### Codec Prototypes and Object Identity
+
+Use `MyObject.codec_template(session=session)` when an object class is needed
+only as a pack/unpack codec. Its object number is zero and it is not registered;
+normal `MyObject(session=session)` construction still creates a live identity.
+Creating a prototype and decoding values bypass user `__new__` / `__init__`,
+including constructors requiring arguments. Only SvTypes codec state and
+declared field defaults are initialized; ordinary user construction is unchanged.
+`checked_unpack(codec, data, descriptor, session.unpack_context())` checks the
+encoding before decoding into that session. Shared references and cycles remain
+shared, and repeated decoding reuses already registered objects. Importing a
+number with the session's origin advances local allocation beyond that number;
+incompatible or explicitly duplicated live identities still raise an error.
 
 ### 5.2 运行时能力协商
 
@@ -146,6 +194,12 @@ SvTypes generated code.
 
 ### 5.3 External field storage
 
+`MyObject.refresh_declarations()` revalidates inherited fields and constraints
+after a framework finishes assembling the class's bases, before any instances
+are constructed. It preserves the existing `__init__` and does not execute user
+class hooks. Refresh assembled bases before their children. This is not a live
+object migration API: it does not update existing values or storage bindings.
+
 `SvObject.bind_external_storage(storage, field_keys)` binds selected fields of
 one object instance to an `ExternalFieldStorage`.  Keys are opaque to
 SvTypes; the mapping is keyed by `FieldIdentity(declaring_type, name)` so an
@@ -159,6 +213,27 @@ facade value or needs to reproduce SvTypes encoding.  Reads have no implicit
 writable cache; indexed collection writes and associative-key writes are leaf
 operations.  `MemoryExternalFieldStorage` is a standalone reference backend
 for tests and simple embedders.
+
+Indexed/keyed access to a nested list or mapping retains the same external
+owner and extends its path. Iterating a sequence also retains bindings for
+nested container elements: editing a retrieved row is an addressed write,
+not a change to a detached Python copy. Traversal reads a snapshot of the
+parent once; bound child accesses still read their current backend values.
+Sequence slices return an ordinary outer list, while nested children retain
+their original backend indices (including reversed slices) and close state.
+Deep copies recursively snapshot values without copying the backend or opaque
+keys, and the resulting values are detached from external storage.
+
+`APPEND` addresses a container and encodes one element of that container.
+`INSERT` addresses the new element's index and uses that addressed element's
+codec directly, including when the element is itself a container.
+
+Sequence slice assignment uses element `SET` and, for variable-length
+sequences, `INSERT`/`DELETE` operations rather than writing the whole container.
+Slice deletion uses descending element indices so remaining values retain their
+positions. Extended slices keep normal Python length rules; fixed arrays cannot
+change length. The resulting typed shape is validated before any write. These
+compound operations are not a transaction if the backend fails during a write.
 
 ```python
 storage.seed("packet.count", Packet.__dict__["count"], 3)
@@ -175,6 +250,21 @@ a temporary value root.  `close()` invalidates the root and every derived
 collection view.  External randomization solves a detached value snapshot and
 publishes each bound root only after success; an unsuccessful solve leaves the
 backend unchanged.
+Result publication handles null, shared and cyclic handles, including collection
+elements, without replacing already allocated live objects with trial clones.
+Successful external randomization also commits the owner's `randc` cycle
+history. Disabled fields retain their paused cycle; an unsuccessful solve does
+not consume values from that history.
+`pre_randomize()` runs on the original live receiver before the trial snapshot
+is made. After a successful solve is published, `post_randomize()` runs on that
+same receiver; an unsuccessful solve does not call it. Nested random-object
+callbacks retain their live receivers, and layered callbacks observe the current
+active flag and priority. Explicit callback writes are ordinary user side effects,
+not trial writes: a later unsuccessful solve does not roll them back.
+Value copies initialize SvTypes state directly rather than replaying a user
+constructor. Randomization trial snapshots allocate no registered object
+identity and do not create a foreign companion; ordinary object copies receive
+their own codec identity.
 
 ---
 
@@ -249,6 +339,17 @@ Automatic `cov=True` coverage is compiled into the same CoverageIR pipeline as
 an explicit covergroup. Scalar and container value domains receive deterministic
 automatic bins; an `Object[...]` handle field does not receive a default
 nullness coverpoint.
+Fixed arrays receive one point per scalar leaf slot, including multiple fixed
+dimensions; point names retain all indices, such as `matrix[0][1]`. Slot bounds
+use `$size(...)` in generated SV, supporting both fixed and dynamic arrays.
+When a fixed slot or explicit `cov_slots` slot contains a dynamic or associative
+container, that slot's point samples the selected child's leaf value domain.
+Missing outer slots and empty children contribute no samples.
+Value-domain coverage of dynamic or associative containers traverses nested
+containers and samples their leaf values, not associative keys or child
+containers. Empty children contribute no samples. Python and generated SV use
+the same traversal and leaf bins. Wide integer bin boundaries retain their
+exact width and sign in generated SV.
 
 `instance.get_coverage()` reports type coverage, while
 `instance.get_inst_coverage()` reports the individual covergroup instance.

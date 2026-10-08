@@ -167,7 +167,7 @@ def test_cross_conformance_fixture_uses_codec_synchronized_vectors(tmp_path: Pat
     assert "cov.sample(packet)" in testbench
     assert "cov.get_coverage()" in testbench
     source = (tmp_path / "coverage_packet.sv").read_text(encoding="utf-8")
-    assert "iff ((item.data.size() > 2))" in source
+    assert "iff (($size(item.data) > 2))" in source
     assert "bins rise = (0 => 1);" in source
     assert "illegal_bins reserved = {3};" in source
     assert "bins other = default;" in source
@@ -238,6 +238,198 @@ def _ssh(host: str, directory: str, command: str) -> subprocess.CompletedProcess
         capture_output=True,
         text=True,
     )
+
+
+@pytest.mark.remote_sv
+def test_remote_wide_auto_bins_preserve_signed_and_unsigned_extremes():
+    from svtypes import Signed
+
+    class WideCoveragePacket(SvObject):
+        unsigned_value = Bit[64]()
+        signed_value = Bit[64, Signed]()
+
+    host = os.environ["SVTYPES_REMOTE_SV_HOST"]
+    root = os.environ["SVTYPES_REMOTE_SV_ROOT"]
+    out = REPO_ROOT / ".tmp" / "coverage_wide_integer"
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    (out / "packet.sv").write_text(WideCoveragePacket.to_sv_obj(), encoding="utf-8")
+    (out / "tb.sv").write_text("""
+module tb;
+  WideCoveragePacket packet;
+  WideCoveragePacket::WideCoveragePacket__svtypes_coverage cov;
+  initial begin
+    packet = new();
+    cov = new();
+    packet.unsigned_value = 64'h0000000000000000;
+    packet.signed_value = 64'sh8000000000000000;
+    cov.sample(packet);
+    packet.unsigned_value = 64'hffffffffffffffff;
+    packet.signed_value = 64'sh7fffffffffffffff;
+    cov.sample(packet);
+    if (cov.get_coverage() != 3.125)
+      $fatal(2, "wide bin coverage mismatch: %f", cov.get_coverage());
+    $display("SVTYPES_WIDE_AUTO_BINS_PASS");
+    $finish;
+  end
+endmodule
+""", encoding="utf-8")
+    directory = f"{root}/.tmp/coverage_wide_integer"
+    compiled = _ssh(host, directory, f"{RUNNER_COMMAND} compile packet.sv tb.sv")
+    compile_log = compiled.stdout + compiled.stderr
+    assert compiled.returncode == 0, compile_log
+    assert "Warning-[" not in compile_log, compile_log
+    result = _ssh(host, directory, f"{RUNNER_COMMAND} run")
+    log = result.stdout + result.stderr
+    assert result.returncode == 0, log
+    assert "SVTYPES_WIDE_AUTO_BINS_PASS" in log, log
+
+
+@pytest.mark.remote_sv
+def test_remote_nested_auto_coverage_samples_leaf_values():
+    from svtypes import AssocArray, Queue, String
+
+    class NestedCoveragePacket(SvObject):
+        matrix = Queue[Queue[Bit[2]]](cov=True)
+        lookup = AssocArray[String, Queue[Bit[2]]](cov=True)
+        single = AssocArray[String, Bit[2]](cov=True)
+
+    host = os.environ["SVTYPES_REMOTE_SV_HOST"]
+    root = os.environ["SVTYPES_REMOTE_SV_ROOT"]
+    out = REPO_ROOT / ".tmp" / "coverage_nested_auto"
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    (out / "packet.sv").write_text(NestedCoveragePacket.to_sv_obj(), encoding="utf-8")
+    (out / "tb.sv").write_text("""
+module tb;
+  NestedCoveragePacket packet;
+  NestedCoveragePacket::NestedCoveragePacket__svtypes_coverage cov;
+  initial begin
+    packet = new();
+    cov = new();
+    packet.matrix = '{'{2'd0, 2'd3}, '{}, '{2'd1}};
+    packet.lookup["left"] = '{2'd2, 2'd3};
+    packet.lookup["empty"] = '{};
+    packet.single["not-a-value"] = 2'd1;
+    cov.sample(packet);
+    if (cov.get_coverage() != 50.0)
+      $fatal(2, "nested leaf coverage mismatch: %f", cov.get_coverage());
+    packet.matrix[0][0].rand_mode(0);
+    if (!packet.layered_randomize()) $fatal(2, "nested layered randomization failed");
+    if (packet.matrix[0][0] != 0 || packet.matrix[0][0].rand_mode() != 0)
+      $fatal(2, "disabled nested leaf changed or mode was not restored");
+    if (packet.matrix[0][1].rand_mode() != 1)
+      $fatal(2, "enabled nested leaf mode was not restored");
+    $display("SVTYPES_NESTED_RANDOM_MODES_PASS");
+    $display("SVTYPES_NESTED_AUTO_BINS_PASS");
+    $finish;
+  end
+endmodule
+""", encoding="utf-8")
+    directory = f"{root}/.tmp/coverage_nested_auto"
+    compiled = _ssh(host, directory, f"{RUNNER_COMMAND} compile packet.sv tb.sv")
+    compile_log = compiled.stdout + compiled.stderr
+    assert compiled.returncode == 0, compile_log
+    result = _ssh(host, directory, f"{RUNNER_COMMAND} run")
+    log = result.stdout + result.stderr
+    assert result.returncode == 0, log
+    assert "SVTYPES_NESTED_AUTO_BINS_PASS" in log, log
+    assert "SVTYPES_NESTED_RANDOM_MODES_PASS" in log, log
+
+
+@pytest.mark.remote_sv
+def test_remote_multidimensional_fixed_auto_coverage():
+    from svtypes import Array
+
+    class FixedCoveragePacket(SvObject):
+        matrix = Array[Bit[1], (2, 2)](cov=True)
+
+    host = os.environ["SVTYPES_REMOTE_SV_HOST"]
+    root = os.environ["SVTYPES_REMOTE_SV_ROOT"]
+    out = REPO_ROOT / ".tmp" / "coverage_fixed_matrix"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "packet.sv").write_text(FixedCoveragePacket.to_sv_obj(), encoding="utf-8")
+    (out / "tb.sv").write_text("""
+module tb;
+  FixedCoveragePacket packet;
+  FixedCoveragePacket::FixedCoveragePacket__svtypes_coverage cov;
+  initial begin
+    packet = new();
+    cov = new();
+    foreach (packet.matrix[i,j]) packet.matrix[i][j] = 0;
+    cov.sample(packet);
+    if (cov.get_coverage() != 50.0) $fatal(1, "initial matrix coverage mismatch");
+    foreach (packet.matrix[i,j]) packet.matrix[i][j] = 1;
+    cov.sample(packet);
+    if (cov.get_coverage() != 100.0) $fatal(1, "final matrix coverage mismatch");
+    $display("SVTYPES_FIXED_MATRIX_AUTO_COVERAGE_PASS");
+    $finish;
+  end
+endmodule
+""", encoding="utf-8")
+    directory = f"{root}/.tmp/coverage_fixed_matrix"
+    compiled = _ssh(host, directory, f"{RUNNER_COMMAND} compile packet.sv tb.sv")
+    assert compiled.returncode == 0, compiled.stdout + compiled.stderr
+    result = _ssh(host, directory, f"{RUNNER_COMMAND} run")
+    log = result.stdout + result.stderr
+    assert result.returncode == 0, log
+    assert "SVTYPES_FIXED_MATRIX_AUTO_COVERAGE_PASS" in log, log
+
+
+@pytest.mark.remote_sv
+def test_remote_indexed_dynamic_auto_coverage():
+    from svtypes import Array, AssocArray, Queue, String
+
+    class IndexedCoveragePacket(SvObject):
+        fixed = Array[Queue[Bit[1]], 2](cov=True)
+        keyed = Array[AssocArray[String, Bit[1]], 2](cov=True)
+        slotted = Queue[Queue[Bit[1]]](cov=True, cov_slots=2)
+        fixed_slots = Queue[Array[Bit[1], 2]](cov=True, cov_slots=2)
+
+    host = os.environ["SVTYPES_REMOTE_SV_HOST"]
+    root = os.environ["SVTYPES_REMOTE_SV_ROOT"]
+    out = REPO_ROOT / ".tmp" / "coverage_indexed_dynamic"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "packet.sv").write_text(IndexedCoveragePacket.to_sv_obj(), encoding="utf-8")
+    (out / "tb.sv").write_text("""
+module tb;
+  IndexedCoveragePacket packet;
+  IndexedCoveragePacket::IndexedCoveragePacket__svtypes_coverage cov;
+  initial begin
+    packet = new();
+    cov = new();
+    packet.slotted = '{'{0}, '{0}};
+    packet.fixed_slots = '{'{0, 0}, '{0, 0}};
+    foreach (packet.fixed[i]) packet.fixed[i] = '{0};
+    foreach (packet.keyed[i]) packet.keyed[i]["one"] = 0;
+    cov.sample(packet);
+    if (cov.get_coverage() != 50.0) $fatal(1, "initial mixed coverage mismatch");
+    packet.slotted = '{'{1}, '{1}};
+    packet.fixed_slots = '{'{1, 1}, '{1, 1}};
+    foreach (packet.fixed[i]) packet.fixed[i] = '{1};
+    foreach (packet.keyed[i]) packet.keyed[i]["one"] = 1;
+    cov.sample(packet);
+    if (cov.get_coverage() != 100.0) $fatal(1, "final mixed coverage mismatch");
+    packet.slotted.delete();
+    packet.fixed_slots.delete();
+    foreach (packet.fixed[i]) packet.fixed[i].delete();
+    foreach (packet.keyed[i]) packet.keyed[i].delete();
+    cov.sample(packet);
+    if (cov.get_coverage() != 100.0) $fatal(1, "empty mixed coverage changed");
+    $display("SVTYPES_INDEXED_DYNAMIC_AUTO_COVERAGE_PASS");
+    $finish;
+  end
+endmodule
+""", encoding="utf-8")
+    directory = f"{root}/.tmp/coverage_indexed_dynamic"
+    compiled = _ssh(host, directory, f"{RUNNER_COMMAND} compile packet.sv tb.sv")
+    assert compiled.returncode == 0, compiled.stdout + compiled.stderr
+    result = _ssh(host, directory, f"{RUNNER_COMMAND} run")
+    log = result.stdout + result.stderr
+    assert result.returncode == 0, log
+    assert "SVTYPES_INDEXED_DYNAMIC_AUTO_COVERAGE_PASS" in log, log
 
 
 def _remote_compile_run(out: Path, sources: str) -> dict[str, Any]:

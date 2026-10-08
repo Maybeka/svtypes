@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import json
 import tempfile
 from pathlib import Path
 
@@ -27,6 +28,20 @@ from svtypes import (
 )
 from svtypes.schema import schema_descriptor
 from svtypes import DeclarationError
+
+
+class IdentityEnum(Enum[Bit[8, Signed]]):
+    NEGATIVE = -1
+    POSITIVE = 7
+
+
+def test_enum_identity_is_json_serializable_and_round_trips():
+    from svtypes import type_spec_identity, type_spec_from_identity
+
+    identity = type_spec_identity(IdentityEnum)
+    assert identity["width"] == 8
+    assert identity["signed"] is True
+    assert type_spec_from_identity(json.loads(json.dumps(identity))) is IdentityEnum
 
 
 def test_packed_bracket_specs_are_cached_and_construct_existing_values() -> None:

@@ -201,15 +201,22 @@ class Array(CollectionBase, Generic[T], metaclass=_ArrayMeta):
     def sv_decl(self, name: str) -> str:
         return _sv_collection_element_decl(self._elem_template, f"{name} [{self._size}]")
 
+    def sv_initializer(self) -> str | None:
+        hook = getattr(self._elem_template, "sv_initializer", None)
+        initializer = hook() if callable(hook) else None
+        return None if initializer is None else "'{default: " + initializer + "}"
+
     def cpp_decl(self, name: str) -> str:
         base_t = _cpp_container_elem_type(self._elem_template)
         init = "{}" if _cpp_container_elem_is_object_handle(self._elem_template) else ""
         return f"std::array<{base_t}, {self._size}> {name}{init}"
 
     def to_sv_code(self, level=0, name: str | None = None) -> str:
+        from .schema import sv_declaration
+
         name = name or self._attr_name
         ind_str = self.IND * level
-        return f"{ind_str}{self.sv_decl(name)};"
+        return f"{ind_str}{sv_declaration(self, name, include_initializer=True)};"
 
     def to_cpp_code(self, level=0, name: str | None = None) -> str:
         name = name or self._attr_name
@@ -219,13 +226,6 @@ class Array(CollectionBase, Generic[T], metaclass=_ArrayMeta):
     def sv_pack_loop(self, name: str, level: int, indent: str) -> list[str]:
         from .object import SvObject
 
-        if isinstance(self._elem_template, CollectionBase):
-            inner_indent = indent + self.IND
-            lines = [f"{indent}foreach ({name}[i]) begin"]
-            lines.extend(self._elem_template.sv_pack_loop(f"{name}[i]", level + 1, inner_indent))
-            lines.append(f"{indent}end")
-            return lines
-
         elem_t = SvObject._sv_type_expr(self._elem_template)
         elem_packer = SvObject._sv_packer_expr(self._elem_template)
         return [
@@ -234,13 +234,6 @@ class Array(CollectionBase, Generic[T], metaclass=_ArrayMeta):
 
     def sv_unpack_loop(self, name: str, level: int, indent: str) -> list[str]:
         from .object import SvObject
-
-        if isinstance(self._elem_template, CollectionBase):
-            inner_indent = indent + self.IND
-            lines = [f"{indent}foreach ({name}[i]) begin"]
-            lines.extend(self._elem_template.sv_unpack_loop(f"{name}[i]", level + 1, inner_indent))
-            lines.append(f"{indent}end")
-            return lines
 
         elem_t = SvObject._sv_type_expr(self._elem_template)
         elem_packer = SvObject._sv_packer_expr(self._elem_template)
@@ -561,6 +554,16 @@ class AssocArray(CollectionBase, Generic[K, V]):
         self._key_template = key_type
         self._val_template = val_type
         self._elements: dict[Any, V] = {}
+
+    @property
+    def key_codec(self) -> K:
+        """Declared key codec, independent of the currently stored entries."""
+        return self._key_template
+
+    @property
+    def value_codec(self) -> V:
+        """Declared value codec, independent of the currently stored entries."""
+        return self._val_template
 
     @property
     def value(self) -> dict[Any, Any]:

@@ -13,6 +13,19 @@ def test_four_state_truth_table_and_three_plane_bytes():
     assert codec.state_domain == "4state"
 
 
+def test_explicit_four_state_initializer_is_preserved_after_value_changes():
+    from svtypes import sv_declaration
+
+    codec = Logic[4]('xz10')
+    assert codec.sv_repr() == "4'bxz10"
+    assert sv_declaration(codec, 'data') == 'logic [3:0] data'
+    assert sv_declaration(codec, 'data', include_initializer=True) == "logic [3:0] data = 4'bxz10"
+    codec.value = '1010'
+    assert codec.sv_repr() == "4'b1010"
+    assert codec.to_sv_code(name='data') == "logic [3:0] data = 4'bxz10;"
+    assert sv_declaration(Logic[4](), 'data', include_initializer=True) == 'logic [3:0] data'
+
+
 def test_multidimensional_logic_shape_is_preserved_with_flat_bytes():
     shaped = Logic[(2, 4)]()
     flat = Logic[8]()
