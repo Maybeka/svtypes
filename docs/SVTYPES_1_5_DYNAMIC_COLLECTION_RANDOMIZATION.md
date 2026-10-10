@@ -9,8 +9,8 @@
 
 ```python
 class Packet(SvObject):
-    length = Bit(4)
-    data = DynArray(Bit(8), rand=True, max_length=64)
+    length = Bit[4]()
+    data = DynArray[Bit[8]](rand=True, max_length=64)
 
     @constraint
     def legal(self):
@@ -42,8 +42,22 @@ class Packet(SvObject):
 不会令原本未约束的空动态数组自行增长。
 
 动态数组和队列也可使用非负常量索引，例如 `self.data[0]`；它会原样生成对应的
-SV 下标表达式。调用者必须以尺寸约束或已有元素保证该位置存在。可变索引仍只接受
-`range(collection.size())` 的循环变量，保证 Python 与 SV 的 `foreach` 语义一致。
+SV 下标表达式。调用者必须以尺寸约束或已有元素保证该位置存在。循环索引支持基于
+`range(collection.size())` 循环变量的整数算术，例如 `data[i - 1]`、`data[i + 1]`、
+`data[i * 2 + 1]`；索引不能依赖随机字段或状态字段。数组尺寸确定后，Python 将
+算术索引展开为当前元素路径；生成 SV 保留算术索引，而不是把动态循环展开为常量。
+索引及约束表达式中的循环变量按 SV 的 signed 32-bit int 处理；定长循环展开的
+常量同样保留这个类型，并在对应整数域内折叠算术。不使用 Python 的负索引规则。
+调用者需通过条件保证索引有效，例如：
+
+```python
+for i in range(self.data.size()):
+    if i > 0:
+        self.data[i] == self.data[i - 1] + 1
+```
+
+展开时先化简已知的循环条件，不对已排除分支求值。定长数组循环也支持这类
+常量展开索引。该能力不代表支持任意随机值作为下标或任意对象图动态形状。
 
 ## unique 展开
 
@@ -62,7 +76,7 @@ SV 下标表达式。调用者必须以尺寸约束或已有元素保证该位�
 
 ```python
 class Lookup(SvObject):
-    table = AssocArray(Bit(8), Bit(16), rand=True)
+    table = AssocArray[Bit[8], Bit[16]](rand=True)
 
     @constraint
     def legal(self):
@@ -84,7 +98,7 @@ non-singular 容器，不能使用无参查询形式 `rand_mode()`。现存的�
 
 ```python
 class LayeredPacket(SvObject):
-    data = DynArray(Bit(8), rand=True, max_length=64)
+    data = DynArray[Bit[8]](rand=True, max_length=64)
 
     @rand_layer(10)
     def payload(self):
@@ -99,7 +113,7 @@ class LayeredPacket(SvObject):
 关闭；这个逐元素查询结果是唯一依据。随后分层入口开启容器整体 mode 以允许尺寸随机，并按
 逐元素快照恢复。容器整体 mode 本身不恢复。
 
-这同样适用于 `DynArray(Object(..., rand=True))` 与 `Queue(Object(..., rand=True))`。
+这同样适用于 `DynArray[Object["Child"](rand=True)]()` 与 `Queue[Object["Child"](rand=True)]()`。
 此时元素 mode 控制的是数组槽位中的 handle：关闭的非空 handle 不会把 referent 的随机
 变量、约束或 hooks 带入该批次；新增槽位为 active 的 null handle，因而不会分配对象。
 
@@ -118,3 +132,6 @@ class LayeredPacket(SvObject):
 - target：同一组 `size()` + `foreach` 源约束在动态数组与队列上各随机 32 次，并检查尺寸
   与每个元素；`unique {array}`、`unique {tag, data}` 与 `unique {queue}` 检查互异；分层随机
   回归还检查动态数组元素关闭、层内随机和恢复后的 mode。
+- 算术索引：Python 覆盖相邻引用、乘法与一元运算、空容器/单元素、复合条件，以及父对象
+  对子对象的联合求解；target 对生成的动态数组、队列、定长数组递推约束各随机 16 次，
+  检查完整结果为 `1..8`。

@@ -1,7 +1,11 @@
 # SvTypes 2.0 功能覆盖率路线图
 
-**状态：1.7 设计冻结完成；CoverageIR/自动 `cov` 基础切片已交付。** 本文件冻结 2.0 coverage
-声明的载体、语义和 IR 契约；完整运行时与 SV parity 按 §8 在后续里程碑交付。
+**状态：覆盖率声明、Python core、cross/SV renderer、数据库与 UCIS 子集均已实现；
+2.0 发布冻结仍按 §8 的验收门槛执行。** 本文件冻结 2.0 coverage 声明的载体、语义和 IR
+契约；§8 的编号表示原始工作阶段，不代表当前包版本号。配置 target 的明确 capability gate
+仍有效，不因其他回归通过而自动转为支持。当前实现复查见
+`SVTYPES_1_8_COVERAGE_IMPLEMENTATION_REVIEW.md` §18；性能及当前版本回归见
+`SVTYPES_RANDOMIZATION_BENCHMARKS.md`。
 
 **路线图的解读优先级：**本文首先规定方向性原则、公开可观测语义、身份/merge 边界和里程碑
 门槛；§5 中的声明片段说明这些契约应如何落到 DSL，但不是私有 parser、运行时对象布局或
@@ -27,17 +31,17 @@ covergroup**。`cov` 本身迁移为 §2 的默认覆盖组声明。后续扩展
 
 ## 2. 当前基线与迁移原则
 
-现有 `FieldOptions.cov` 控制自动字段覆盖；它目前只生成 SV nested covergroup，Python 没有
-采样器、coverage database、报告或 merge。2.0 **保留该便利 API**，但把它迁移为新 coverage
-声明编译器生成的默认覆盖组，而不是保留一个 SV-only collector。
+原 1.x 的 `FieldOptions.cov` 只生成 SV nested covergroup。当前实现已经将其迁移为新
+coverage 声明编译器生成的默认覆盖组，具有 Python 采样、数据库、报告和 merge 能力。
+2.0 **保留该便利 API**，不保留旧的 SV-only collector。
 
 - 每个具有有效 `cov=True` 字段的 `SvObject` 自动获得稳定声明名 `svtypes_auto_cov` 的默认
   covergroup；它与用户显式 `@covergroup` 并列，并同样进入 CoverageIR、Python runtime、数据库和
   SV renderer。`cov=False` 只排除该字段，不是错误，也不影响同类的显式覆盖组。
-- 标量 `Bit` / `Logic` / `Enum` 字段产生直接字段 covpoint；固定 `Array(T, N)` 自动产生 N 个
+- 标量 `Bit` / `Logic` / `Enum` 字段产生直接字段 covpoint；固定 `Array[T, N]()` 自动产生 N 个
   定长 slot point。`DynArray` / `Queue` 在未指定 `cov_slots` 时产生一个元素**值域** point：一次
   sample 将当前所有元素值送入同一 point；指定正整数 `cov_slots=N` 时改为前 N 个 slot point。
-  `max_length` 是编解码资源限制，绝不隐式充当 `cov_slots`。`AssocArray(K, V)` 产生 value-domain
+  `max_length` 是编解码资源限制，绝不隐式充当 `cov_slots`。`AssocArray[K, V]()` 产生 value-domain
   point，只采样当前 value；动态 key 既不成为 slot，也不隐式进入 coverage universe。
 - `cov_slots` 只允许作为 `DynArray` / `Queue` 的字段策略。需要 key 覆盖、key/value 关联、任意
   特定 key、非默认 bins、cross 或不同的容器语义时，用户必须使用显式 `@covergroup`；自动 `cov`
@@ -49,10 +53,10 @@ covergroup**。`cov` 本身迁移为 §2 的默认覆盖组声明。后续扩展
 
 ### 后续评审：`Object` 字段的自动覆盖策略
 
-`Object("Child")` 当前不接受 `cov` 参数，且不为对象句柄生成默认空值 coverpoint。被引用的
+`Object["Child"]()` 当前不接受 `cov` 参数，且不为对象句柄生成默认空值 coverpoint。被引用的
 `Child` 类型仍独立拥有其自身字段的默认 `svtypes_auto_cov`；采样父对象并不隐式递归采样子对象。
 
-后续可评审 `Object(..., cov: bool = True)`，但必须先冻结其精确语义：该选项是否仅控制对象句柄的
+后续可评审 `Object["Child"](cov=True)`，但必须先冻结其精确语义：该选项是否仅控制对象句柄的
 空值覆盖，或是否引入递归子对象采样。后者会改变 CoverageIR、Python evaluator、覆盖数据库分母、
 SystemVerilog 生成和 Python/SV 对拍契约，不能作为 GUI 或 catalog 的展示性改动实施。
 
@@ -818,7 +822,20 @@ ignore/illegal/`default`、以及 1.9 的 cross。比较以具名 bin hit 和 il
 3. Python/SV conformance：固定 sample 向量重放；
 4. Python/SV 编解码同步双侧采样（大量样本，比较 hit/coverage）；
 5. UCIS XML import/export/round-trip；
-6. 大 cross、长期 merge 和报告生成的性能与内存基准。
+6. 大 point（单值、范围、非连续及重叠 bins）、大 cross 的布局构建与采样，
+   长期 merge、数据库快照/序列化及 UCIS 导出的性能与内存基准。
+
+性能优化须保持完整命中集合、ignore/illegal 优先级、计分与实例隔离，不得通过
+漏报重叠 bins、忽略动态表达式或共享可变实例布局换取速度。索引的构建与常驻内存
+代价需和采样收益一起报告；性能记录见 `SVTYPES_RANDOMIZATION_BENCHMARKS.md`，
+已有局部改善及全量回归不自动代表 2.0 发布冻结已完成。
+
+随机性能专项的当前实现与验收以 `SVTYPES_1_3_RANDOMIZATION_FOUNDATION.md`
+§7 及上述性能记录为准：普通随机不再以确定性 witness 替代合法抽样，
+动态 size、randc 和 solve-before 保留各自的选择语义；大分布不因枚举阈值
+丢弃权重。Python 求解预算与 UNSAT/timeout/resource_limit/UNKNOWN 诊断
+属于运行时，不进入声明身份或生成 SV。该专项关闭不替代 2.0 RC 的
+完整 API/schema、文档/examples 和发布验收。
 
 ## 10. 后续验证计划
 

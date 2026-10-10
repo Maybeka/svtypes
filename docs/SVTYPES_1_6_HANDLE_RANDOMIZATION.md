@@ -23,14 +23,14 @@
 
 ```python
 class Parent(SvObject):
-    child = Object("Child", rand=True)
+    child = Object["Child"](rand=True)
 ```
 
-- `rand` 默认为 `False`，因此既有 `Object("Child")` 的序列化、访问和普通状态语义不变。
+- `rand` 默认为 `False`，因此既有 `Object["Child"]()` 的序列化、访问和普通状态语义不变。
 - 生成 SystemVerilog 时，上例为 `rand Child child;`；默认形式为 `Child child;`。
 - `rand=True` 只表示沿非空、已分配的 handle 递归随机化，绝不选择、替换或分配 handle。
 
-`DynArray(Object("Child", rand=True))` 与 `Queue(Object("Child", rand=True))` 是随机
+`DynArray[Object["Child"](rand=True)]()` 与 `Queue[Object["Child"](rand=True)]()` 是随机
 handle 容器，能够在 `size()` 约束下调整长度。调整时保留原编号处的 handle；扩容新增的
 槽位是 `None`（SystemVerilog 的 `null`），不会构造 `Child`。保留的非空对象继续与父对象
 联合求解；新增 null 槽位无需随机化。若未约束尺寸，容器长度保持不变。
@@ -58,7 +58,7 @@ path 为前缀；父对象约束中对 handle 成员的引用也解析到同一�
 
 ## 不在范围内
 
-- 不随机 handle/null/拓扑，不自动 new 对象；`Object(..., rand=True)` 只表示递归随机化，
+- 不随机 handle/null/拓扑，不自动 new 对象；`Object["Child"](rand=True)` 只表示递归随机化，
   不表示随机选择或分配 handle。
 - 容器遍历只跟随已有的非空 handle；动态数组和队列仅可由 `size()` 约束调整长度，且不会
   创建对象；关联数组不会创建或删除键。

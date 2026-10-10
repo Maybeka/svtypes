@@ -16,6 +16,8 @@ from dataclasses import asdict, dataclass
 from time import perf_counter
 from typing import Callable
 
+import z3
+
 from svtypes import (
     Bit,
     DynArray,
@@ -34,9 +36,9 @@ handle_pkg = get_package("benchmark_randomization_handles")
 
 
 class ScalarPacket(SvObject):
-    kind = Bit(4)
-    length = Bit(8)
-    payload = Bit(8)
+    kind = Bit[4]()
+    length = Bit[8]()
+    payload = Bit[8]()
 
     @constraint
     def legal(self):
@@ -46,7 +48,7 @@ class ScalarPacket(SvObject):
 
 
 class DistributionPacket(SvObject):
-    choice = Bit(4)
+    choice = Bit[4]()
 
     @constraint
     def legal(self):
@@ -54,7 +56,7 @@ class DistributionPacket(SvObject):
 
 
 class LargeDistributionPacket(SvObject):
-    choice = Bit(32)
+    choice = Bit[32]()
 
     @constraint
     def legal(self):
@@ -65,8 +67,8 @@ class LargeDistributionPacket(SvObject):
 
 
 class WideOrderedPacket(SvObject):
-    first = Bit(13)
-    second = Bit(13)
+    first = Bit[13]()
+    second = Bit[13]()
 
     @constraint
     def legal(self):
@@ -75,8 +77,8 @@ class WideOrderedPacket(SvObject):
 
 
 class DynamicPacket(SvObject):
-    length = Bit(4)
-    data = DynArray(Bit(8), rand=True, max_length=16)
+    length = Bit[4]()
+    data = DynArray[Bit[8]](rand=True, max_length=16)
 
     @constraint
     def legal(self):
@@ -88,7 +90,7 @@ class DynamicPacket(SvObject):
 
 @svobj(registry=handle_pkg)
 class HandleChild(SvObject):
-    data = Bit(8)
+    data = Bit[8]()
 
     @constraint
     def legal(self):
@@ -97,8 +99,8 @@ class HandleChild(SvObject):
 
 @svobj(registry=handle_pkg)
 class HandleParent(SvObject):
-    child = Object("HandleChild", registry=handle_pkg, rand=True)
-    parent_data = Bit(8)
+    child = Object["HandleChild"](registry=handle_pkg, rand=True)
+    parent_data = Bit[8]()
 
     @constraint
     def legal(self):
@@ -107,7 +109,7 @@ class HandleParent(SvObject):
 
 @svobj(registry=handle_pkg)
 class ContainerHandleParent(SvObject):
-    children = DynArray(Object("HandleChild", registry=handle_pkg, rand=True))
+    children = DynArray[Object["HandleChild"](registry=handle_pkg, rand=True)]()
 
 
 @dataclass(frozen=True)
@@ -174,7 +176,9 @@ def main() -> int:
         print(json.dumps({
             "format": "svtypes.randomization-benchmark.v1",
             "python": sys.version.split()[0],
+            "z3": z3.get_version_string(),
             "platform": platform.platform(),
+            "parameters": {"calls": args.calls, "warmup": args.warmup, "seed": 0x5A17},
             "results": [asdict(result) for result in results],
         }, indent=2, sort_keys=True))
         return 0
