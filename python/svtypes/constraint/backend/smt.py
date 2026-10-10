@@ -6,6 +6,7 @@ from typing import Any
 
 from ...errors import ConstraintBackendError
 from ..ir import Expr
+from ..budget import check
 from .model import SolveRequest, SolveResult
 
 
@@ -19,7 +20,7 @@ def _z3():
     return z3
 
 
-def _build_solver(request: SolveRequest) -> tuple[Any, Any, dict[str, Any], dict[str, int]]:
+def _build_solver(request: SolveRequest, accepted_soft: list | None = None) -> tuple[Any, Any, dict[str, Any], dict[str, int]]:
     z3 = _z3()
     solver = z3.Solver()
     terms: dict[str, Any] = {}
@@ -47,7 +48,9 @@ def _build_solver(request: SolveRequest) -> tuple[Any, Any, dict[str, Any], dict
         solver.push()
         solver.add(value)
         solver.add(z3.Not(undef))
-        if solver.check() == z3.sat:
+        if check(solver, z3) == z3.sat:
+            if accepted_soft is not None:
+                accepted_soft.append(soft)
             solver.pop()
             solver.add(value)
             solver.add(z3.Not(undef))
@@ -56,12 +59,31 @@ def _build_solver(request: SolveRequest) -> tuple[Any, Any, dict[str, Any], dict
     return z3, solver, terms, widths
 
 
+def freeze_soft(request: SolveRequest) -> SolveRequest:
+    """Resolve priorities before sampling adds any candidate assumptions."""
+    if not request.soft_constraints:
+        return request
+    from dataclasses import replace
+    accepted = []
+    _build_solver(request, accepted)
+    return replace(request, assumptions=(*request.assumptions, *accepted), soft_constraints=())
+
+
+def witness(request: SolveRequest) -> SolveResult:
+    """Prove feasibility without spending checks minimizing a proof witness."""
+    z3, solver, terms, _ = _build_solver(request)
+    if check(solver, z3) != z3.sat:
+        return SolveResult.unsat()
+    model = solver.model()
+    return SolveResult.sat({p: _as_long(model, terms[p]) for p in request.random_paths if p in terms})
+
+
 def solve(request: SolveRequest) -> SolveResult:
     """Return the deterministic minimum model for a normalized request."""
 
     z3, solver, terms, _widths = _build_solver(request)
     constrained = [path for path in request.random_paths if path in terms]
-    if solver.check() != z3.sat:
+    if check(solver, z3) != z3.sat:
         return SolveResult.unsat()
     if not constrained:
         model = solver.model()
@@ -76,121 +98,17 @@ def solve(request: SolveRequest) -> SolveResult:
         bit = z3.Extract(bit_index, bit_index, concat)
         solver.push()
         solver.add(bit == 0)
-        if solver.check() == z3.sat:
+        if check(solver, z3) == z3.sat:
             solver.pop()
             solver.add(bit == 0)
         else:
             solver.pop()
             solver.add(bit == 1)
-    if solver.check() != z3.sat:
+    if check(solver, z3) != z3.sat:
         raise ConstraintBackendError("minimum model search lost a previously SAT assignment")
     model = solver.model()
     return SolveResult.sat(
         {path: _as_long(model, terms[path]) for path in request.random_paths if path in terms}
-    )
-
-
-def solve_ordered(
-    request: SolveRequest,
-    order: tuple[str, ...],
-    choose: Any,
-    *,
-    max_values: int = 4096,
-) -> SolveResult | None:
-    """Choose ordered domains before obtaining the remaining model.
-
-    Small feasible domains are enumerated and selected exactly.  For a larger
-    domain, choose satisfiable bits of the ordered term in random stream order
-    instead of abandoning solve-order semantics for a deterministic minimum
-    model.  The large-domain policy is deliberately a selection-order policy,
-    not a claim of uniform model counting.
-    """
-
-    z3, solver, terms, _widths = _build_solver(request)
-    if solver.check() != z3.sat:
-        return SolveResult.unsat()
-    for path in order:
-        term = terms.get(path)
-        if term is None:
-            return None
-        # A packed domain wider than 12 bits necessarily has more than 4096
-        # representable values.  Start the scalable policy immediately rather
-        # than spending thousands of solver calls proving that fact.  Narrow
-        # terms still receive exact feasible-value enumeration below.
-        if term.size() > max_values.bit_length() - 1:
-            selected = _random_feasible_value(z3, solver, term, choose)
-            solver.add(term == z3.BitVecVal(selected, term.size()))
-            if solver.check() != z3.sat:
-                raise ConstraintBackendError("ordered solve selected an infeasible value")
-            continue
-        solver.push()
-        options: list[int] = []
-        while solver.check() == z3.sat:
-            model = solver.model()
-            value = _as_long(model, term)
-            options.append(value)
-            if len(options) > max_values:
-                solver.pop()
-                selected = _random_feasible_value(z3, solver, term, choose)
-                solver.add(term == z3.BitVecVal(selected, term.size()))
-                break
-            solver.add(term != z3.BitVecVal(value, term.size()))
-        else:
-            solver.pop()
-            selected = options[choose(len(options))]
-            solver.add(term == z3.BitVecVal(selected, term.size()))
-        if solver.check() != z3.sat:
-            raise ConstraintBackendError("ordered solve selected an infeasible value")
-    return _minimum_result(z3, solver, terms, request.random_paths)
-
-
-def _random_feasible_value(z3: Any, solver: Any, term: Any, choose: Any) -> int:
-    """Commit random satisfiable bits of one term without domain enumeration."""
-
-    for bit_index in range(term.size() - 1, -1, -1):
-        bit = z3.Extract(bit_index, bit_index, term)
-        wanted = choose(2)
-        solver.push()
-        solver.add(bit == wanted)
-        if solver.check() == z3.sat:
-            solver.pop()
-            solver.add(bit == wanted)
-            continue
-        solver.pop()
-        solver.add(bit == 1 - wanted)
-    if solver.check() != z3.sat:
-        raise ConstraintBackendError("random ordered model selection lost satisfiability")
-    return _as_long(solver.model(), term)
-
-
-def _minimum_result(z3: Any, solver: Any, terms: dict[str, Any], random_paths: tuple[str, ...]) -> SolveResult:
-    constrained = [path for path in random_paths if path in terms]
-    if solver.check() != z3.sat:
-        return SolveResult.unsat()
-    if not constrained:
-        model = solver.model()
-        return SolveResult.sat(
-            {path: _as_long(model, terms[path]) for path in random_paths if path in terms}
-        )
-    concat = terms[constrained[0]]
-    for path in constrained[1:]:
-        concat = z3.Concat(concat, terms[path])
-    width = concat.size()
-    for bit_index in range(width - 1, -1, -1):
-        bit = z3.Extract(bit_index, bit_index, concat)
-        solver.push()
-        solver.add(bit == 0)
-        if solver.check() == z3.sat:
-            solver.pop()
-            solver.add(bit == 0)
-        else:
-            solver.pop()
-            solver.add(bit == 1)
-    if solver.check() != z3.sat:
-        raise ConstraintBackendError("minimum model search lost a previously SAT assignment")
-    model = solver.model()
-    return SolveResult.sat(
-        {path: _as_long(model, terms[path]) for path in random_paths if path in terms}
     )
 
 
@@ -297,7 +215,7 @@ def _encode(z3: Any, expr: Expr, terms: dict[str, Any], widths: dict[str, int]) 
     width = expr.ty.width or max(getattr(left, "size", lambda: 1)(), getattr(right, "size", lambda: 1)())
     if expr.ty.is_bool:
         width = max(_bv_size(left), _bv_size(right))
-    signed = expr.ty.signed if not expr.ty.is_bool else False
+    signed = expr.ty.signed if not expr.ty.is_bool else (expr.args[0].ty.signed and expr.args[1].ty.signed)
     left = _cast_bv(z3, left, _bv_size(left), width, signed)
     right = _cast_bv(z3, right, _bv_size(right), width, signed)
     undef = z3.Or(lu, ru)

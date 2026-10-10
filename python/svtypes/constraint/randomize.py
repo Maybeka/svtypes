@@ -6,12 +6,14 @@ import copy
 from dataclasses import dataclass, replace
 from types import FunctionType
 from typing import Any, Callable
+from weakref import WeakKeyDictionary
 
 from ..collection import Array, AssocArray, DynArray, Queue
 from ..errors import ConstraintBackendError, ConstraintError, DeclarationError
 from ..logic import Logic
 from .analyze import compile_block
-from .eval import eval_bool, eval_dist_weight, eval_expr
+from .budget import SolveFailure, poll, solving
+from .eval import _constant_condition, eval_bool, eval_dist_weight, eval_expr
 from .frontend import parse_constraint_function
 from .ir import BOOL, ConstraintIR, Expr, IRStmt, VarDecl, bv, c_bool, c_field, c_int
 from .leaves import (
@@ -30,11 +32,14 @@ from .sample import (
     BitStream,
     LayeredRandomizeStatus,
     RandomizeStatus,
+    accept_distributions as _accept_distributions,
     current_context,
     sample_unconstrained,
 )
 
-_inline_cache: dict[tuple[int, type], ConstraintIR] = {}
+# Function IDs can be reused after temporary inline functions are collected.
+# Keep the cache attached to the function's lifetime, without retaining it.
+_inline_cache: WeakKeyDictionary[FunctionType, dict[type, ConstraintIR]] = WeakKeyDictionary()
 
 
 @dataclass
@@ -106,7 +111,7 @@ def _prefix_ir(ir: ConstraintIR, prefix: str) -> ConstraintIR:
                 new = arg
             args.append(new)
             changed = changed or new is not arg
-        if value.op == "field":
+        if value.op in {"field", "indexed_field"}:
             args[0] = _with_prefix(prefix, str(args[0]))
             changed = True
         elif value.op == "size":
@@ -174,7 +179,7 @@ def _remap_graph_ir(ir: ConstraintIR, aliases: dict[str, str]) -> ConstraintIR:
                 new = arg
             args.append(new)
             changed = changed or new is not arg
-        if value.op == "field":
+        if value.op in {"field", "indexed_field"}:
             args[0] = canonical(str(args[0]))
             changed = changed or args[0] != value.args[0]
         elif value.op == "size":
@@ -315,7 +320,11 @@ def _snapshot_collection_elements(collection: Any) -> list[Any]:
 
     if isinstance(collection._elem_template, ObjectDescriptor):
         return list(collection._elements)
-    return copy.deepcopy(collection._elements)
+    root = getattr(collection, "_svtypes_mode_root", None)
+    # Bound leaves refer back to their mode owner. It is not snapshot data:
+    # copying it allocates and registers another complete host on every call.
+    memo = {id(root): root} if root is not None else {}
+    return copy.deepcopy(collection._elements, memo)
 
 
 def _restore_collection_elements(collection: Any, elements: list[Any]) -> None:
@@ -323,10 +332,12 @@ def _restore_collection_elements(collection: Any, elements: list[Any]) -> None:
 
     from ..object import ObjectDescriptor
 
+    root = getattr(collection, "_svtypes_mode_root", None)
+    memo = {id(root): root} if root is not None else {}
     collection._elements = (
         list(elements)
         if isinstance(collection._elem_template, ObjectDescriptor)
-        else copy.deepcopy(elements)
+        else copy.deepcopy(elements, memo)
     )
     collection._bind_mode_elements()
 
@@ -466,7 +477,15 @@ def randomize_object(obj: Any, extra: ConstraintIR | None = None) -> bool:
         detached._SvObject__svtypes_layered_randomize_priority = obj._SvObject__svtypes_layered_randomize_priority
         solve_obj, solve_graph = detached, _collect_random_graph(detached, cls, extra)
     try:
-        ok = _solve(solve_obj, cls, stream, extra, graph=solve_graph)
+        with solving(ctx.solve_timeout_ms, ctx.solve_check_limit):
+            poll("solve_setup")
+            ok = _solve(solve_obj, cls, stream, extra, graph=solve_graph)
+    except SolveFailure as exc:
+        solve_obj._SvObject__svtypes_randomize_status = RandomizeStatus(
+            False, exc.reason, active_constraints=_constraint_names(solve_graph.irs),
+            failure_phase=exc.phase, backend_reason=exc.backend_reason,
+        )
+        ok = False
     except ConstraintBackendError:
         raise
     except ConstraintError:
@@ -489,12 +508,15 @@ def randomize_object_with(obj: Any, fn: Callable[..., Any]) -> bool:
     if not isinstance(fn, FunctionType):
         raise ConstraintError("randomize_with() requires a Python function")
     cls = _require_actual(obj)
-    key = (id(fn), cls)
-    ir = _inline_cache.get(key)
+    by_class = _inline_cache.get(fn)
+    ir = None if by_class is None else by_class.get(cls)
     if ir is None:
         decl = parse_constraint_function(fn)
         ir = compile_block(cls, decl)
-        _inline_cache[key] = ir
+        if by_class is None:
+            by_class = {}
+            _inline_cache[fn] = by_class
+        by_class[cls] = ir
     return randomize_object(obj, extra=ir)
 
 
@@ -774,7 +796,9 @@ def _solve(
         best_soft_score: tuple[bool, ...] | None = None
         solve_order = _solve_before_order(enabled, constrained)
         exact_ordered = bool(solve_order) and not randc_seen and not _irs_contain_dist(enabled)
-        for _ in range(0 if exact_ordered else 32):
+        ordered_sampling = bool(solve_order) or any(path in randc_seen for path, _ in constrained)
+        for _ in range(0 if ordered_sampling else 32):
+            poll()
             candidate: dict[str, Any] = {}
             local = dict(env)
             for path, desc in constrained:
@@ -807,7 +831,9 @@ def _solve(
             chosen = None
         if chosen is None:
             from .backend.model import SolveRequest
-            from .backend.smt import solve, solve_ordered
+            from .backend.smt import freeze_soft, witness
+            solve = witness
+            from .backend.sampling import sample
 
             request = SolveRequest(
                 irs=tuple(enabled),
@@ -816,13 +842,17 @@ def _solve(
                 var_index=var_index,
                 assumptions=_randc_remaining_assumptions(var_index, randc_seen),
                 soft_constraints=soft_constraints,
+                selection_order=tuple(dict.fromkeys((*[path for path, _ in constrained if path in randc_seen], *solve_order))),
+                selection_groups=tuple((path,) for path, _ in constrained if path in randc_seen) + _solve_before_groups(enabled, constrained),
             )
+            request = freeze_soft(request)
+            feasibility = witness(request)
             ordered_result = (
-                solve_ordered(request, solve_order, lambda count: _draw_index(stream, count))
-                if exact_ordered else None
+                sample(request, stream)
+                if exact_ordered and feasibility.is_sat else None
             )
-            result = ordered_result if ordered_result is not None else (
-                _solve_finite_dist(request, enabled, env, widths, stream, solve) or solve(request)
+            result = feasibility if not feasibility.is_sat else ordered_result if ordered_result is not None else (
+                _solve_finite_dist(request, enabled, env, widths, stream, solve) or sample(request, stream)
             )
             if not result.is_sat and randc_seen:
                 # The cycle has no remaining legal value.  Start a fresh
@@ -833,10 +863,13 @@ def _solve(
                     state=state_values,
                     var_index=var_index,
                     soft_constraints=soft_constraints,
+                    selection_order=request.selection_order,
+                    selection_groups=request.selection_groups,
                 )
+                reset_request = freeze_soft(reset_request)
                 reset_result = _solve_finite_dist(
                     reset_request, enabled, env, widths, stream, solve
-                ) or solve(reset_request)
+                ) or sample(reset_request, stream)
                 if reset_result.is_sat:
                     for seen in randc_seen.values():
                         seen.clear()
@@ -849,6 +882,7 @@ def _solve(
             for path, desc in constrained:
                 chosen[path] = _value_from_bits(desc, result.assignments[path])
 
+    poll("publish")
     try:
         for path, value in assignments.items():
             resolve_attr(obj, path).value = value
@@ -880,7 +914,7 @@ def _solve_dynamic_collections(
     """
 
     from .backend.model import SolveRequest
-    from .backend.smt import solve
+    from .backend.smt import witness as solve
 
     all_leaves = list(graph.leaves) if graph is not None else list(iter_class_leaves(cls))
     all_vars = [
@@ -955,12 +989,13 @@ def _solve_dynamic_collections(
                 assumptions=tuple(assumptions),
                 soft_constraints=_ordered_soft_constraints(size_irs),
             )
-            candidates = _enumerate_dynamic_size_models(solve, request, active_sizes, stream)
+            candidates, exhaustive_sizes = _enumerate_dynamic_size_models(solve, request, active_sizes, stream)
             if not candidates:
                 obj._SvObject__svtypes_randomize_status = _unsat_status(enabled)
                 return False
 
         while candidates:
+            poll("dynamic_collections")
             index = _draw_index(stream, len(candidates))
             chosen = candidates.pop(index)
             for path, collection in active_sizes:
@@ -971,25 +1006,27 @@ def _solve_dynamic_collections(
             expanded = [_expand_dynamic_ir(obj, ir, leaves=leaves) for ir in enabled]
             if _solve(obj, cls, stream, None, expanded, graph=graph):
                 return True
-            restore_leaves(obj, static_snapshot)
             for key, elements in collection_snapshot.items():
                 _restore_collection_elements(
                     resolve_attr(obj, key.removeprefix("@size:")), elements
                 )
+            restore_leaves(obj, static_snapshot)
             if graph is not None:
                 _refresh_graph_leaves(graph)
 
         # The last expanded element solve already recorded its active set.
         # If no candidate reached that solve, retain the outer constraint set.
+        if active_sizes and not exhaustive_sizes:
+            raise SolveFailure("resource_limit", "dynamic_size_sampling", "size proposal limit exhausted without a complete infeasibility proof")
         if obj._SvObject__svtypes_randomize_status is None:
             obj._SvObject__svtypes_randomize_status = _unsat_status(enabled)
         return False
     except Exception:
-        restore_leaves(obj, static_snapshot)
         for key, elements in collection_snapshot.items():
             _restore_collection_elements(
                 resolve_attr(obj, key.removeprefix("@size:")), elements
             )
+        restore_leaves(obj, static_snapshot)
         if graph is not None:
             _refresh_graph_leaves(graph)
         raise
@@ -1032,7 +1069,7 @@ def _dynamic_size_ir(
     def has_runtime_element(value: Expr | None) -> bool:
         if value is None:
             return False
-        if value.op == "field" and is_runtime_element_path(str(value.args[0])):
+        if value.op in {"field", "indexed_field"} and is_runtime_element_path(str(value.args[0])):
             return True
         return any(
             has_runtime_element(arg)
@@ -1107,6 +1144,8 @@ def _expand_dynamic_ir(
             return c_int(resolve_attr(obj, str(value.args[0])).size(), value.loc)
         if value.op == "loopvar" and loop == str(value.args[0]):
             assert index is not None
+            if value.ty.width >= 32:
+                return Expr("int", (index,), value.ty, value.loc)
             return c_int(index, value.loc)
         args: list[Any] = []
         changed = False
@@ -1123,6 +1162,19 @@ def _expand_dynamic_ir(
                 new = arg
             args.append(new)
             changed = changed or new is not arg
+        if value.op == "indexed_field":
+            path = str(args[0])
+            for position, index_expr in enumerate(args[1:]):
+                resolved = eval_expr(index_expr, {}, {})
+                number = resolved.bits
+                if resolved.ty.signed and number & (1 << (resolved.ty.width - 1)):
+                    number -= 1 << resolved.ty.width
+                if resolved.undef or number < 0:
+                    raise ConstraintError(f"{value.loc.format()}: invalid computed array index {number}")
+                path = path.replace(f"[?{position}]", f"[{number}]")
+            value = c_field(path, value.ty, value.loc)
+            args = [path]
+            changed = True
         if value.op == "field" and loop is not None:
             path = str(args[0])
             if assoc_array is not None:
@@ -1144,6 +1196,7 @@ def _expand_dynamic_ir(
             if isinstance(collection, (DynArray, Queue)):
                 out: list[IRStmt] = []
                 for item_index in range(collection.size()):
+                    poll("dynamic_expansion")
                     for child in stmt.then_body:
                         out.extend(statement(child, stmt.var, item_index))
                 return out
@@ -1152,9 +1205,16 @@ def _expand_dynamic_ir(
             if isinstance(collection, AssocArray):
                 out: list[IRStmt] = []
                 for key in collection._elements:
+                    poll("dynamic_expansion")
                     for child in stmt.then_body:
                         out.extend(statement(child, stmt.var, key, stmt.array))
                 return out
+        if stmt.kind == "if" and stmt.cond is not None:
+            condition = expr(stmt.cond, loop, index, assoc_array)
+            decision = _constant_condition(condition)
+            if decision is not None:
+                branch = stmt.then_body if decision else stmt.else_body
+                return [item for child in branch for item in statement(child, loop, index, assoc_array)]
         return [IRStmt(
             kind=stmt.kind,
             expr=expr(stmt.expr, loop, index, assoc_array) if stmt.expr is not None else None,
@@ -1358,63 +1418,18 @@ def _enumerate_dynamic_size_models(
     request: Any,
     active_sizes: list[tuple[str, Any]],
     stream: BitStream,
-) -> list[dict[str, int]]:
-    """Return size witnesses, exhaustively for a bounded product domain."""
-
-    domain_size = 1
-    for _path, collection in active_sizes:
-        domain_size *= collection._max_length + 1
-    if domain_size <= 4096:
-        models: list[dict[str, int]] = []
-        assumptions = list(request.assumptions)
-        while True:
-            result = solve(replace(request, assumptions=tuple(assumptions)))
-            if not result.is_sat:
-                return models
-            model = dict(result.assignments)
-            models.append(model)
-            alternatives = [
-                Expr(
-                    "ne",
-                    (Expr("size", (path.removeprefix("@size:"), path), bv(32, False)), c_int(model[path])),
-                    BOOL,
-                )
-                for path, _collection in active_sizes
-            ]
-            blocker = alternatives[0]
-            for alternative in alternatives[1:]:
-                blocker = Expr("lor", (blocker, alternative), BOOL)
-            assumptions.append(blocker)
-
-    # An unbounded expansion is not a safe solver strategy.  Try the
-    # deterministic model plus randomized bounded probes; callers still use
-    # the fully expanded solver to validate each selected size.
-    probes: list[dict[str, int]] = []
-    attempted: set[tuple[int, ...]] = set()
-    for attempt in range(33):
-        assumptions = list(request.assumptions)
-        if attempt:
-            values = tuple(
-                stream.draw_bits(32) % (collection._max_length + 1)
-                for _path, collection in active_sizes
-            )
-            if values in attempted:
-                continue
-            attempted.add(values)
-            for (path, _collection), value in zip(active_sizes, values):
-                assumptions.append(Expr(
-                    "eq",
-                    (Expr("size", (path.removeprefix("@size:"), path), bv(32, False)), c_int(value)),
-                    BOOL,
-                ))
-        result = solve(replace(request, assumptions=tuple(assumptions)))
-        if result.is_sat:
-            model = dict(result.assignments)
-            if tuple(model[path] for path, _ in active_sizes) not in {
-                tuple(item[path] for path, _ in active_sizes) for item in probes
-            }:
-                probes.append(model)
-    return probes
+) -> tuple[list[dict[str, int]], bool]:
+    """Uniform size projections, never a privileged minimum-size proposal."""
+    from .backend.sampling import enumerate_models, sample
+    from .backend.smt import freeze_soft
+    request = freeze_soft(request)
+    models = enumerate_models(request, limit=4096)
+    if models is not None:
+        return [dict(result.assignments) for result in models], True
+    # Independent identically distributed proposals retain their multiplicity;
+    # deduplicating them would change a non-uniform distribution in the future.
+    probes = [dict(sample(request, stream).assignments) for _ in range(32)]
+    return probes, False
 
 
 def _active_dist_exprs(
@@ -1438,28 +1453,21 @@ def _active_dist_exprs(
     return out
 
 
-def _accept_distributions(
-    exprs: list[Any],
-    env: dict[str, int],
-    widths: dict[str, tuple[int, bool]],
-    stream: BitStream,
-) -> bool:
-    """Apply `dist` weights with exact, bounded rejection sampling."""
-
-    numerator = 1
-    denominator = 1
-    for expr in exprs:
-        selected, bound, undef = eval_dist_weight(expr, env, widths)
-        if undef or selected <= 0 or bound <= 0:
-            return False
-        numerator *= selected.numerator * bound.denominator
-        denominator *= selected.denominator * bound.numerator
-    if numerator >= denominator:
-        return True
-    return stream.draw_bits(64) * denominator < numerator * (1 << 64)
+def _solve_finite_dist(request, irs, env, widths, stream, solve):
+    if not _irs_contain_dist(irs):
+        return None
+    if request.selection_order:
+        from .backend.sampling import sample
+        def accept(assignments, excluded):
+            local = dict(env)
+            local.update(assignments)
+            return _accept_distributions([expr for expr in _active_dist_exprs(irs, local, widths) if id(expr) not in excluded], local, widths, stream)
+        return sample(request, stream, accept=accept)
+    result = _try_solve_finite_dist(request, irs, env, widths, stream, solve)
+    return result if result is not None else _solve_enumerated_dist(request, irs, env, widths, stream, solve)
 
 
-def _solve_finite_dist(
+def _try_solve_finite_dist(
     request: Any,
     irs: list[ConstraintIR],
     env: dict[str, int],
@@ -1534,7 +1542,8 @@ def _solve_finite_dist(
             for value, weight in options.items()
         ]
     for weight, assumptions in choices:
-        result = solve(replace(request, assumptions=(*request.assumptions, *assumptions)))
+        from .backend.sampling import sample
+        result = sample(replace(request, assumptions=(*request.assumptions, *assumptions)), stream)
         if result.is_sat:
             key = tuple(sorted(result.assignments.items()))
             previous = model_weights.get(key)
@@ -1550,12 +1559,7 @@ def _solve_finite_dist(
         denominator = lcm(denominator, weight.denominator)
     integer_weights = [(int(weight * denominator), result) for weight, result in models]
     total = sum(weight for weight, _ in integer_weights)
-    draw_limit = ((1 << 64) // total) * total
-    while True:
-        draw = stream.draw_bits(64)
-        if draw < draw_limit:
-            break
-    pick = draw % total
+    pick = stream._draw_weighted_index(total)
     for weight, result in integer_weights:
         if pick < weight:
             return result
@@ -1605,6 +1609,7 @@ def _solve_sampled_direct_dist(
     """
 
     for _ in range(4096):
+        poll("distribution_sampling")
         assumptions = _sample_direct_dist_assumptions(
             dist_exprs, env, widths, set(request.random_paths), stream
         )
@@ -1612,7 +1617,8 @@ def _solve_sampled_direct_dist(
             return None
         result = solve(replace(request, assumptions=(*request.assumptions, *assumptions)))
         if result.is_sat:
-            return result
+            from .backend.sampling import sample
+            return sample(replace(request, assumptions=(*request.assumptions, *assumptions)), stream)
     return None
 
 
@@ -1700,24 +1706,26 @@ def _solve_enumerated_dist(
     weight is the product of selected/total weights for the distributions
     active in that model's branch.  This preserves branch-local normalization
     (unlike multiplying raw item weights when a branch has a different total).
-    Returning ``None`` retains the established general-SMT fallback once more
-    than 4096 models would be required.
+    Above the enumeration strategy threshold, continue with uniform feasible
+    proposals and branch-normalized weight rejection; never discard weights.
     """
     from fractions import Fraction
     from math import lcm
 
     if not request.random_paths:
         return None
-    assumptions = list(request.assumptions)
+    from .backend.sampling import enumerate_models, sample
+    # Probe sparse feasible spaces first. A wide enclosing space may switch
+    # before 4096; this is a strategy choice, never a distribution cutoff.
+    results = enumerate_models(request, limit=128)
+    if results is None:
+        def accept(assignments, excluded):
+            local = dict(env)
+            local.update(assignments)
+            return _accept_distributions([expr for expr in _active_dist_exprs(irs, local, widths) if id(expr) not in excluded], local, widths, stream)
+        return sample(request, stream, accept=accept)
     models: list[tuple[Fraction, Any]] = []
-    attempted = 0
-    while True:
-        result = solve(replace(request, assumptions=tuple(assumptions)))
-        if not result.is_sat:
-            break
-        attempted += 1
-        if attempted > 4096:
-            return None
+    for result in results:
         local = dict(env)
         local.update(result.assignments)
         weight = Fraction(1)
@@ -1729,27 +1737,9 @@ def _solve_enumerated_dist(
             weight *= selected / bound
         if weight > 0:
             models.append((weight, result))
-        alternatives: list[Expr] = []
-        for path in request.random_paths:
-            decl = request.var_index.get(path)
-            if decl is None or path not in result.assignments:
-                return None
-            alternatives.append(
-                Expr(
-                    "ne",
-                    (
-                        Expr("field", (path,), bv(decl.width, decl.signed)),
-                        c_int(result.assignments[path]),
-                    ),
-                    BOOL,
-                )
-            )
-        blocker = alternatives[0]
-        for alternative in alternatives[1:]:
-            blocker = Expr("lor", (blocker, alternative), BOOL)
-        assumptions.append(blocker)
     if not models:
-        return None
+        from .backend.model import SolveResult
+        return SolveResult.unsat()
     denominator = 1
     for weight, _result in models:
         denominator = lcm(denominator, weight.denominator)
@@ -1757,12 +1747,7 @@ def _solve_enumerated_dist(
     total = sum(weight for weight, _result in weighted)
     if total <= 0:
         return None
-    limit = ((1 << 64) // total) * total
-    while True:
-        draw = stream.draw_bits(64)
-        if draw < limit:
-            break
-    pick = draw % total
+    pick = stream._draw_weighted_index(total)
     for weight, result in weighted:
         if pick < weight:
             return result
@@ -1949,16 +1934,27 @@ def _order_constrained_paths(
 
 
 def _solve_before_order(irs: list[ConstraintIR], constrained: list[tuple[str, Any]]) -> tuple[str, ...]:
-    involved = {
-        path
-        for ir in irs
-        for before, after in ir.solve_before
-        for path in (*before, *after)
-    }
-    if not involved:
-        return ()
-    selected = [(path, desc) for path, desc in constrained if path in involved]
-    return tuple(path for path, _ in _order_constrained_paths(selected, irs))
+    return tuple(path for group in _solve_before_groups(irs, constrained) for path in group)
+
+
+def _solve_before_groups(irs, constrained):
+    paths = [path for path, _ in constrained]
+    present = set(paths)
+    successors = {path: set() for path in paths}
+    for ir in irs:
+        for before, after in ir.solve_before:
+            for left in before:
+                if left in present:
+                    successors[left].update(right for right in after if right in present)
+    pending = {path for path in paths if successors[path]}
+    groups = []
+    while pending:
+        group = tuple(path for path in paths if path in pending and not any(path in successors[other] for other in pending))
+        if not group:
+            raise ConstraintError("solve_before constraints contain a cycle")
+        groups.append(group)
+        pending.difference_update(group)
+    return tuple(groups)
 
 
 def _irs_contain_dist(irs: list[ConstraintIR]) -> bool:

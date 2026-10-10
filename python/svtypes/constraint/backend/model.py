@@ -23,6 +23,8 @@ class SolveRequest:
     var_index: Mapping[str, VarDecl]
     assumptions: tuple[Expr, ...] = ()
     soft_constraints: tuple[Expr, ...] = ()
+    selection_order: tuple[str, ...] = ()
+    selection_groups: tuple[tuple[str, ...], ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "irs", tuple(self.irs))
@@ -31,6 +33,8 @@ class SolveRequest:
         object.__setattr__(self, "var_index", MappingProxyType(dict(self.var_index)))
         object.__setattr__(self, "assumptions", tuple(self.assumptions))
         object.__setattr__(self, "soft_constraints", tuple(self.soft_constraints))
+        object.__setattr__(self, "selection_order", tuple(self.selection_order))
+        object.__setattr__(self, "selection_groups", tuple(tuple(group) for group in self.selection_groups))
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,8 +42,16 @@ class SolveResult:
     """A backend outcome expressed as a normalized bit assignment."""
 
     assignments: Mapping[str, int] | None
+    reason: str | None = None
+    backend_reason: str | None = None
 
     def __post_init__(self) -> None:
+        if self.reason is None:
+            object.__setattr__(self, "reason", "sat" if self.assignments is not None else "unsat")
+        if self.reason not in ("sat", "unsat", "unknown", "timeout", "resource_limit"):
+            raise ValueError("invalid solve result reason")
+        if (self.reason == "sat") != (self.assignments is not None):
+            raise ValueError("only SAT results may carry assignments")
         if self.assignments is not None:
             object.__setattr__(self, "assignments", MappingProxyType(dict(self.assignments)))
 
@@ -54,3 +66,7 @@ class SolveResult:
     @classmethod
     def unsat(cls) -> "SolveResult":
         return cls(None)
+
+    @classmethod
+    def unknown(cls, backend_reason: str | None = None) -> "SolveResult":
+        return cls(None, "unknown", backend_reason)

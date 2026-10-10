@@ -77,6 +77,24 @@ class StringAssocPacket(SvObject):
             self.table[key] == 5
 
 
+@pytest.mark.parametrize("packet_type", [DynamicPacket, QueuePacket, UnsatDynamicPacket])
+def test_dynamic_snapshots_do_not_register_extra_hosts(packet_type):
+    from svtypes import CodecSession, RandomContext
+
+    session = CodecSession()
+    obj = packet_type(session=session)
+    obj.data.value = [9, 8, 7]
+    original_registry = dict(session._objects)
+    expected = packet_type is not UnsatDynamicPacket
+    with RandomContext(seed=401):
+        for _ in range(50):
+            assert obj.randomize() is expected
+            assert session._objects == original_registry
+            assert all(element._svtypes_mode_root is obj for element in obj.data._elements)
+            if not expected:
+                assert obj.data.value == [9, 8, 7]
+
+
 def test_dynamic_array_size_and_foreach_render_as_sv():
     source = DynamicPacket.to_sv_obj()
     assert "data.size()" in source

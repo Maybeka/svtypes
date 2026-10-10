@@ -6,6 +6,45 @@ import hashlib
 import pytest
 
 from svtypes import Bit, Enum, Logic, RandomContext, SvObject, constraint, schema_descriptor
+from svtypes.constraint.sample import BitStream
+
+
+@pytest.mark.parametrize("total", [1, 3, 2**64, 2**64 + 1, 2**191 + 73])
+def test_weighted_draw_handles_arbitrary_integer_totals(total):
+    left = BitStream(401)
+    right = BitStream(401)
+    values = [left._draw_weighted_index(total) for _ in range(100)]
+    assert values == [right._draw_weighted_index(total) for _ in range(100)]
+    assert all(0 <= value < total for value in values)
+    if total > 1:
+        assert len(set(values)) > 1
+
+
+def test_weighted_draw_retains_previous_64_bit_sequence():
+    stream = BitStream(409)
+    reference = BitStream(409)
+    total = 12345
+    limit = ((1 << 64) // total) * total
+    for _ in range(100):
+        while True:
+            value = reference.draw_bits(64)
+            if value < limit:
+                break
+        assert stream._draw_weighted_index(total) == value % total
+
+
+def test_weighted_draw_retries_outside_rejection_domain(monkeypatch):
+    stream = BitStream(1)
+    draws = iter([2**65 - 1, 2**64])
+    widths = []
+
+    def draw(width):
+        widths.append(width)
+        return next(draws)
+
+    monkeypatch.setattr(stream, "draw_bits", draw)
+    assert stream._draw_weighted_index(2**64 + 1) == 2**64
+    assert widths == [65, 65]
 
 
 class Three(Enum[Bit[8]]):

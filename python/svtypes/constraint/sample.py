@@ -31,6 +31,8 @@ class BitStream:
         self.i = 0
 
     def draw_bits(self, width: int) -> int:
+        from .budget import poll
+        poll()
         if width < 1:
             raise ConstraintError("cannot draw a non-positive number of bits")
         nbytes = (width + 7) // 8
@@ -54,6 +56,21 @@ class BitStream:
             if value < limit:
                 return members[value % count]
 
+    def _draw_weighted_index(self, total: int) -> int:
+        """Draw an unbiased index, including arbitrary-size integer weights.
+
+        Keep the existing 64-bit stream consumption for ordinary totals.
+        Larger totals need a wider rejection domain, never a zero limit.
+        """
+        if total <= 0:
+            raise ConstraintError("total distribution weight must be positive")
+        width = max(64, (total - 1).bit_length())
+        limit = ((1 << width) // total) * total
+        while True:
+            value = self.draw_bits(width)
+            if value < limit:
+                return value % total
+
 
 def sample_unconstrained(desc: Any, stream: BitStream) -> Any:
     from ..bit import Bit
@@ -65,6 +82,19 @@ def sample_unconstrained(desc: Any, stream: BitStream) -> Any:
     if isinstance(desc, Logic):
         return LogicValue(desc.width, bits, 0, 0)
     return desc._normalize(bits)
+
+
+def accept_distributions(exprs: list, env: dict, widths: dict, stream: BitStream) -> bool:
+    """Exact branch-normalized distribution rejection shared by samplers."""
+    from .eval import eval_dist_weight
+    numerator = denominator = 1
+    for expr in exprs:
+        selected, bound, undef = eval_dist_weight(expr, env, widths)
+        if undef or selected <= 0 or bound <= 0:
+            return False
+        numerator *= selected.numerator * bound.denominator
+        denominator *= selected.denominator * bound.numerator
+    return numerator >= denominator or stream._draw_weighted_index(denominator) < numerator
 
 
 def validate_seed(seed: Any) -> int:
@@ -81,6 +111,8 @@ class RandomizeStatus:
     reason: str
     state_path: str | None = None
     active_constraints: tuple[str, ...] = ()
+    failure_phase: str | None = None
+    backend_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,13 +125,20 @@ class LayeredRandomizeStatus:
 
 
 class RandomContext:
-    def __init__(self, seed: int | None = None, *, backend: str | None = None) -> None:
+    def __init__(self, seed: int | None = None, *, backend: str | None = None,
+                 solve_timeout_ms: int | None = 30_000,
+                 solve_check_limit: int | None = 100_000) -> None:
         if seed is not None:
             seed = validate_seed(seed)
         if backend not in (None, "smt"):
             raise ValueError(f"unsupported constraint backend: {backend!r}")
         self.seed = seed
         self.backend = backend or "smt"
+        for name, value in (("solve_timeout_ms", solve_timeout_ms), ("solve_check_limit", solve_check_limit)):
+            if value is not None and (type(value) is not int or value < 0):
+                raise ValueError(f"{name} must be a nonnegative int or None")
+        self.solve_timeout_ms = solve_timeout_ms
+        self.solve_check_limit = solve_check_limit
         self.call_index = 0
         self._entropy = None if seed is not None else int.from_bytes(os.urandom(8), "little")
 
@@ -114,6 +153,8 @@ class RandomContext:
         copied = RandomContext.__new__(RandomContext)
         copied.seed = self.seed
         copied.backend = self.backend
+        copied.solve_timeout_ms = self.solve_timeout_ms
+        copied.solve_check_limit = self.solve_check_limit
         copied.call_index = self.call_index
         copied._entropy = self._entropy
         return copied

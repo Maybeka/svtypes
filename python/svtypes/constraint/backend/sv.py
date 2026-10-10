@@ -285,6 +285,11 @@ def render_expr(expr: Expr) -> str:
         return _render_int(expr)
     if expr.op == "field":
         return _field_sv(str(expr.args[0]))
+    if expr.op == "indexed_field":
+        path = str(expr.args[0])
+        for position, index in enumerate(expr.args[1:]):
+            path = path.replace(f"[?{position}]", f"[{_render_index_expr(index)}]")
+        return _field_sv(path)
     if expr.op == "size":
         return f"{_field_sv(str(expr.args[0]))}.size()"
     if expr.op in ("param", "loopvar"):
@@ -332,6 +337,24 @@ def render_expr(expr: Expr) -> str:
     raise ValueError(f"cannot render operator {expr.op!r}")
 
 
+def _render_index_expr(expr: Expr) -> str:
+    """Keep native signed-int foreach arithmetic free of system calls."""
+    if expr.ty.width == 32 and expr.ty.signed:
+        if expr.op == "loopvar":
+            return str(expr.args[0])
+        if expr.op == "int":
+            value = int(expr.args[0])
+            return f"{'-' if value < 0 else ''}32'sd{abs(value)}"
+        operators = {"add": "+", "sub": "-", "mul": "*", "mod": "%",
+                     "and": "&", "or": "|", "xor": "^", "shl": "<<", "shr": ">>"}
+        if expr.op in operators and all(arg.ty.width == 32 and arg.ty.signed for arg in expr.args):
+            return f"({_render_index_expr(expr.args[0])} {operators[expr.op]} {_render_index_expr(expr.args[1])})"
+        if expr.op in {"u+", "u-", "inv"}:
+            operator = {"u+": "+", "u-": "-", "inv": "~"}[expr.op]
+            return f"({operator}{_render_index_expr(expr.args[0])})"
+    return render_expr(expr)
+
+
 def _render_int(expr: Expr) -> str:
     value = int(expr.args[0])
     if expr.hint and expr.hint.startswith("enum:"):
@@ -360,6 +383,10 @@ def _cast_operand(expr: Expr, parent: Expr) -> str:
             if mixed:
                 return f"$unsigned({text})"
             if expr.ty.signed:
+                # A declared signed leaf already has the required SV type;
+                # avoid wrapping native comparisons in a redundant call.
+                if expr.op in {"field", "indexed_field"}:
+                    return text
                 return f"$signed({text})"
         return text
     cast = f"{width}'({text})"

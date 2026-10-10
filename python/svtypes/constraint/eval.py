@@ -21,6 +21,26 @@ def eval_bool(expr: Expr, env: Mapping[str, int], vars_width: Mapping[str, tuple
     return (not value.undef) and value.ty.is_bool and bool(value.bits)
 
 
+def _constant_condition(expr: Expr) -> bool | None:
+    """Determine a constant guard without requiring runtime state values."""
+    if expr.op in {"land", "lor"}:
+        left, right = (_constant_condition(arg) for arg in expr.args)
+        if expr.op == "land":
+            if left is False or right is False:
+                return False
+            return True if left is True and right is True else None
+        if left is True or right is True:
+            return True
+        return False if left is False and right is False else None
+    if expr.op in {"field", "indexed_field", "param", "loopvar", "size"}:
+        return None
+    try:
+        value = eval_expr(expr, {}, {})
+        return bool(value.bits) if value.ty.is_bool and not value.undef else None
+    except (KeyError, IndexError):
+        return None
+
+
 def eval_dist_weight(
     expr: Expr,
     env: Mapping[str, int],

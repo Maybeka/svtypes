@@ -670,6 +670,7 @@ def _ssh(host: str, command: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["ssh", host, remote], capture_output=True, text=True)
 
 
+@pytest.mark.remote_sv
 def test_remote_nested_struct_declared_defaults():
     class DefaultHeader(SvStruct):
         tag = Bit[8](7)

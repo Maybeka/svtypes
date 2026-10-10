@@ -123,9 +123,16 @@ class _Analyzer:
                 )
             return [IRStmt(kind="pred", expr=expr)]
         if isinstance(node, IfConstraint):
+            condition = self.as_bool(self.expr(node.cond))
+            if self.loop_vars and not self.loop_symbols:
+                from .eval import _constant_condition
+                decision = _constant_condition(condition)
+                if decision is not None:
+                    selected = node.then_body if decision else node.else_body
+                    return [item for stmt in selected for item in self.lower_stmt(stmt)]
             return [IRStmt(
                 kind="if",
-                cond=self.as_bool(self.expr(node.cond)),
+                cond=condition,
                 then_body=[item for stmt in node.then_body for item in self.lower_stmt(stmt)],
                 else_body=[item for stmt in node.else_body for item in self.lower_stmt(stmt)],
             )]
@@ -381,9 +388,9 @@ class _Analyzer:
             return self.global_attr(node.name, node.loc)
         name = node.name
         if name in self.loop_vars:
-            return c_int(self.loop_vars[name], node.loc)
+            return Expr("int", (self.loop_vars[name],), bv(32, True), node.loc)
         if name in self.loop_symbols:
-            return Expr("loopvar", (name,), bv(0, False), node.loc)
+            return Expr("loopvar", (name,), bv(32, True), node.loc)
         if name in self.params:
             return self.parameter(name, node.loc)
         if name == "self":
@@ -458,8 +465,7 @@ class _Analyzer:
             nested = self._member_descriptor(desc, node.name, node.loc)
             if nested is None:
                 raise ConstraintNameError(f"{node.loc.format()}: unknown member {node.name!r}")
-            path = format_path([*path_parts, node.name])
-            return self.leaf_ref(path, nested, node.loc)
+            return self._indexed_leaf([*path_parts, node.name], nested, node.loc)
         raise ConstraintNameError(f"{node.loc.format()}: cannot access {node.name!r}")
 
     def size(self, node: SizeExpr) -> Expr:
@@ -489,7 +495,31 @@ class _Analyzer:
 
     def index(self, node: IndexRef) -> Expr:
         path_parts, desc = self._ref_descriptor(node)
-        return self.leaf_ref(format_path(path_parts), desc, node.loc)
+        return self._indexed_leaf(path_parts, desc, node.loc)
+
+    def _indexed_leaf(self, parts: list[Any], desc: Any, loc: SourceLoc) -> Expr:
+        leaf = self.leaf_ref(format_path(parts), desc, loc)
+        indices = tuple(part[1] for part in parts if isinstance(part, tuple) and part[0] == "idxexpr")
+        return Expr("indexed_field", (leaf.args[0], *indices), leaf.ty, loc) if indices else leaf
+
+    def _index_expression(self, node: AstNode) -> Expr:
+        # Foreach array indices have int arithmetic, not the one-bit placeholder
+        # type used by the original symbolic loop representation.
+        if isinstance(node, IntLiteral):
+            return Expr("int", (node.value,), bv(max(32, node.value.bit_length() + 1), True), node.loc)
+        if isinstance(node, NameRef) and node.name in self.loop_symbols:
+            return Expr("loopvar", (node.name,), bv(32, True), node.loc)
+        if isinstance(node, NameRef) and node.name in self.loop_vars:
+            return Expr("int", (self.loop_vars[node.name],), bv(32, True), node.loc)
+        if isinstance(node, UnaryExpr) and node.op in {"u+", "u-", "inv"}:
+            operand = self._index_expression(node.expr)
+            return Expr(node.op, (operand,), operand.ty, node.loc)
+        if isinstance(node, BinaryExpr) and node.op in {"add", "sub", "mul", "mod", "and", "or", "xor", "shl", "shr"}:
+            left, right = self._index_expression(node.left), self._index_expression(node.right)
+            width = max(32, left.ty.width, right.ty.width)
+            ty = bv(width, left.ty.signed and right.ty.signed)
+            return Expr(node.op, (self._resize(left, width, ty.signed, node.loc), self._resize(right, width, ty.signed, node.loc)), ty, node.loc)
+        return self.expr(node)
 
     def _ref_descriptor(self, node: AstNode) -> tuple[list[str | int], Any]:
         if isinstance(node, FieldRef):
@@ -516,7 +546,7 @@ class _Analyzer:
             return parts, desc
         if isinstance(node, IndexRef):
             parts, desc = self._ref_descriptor(node.base)
-            index_expr = self.expr(node.index)
+            index_expr = self.expr(node.index) if isinstance(desc, AssocArray) else self._index_expression(node.index)
             if index_expr.op == "loopvar":
                 # Symbolic index (loop variable) on a template: keep the name
                 # so the SV renderer emits `words[i]`; record the full array
@@ -526,8 +556,28 @@ class _Analyzer:
                     str(index_expr.args[0]),
                     format_path(parts) if parts else "",
                 )
+            elif self._index_loop_names(index_expr):
+                if _field_paths(index_expr):
+                    raise ConstraintUnsupportedError(f"{node.loc.format()}: foreach arithmetic indices cannot depend on random or state fields")
+                if not isinstance(desc, (Array, DynArray, Queue)):
+                    raise ConstraintUnsupportedError(f"{node.loc.format()}: arithmetic indices require a sequential collection")
+                index_part = ("idxexpr", index_expr)
+                for name in self._index_loop_names(index_expr):
+                    self.loop_index_arrays.setdefault(name, format_path(parts))
             else:
-                index = self.const_int(index_expr, node.loc)
+                if index_expr.op == "int":
+                    index = self.const_int(index_expr, node.loc)
+                else:
+                    from .eval import eval_expr
+                    try:
+                        resolved = eval_expr(index_expr, {}, {})
+                    except KeyError:
+                        raise ConstraintTypeError(f"{node.loc.format()}: expected a compile-time or foreach integer index") from None
+                    index = resolved.bits
+                    if resolved.ty.signed and index & (1 << (resolved.ty.width - 1)):
+                        index -= 1 << resolved.ty.width
+                    if resolved.undef:
+                        raise ConstraintTypeError(f"{node.loc.format()}: undefined array index")
                 if isinstance(desc, Array):
                     if index < 0 or index >= desc._size:
                         raise ConstraintTypeError(f"{node.loc.format()}: index {index} is out of range")
@@ -567,6 +617,11 @@ class _Analyzer:
                 )
             return dict(target._SvObject__svtypes_members).get(name)
         return None
+
+    def _index_loop_names(self, expression: Expr) -> set[str]:
+        if expression.op == "loopvar":
+            return {str(expression.args[0])}
+        return set().union(*(self._index_loop_names(arg) for arg in expression.args if isinstance(arg, Expr)))
 
     def leaf_ref(self, path: str, desc: Any, loc: SourceLoc, rest_desc: Any | None = None) -> Expr:
         target = rest_desc if rest_desc is not None else desc
@@ -627,12 +682,24 @@ class _Analyzer:
             )
             if amount.op == "int" and int(amount.args[0]) < 0:
                 raise ConstraintTypeError(f"{node.loc.format()}: shift amount must be non-negative")
-            return Expr(node.op, (left_bv, amount), left_bv.ty, node.loc)
+            return self._fold_loop_arithmetic(Expr(node.op, (left_bv, amount), left_bv.ty, node.loc))
         if node.op == "mod":
             if right.op == "int" and int(right.args[0]) == 0:
                 raise ConstraintTypeError(f"{node.loc.format()}: modulo by compile-time 0")
         left_bv, right_bv = self.unify_arith(left, right, node.loc)
-        return Expr(node.op, (left_bv, right_bv), left_bv.ty, node.loc)
+        return self._fold_loop_arithmetic(Expr(node.op, (left_bv, right_bv), left_bv.ty, node.loc))
+
+    def _fold_loop_arithmetic(self, expr: Expr) -> Expr:
+        """Fold expanded loop constants in their fixed-width integer domain."""
+        if self.loop_vars and all(arg.op == "int" for arg in expr.args):
+            from .eval import eval_expr
+
+            value = eval_expr(expr, {}, {})
+            number = value.bits
+            if value.ty.signed and number & (1 << (value.ty.width - 1)):
+                number -= 1 << value.ty.width
+            return Expr("int", (number,), value.ty, expr.loc, value.undef)
+        return expr
 
     def compare(self, op: str, left: Expr, right: Expr, loc: SourceLoc) -> Expr:
         left_u, right_u = self.unify_compare(left, right, loc)
@@ -774,7 +841,7 @@ def _contains_dist(expr: Expr) -> bool:
 
 
 def _field_paths(expr: Expr) -> set[str]:
-    if expr.op == "field":
+    if expr.op in {"field", "indexed_field"}:
         return {str(expr.args[0])}
     paths: set[str] = set()
     for arg in expr.args:
@@ -785,12 +852,16 @@ def _field_paths(expr: Expr) -> set[str]:
 
 def _signed_of(expr: Expr) -> bool:
     if expr.op == "int":
+        if expr.ty.width:
+            return expr.ty.signed
         return int(expr.args[0]) < 0
     return expr.ty.signed
 
 
 def _width_of(expr: Expr) -> int:
     if expr.op == "int":
+        if expr.ty.width:
+            return expr.ty.width
         value = int(expr.args[0])
         if value >= 0:
             return max(value.bit_length(), 1)

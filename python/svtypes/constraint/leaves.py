@@ -54,6 +54,8 @@ def split_path(path: str) -> list[str | int | tuple[str, Any]]:
 
 
 def join_path(base: str, part: str | int | tuple[str, str]) -> str:
+    if isinstance(part, tuple) and part and part[0] == "idxexpr":
+        return f"{base}[?{base.count('[?')}]"
     if isinstance(part, tuple) and part and part[0] == "idx":
         return f"{base}[{part[1]}]"
     if isinstance(part, int):

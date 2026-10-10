@@ -48,6 +48,23 @@ def _env_and_widths(obj: SvObject) -> tuple[dict[str, int], dict[str, tuple[int,
     return env, widths
 
 
+def test_finite_dist_large_weights_terminate_and_remain_weighted():
+    class HugeWeights(SvObject):
+        choice = Bit[32]()
+
+        @constraint
+        def legal(self):
+            self.choice @ dist[0x12345678 @ 1208925819614629174706176, 0x9ABCDEF0 @ 3626777458843887524118528]
+
+    obj = HugeWeights()
+    counts = {0x12345678: 0, 0x9ABCDEF0: 0}
+    with RandomContext(seed=303):
+        for _ in range(120):
+            assert obj.randomize()
+            counts[obj.choice.value] += 1
+    assert 10 < counts[0x12345678] < 50
+
+
 def test_dist_accepts_integral_expression_everywhere_and_renders_sv():
     obj = DistPacket()
     obj.base.value = 1

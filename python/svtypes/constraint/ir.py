@@ -73,6 +73,8 @@ class Expr:
             return ["int", int(self.args[0])]
         if self.op == "field":
             return ["field", str(self.args[0])]
+        if self.op == "indexed_field":
+            return ["indexed_field", str(self.args[0]), *(arg.to_stable() for arg in self.args[1:])]
         if self.op == "size":
             return ["size", str(self.args[0])]
         if self.op == "param":
