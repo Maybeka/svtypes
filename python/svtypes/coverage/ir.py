@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
-from .canonical import canonical_value, semantic_digest
+from .canonical import _validate_canonical_value, canonical_value, semantic_digest
 
 
 COVERAGE_IR_VERSION = 1
@@ -38,7 +38,7 @@ def _canonical_options(
         seen.add(name)
         # Validate declaration data now, instead of delaying a non-reproducible
         # value failure until a digest happens to be requested.
-        canonical_value(value)
+        _validate_canonical_value(value)
         normalized.append((name, value))
     return tuple(sorted(normalized, key=lambda item: item[0]))
 
@@ -90,7 +90,7 @@ class CoverageInitCallIR:
 
     def __post_init__(self) -> None:
         _require_name("coverage initializer covergroup", self.covergroup)
-        canonical_value(self.actuals)
+        _validate_canonical_value(self.actuals)
         object.__setattr__(self, "named_actuals", _canonical_options("coverage initializer actual", self.named_actuals))
 
     def stable_dict(self) -> dict[str, Any]:
@@ -137,7 +137,7 @@ class CoverageBinIR:
         if self.kind not in _BIN_KINDS:
             choices = ", ".join(sorted(_BIN_KINDS))
             raise ValueError(f"coverage bin {self.name!r} has unsupported kind {self.kind!r}; expected {choices}")
-        canonical_value(self.selector)
+        _validate_canonical_value(self.selector)
 
     def stable_dict(self) -> dict[str, Any]:
         return {
@@ -159,8 +159,8 @@ class CoveragePointIR:
 
     def __post_init__(self) -> None:
         _require_name("point", self.name)
-        canonical_value(self.expression)
-        canonical_value(self.iff)
+        _validate_canonical_value(self.expression)
+        _validate_canonical_value(self.iff)
         object.__setattr__(self, "bins", _canonical_named_items("bin", self.bins))
         object.__setattr__(self, "options", _canonical_options(f"point {self.name!r}", self.options))
 
@@ -185,7 +185,7 @@ class CrossQueueFunctionIR:
     def __post_init__(self) -> None:
         _require_name("cross queue function", self.name)
         _validate_parameter_names(f"cross queue function {self.name!r}", self.parameters)
-        canonical_value(self.body)
+        _validate_canonical_value(self.body)
 
     def stable_dict(self) -> dict[str, Any]:
         return {
@@ -240,7 +240,7 @@ class CoverageCrossIR:
             _require_name("cross member", member)
         if len(set(self.members)) != len(self.members):
             raise ValueError(f"coverage cross {self.name!r} has duplicate members")
-        canonical_value(self.iff)
+        _validate_canonical_value(self.iff)
         object.__setattr__(self, "bins", _canonical_named_items("bin", self.bins))
         object.__setattr__(self, "options", _canonical_options(f"cross {self.name!r}", self.options))
         object.__setattr__(self, "queue_functions", _canonical_named_items("cross queue function", self.queue_functions))

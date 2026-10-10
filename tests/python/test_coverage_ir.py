@@ -60,6 +60,83 @@ def test_canonical_values_reject_runtime_objects_and_sort_mapping_keys():
         canonical_json_bytes({"actual": object()})
 
 
+def test_validation_only_path_matches_canonical_acceptance_and_errors():
+    from collections import OrderedDict
+    from svtypes.coverage.canonical import _validate_canonical_value, canonical_value
+    from svtypes.logic import LogicValue
+
+    values = [None, True, 7, -3, "name", LogicValue(4, 1, 2, 4),
+              {"z": [1, (None, False)], "a": OrderedDict(x=2)},
+              1.5, b"bytes", {1: 2}, {"nested": [object()]}, {1, 2}]
+    for value in values:
+        try:
+            expected = canonical_value(value)
+        except TypeError as error:
+            with pytest.raises(TypeError) as actual:
+                _validate_canonical_value(value)
+            assert str(actual.value) == str(error)
+        else:
+            assert _validate_canonical_value(value) is None
+            assert canonical_value(value) == expected
+
+
+def test_declaration_validation_does_not_build_discarded_canonical_copies(monkeypatch):
+    import svtypes.coverage.ir as module
+
+    def unexpected_copy(value):
+        raise AssertionError("declaration validation constructed a discarded canonical copy")
+
+    monkeypatch.setattr(module, "canonical_value", unexpected_copy)
+    point = CoveragePointIR("p", {"kind": "name", "name": "item"},
+                            (CoverageBinIR("one", "normal", {"kind": "constant", "value": 1}),),
+                            options=(("goal", 100),))
+    assert CoverageIR("Packet", "cg", points=(point,)).points == (point,)
+
+
+def test_materialized_layout_is_equal_and_isolated_with_validation_only(monkeypatch):
+    import svtypes.coverage.ir as module
+    import svtypes.coverage.declaration as declaration
+    from svtypes.coverage.canonical import canonical_value
+    from svtypes.coverage.declaration import _materialize_ir
+
+    selector = {"kind": "cross_bin_refs", "items": [{"point": "opcode", "bin": "read"},
+                                                    {"point": "kind", "bin": "write"}]}
+    template = CoverageIR("Packet", "cg", points=(
+        CoveragePointIR("opcode", {"kind": "name", "name": "limit"}),
+        CoveragePointIR("kind", {"kind": "name", "name": "item"}),
+    ), crosses=(CoverageCrossIR("combined", ("opcode", "kind"),
+                                (CoverageBinIR("pair", "normal", selector),)),))
+    optimized = _materialize_ir(template, {"limit": 7}, {})
+    with monkeypatch.context() as context:
+        context.setattr(module, "_validate_canonical_value", canonical_value)
+        context.setattr(declaration, "_materialize_cross_selector", declaration._materialize_value)
+        baseline = _materialize_ir(template, {"limit": 7}, {})
+    assert optimized.definition_snapshot() == baseline.definition_snapshot()
+    assert optimized.declaration_semantic_digest == baseline.declaration_semantic_digest
+    optimized.crosses[0].bins[0].selector["items"][0]["bin"] = "changed"
+    assert baseline.crosses[0].bins[0].selector["items"][0]["bin"] == "read"
+    assert template.crosses[0].bins[0].selector["items"][0]["bin"] == "read"
+
+
+def test_static_cross_selector_copy_and_general_fallback_are_equivalent():
+    from svtypes.coverage.declaration import _materialize_cross_selector, _materialize_value
+
+    selectors = [
+        {"kind": "cross_bin_refs", "items": [{"point": "p", "bin": "b"}]},
+        {"kind": "cross_bin_refs", "items": [], "extra": {"kind": "name", "name": "arg"}},
+        {"kind": "cross_bin_refs", "items": [{"point": "p", "bin": {"kind": "name", "name": "arg"}}]},
+        {"kind": "cross_queue_call", "function": "fn", "args": [{"kind": "name", "name": "arg"}]},
+    ]
+    for selector in selectors:
+        actual = _materialize_cross_selector(selector, {"arg": 9}, {})
+        assert actual == _materialize_value(selector, {"arg": 9}, {})
+        assert actual is not selector
+        if "items" in selector:
+            assert actual["items"] is not selector["items"]
+            for original, copied in zip(selector["items"], actual["items"]):
+                assert copied is not original
+
+
 def test_named_declaration_items_are_canonicalized_but_cross_member_order_is_not():
     first = CoverageIR(
         sample_type="Packet",

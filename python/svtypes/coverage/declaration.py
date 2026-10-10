@@ -753,7 +753,7 @@ def _materialize_cross(
     functions = {function.name: function for function in cross.queue_functions}
     bins: list[CoverageBinIR] = []
     for bin_ in cross.bins:
-        selector = _materialize_value(bin_.selector, bindings, parameter_bindings)
+        selector = _materialize_cross_selector(bin_.selector, bindings, parameter_bindings)
         if isinstance(selector, dict) and selector.get("kind") == "cross_queue_call":
             function = functions.get(selector["function"])
             if function is None:
@@ -777,6 +777,22 @@ def _materialize_cross(
         bins=tuple(bins),
         member_views=member_views,
     )
+
+
+def _materialize_cross_selector(
+    selector: Any, bindings: dict[str, Any], parameter_bindings: Mapping[str, Any]
+) -> Any:
+    """Clone static reference tuples without recursively resolving strings."""
+    if (type(selector) is dict and selector.get("kind") == "cross_bin_refs"
+            and selector.keys() == {"kind", "items"}
+            and type(selector["items"]) is list):
+        items = selector["items"]
+        if all(type(item) is dict and item.keys() == {"point", "bin"}
+               and type(item["point"]) is str and type(item["bin"]) is str for item in items):
+            # Every instance still owns its dictionaries and list. Only strings,
+            # which cannot contain constructor/Parameter expression nodes, share.
+            return {"kind": "cross_bin_refs", "items": [dict(item) for item in items]}
+    return _materialize_value(selector, bindings, parameter_bindings)
 
 
 def _execute_cross_queue_function(

@@ -132,6 +132,40 @@ def test_database_binary_rejects_corruption_and_unknown_version() -> None:
         CoverageDatabase.from_bytes(bytes(incompatible))
 
 
+def test_ucis_cross_export_does_not_scan_name_list_for_membership(monkeypatch) -> None:
+    from svtypes.coverage import ucis
+
+    class Packet(SvObject):
+        code = Bit[2](cov=False)
+
+        @covergroup
+        def cg(self):
+            class code_cp(CovPoint, source=self.code):
+                low = bins[0]
+                high = bins[1]
+
+            class code_cross(Cross, members=(code_cp,)):
+                pass
+
+        def __init__(self):
+            super().__init__()
+            self.cg.instantiate()
+
+    class Names(list):
+        def __contains__(self, value):
+            raise AssertionError("cross export must index names instead of scanning")
+
+    original = ucis._exportable_cross_bins
+    monkeypatch.setattr(ucis, "_exportable_cross_bins", lambda *args: Names(original(*args)))
+    packet = Packet()
+    packet.cg.sample()
+    database = CoverageDatabase()
+    database.record(packet.cg.instance, logical_instance_key="dut.pkt")
+    xml, report = export_ucis(database)
+    assert '<crossBin ' in xml
+    assert report["losses"] == []
+
+
 def test_ucis_export_contains_functional_coverage_and_loss_report() -> None:
     database = CoverageDatabase()
     database.record(_sample(0).cg.instance, logical_instance_key="dut.pkt")
@@ -280,6 +314,47 @@ def test_database_snapshot_is_not_a_mutable_view_of_internal_records() -> None:
     snapshot = database.snapshot_document()
     snapshot["records"][0]["points"]["code_cp"]["hits"]["low"] = 99
     assert database.snapshot_document()["records"][0]["points"]["code_cp"]["hits"] == {"low": 1}
+
+
+def test_database_serializers_match_detached_snapshot_without_copying_it(monkeypatch, tmp_path):
+    import json
+    from svtypes.coverage.persistence import encode_database
+
+    database = CoverageDatabase()
+    database.record(_sample(0).cg.instance, logical_instance_key="dut.pkt")
+    expected = database.snapshot_document()
+    expected_json = json.dumps(expected, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    expected_bytes = encode_database(expected)
+
+    def forbidden_snapshot():
+        raise AssertionError("serialization must not allocate a detached document")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(database, "snapshot_document", forbidden_snapshot)
+        assert database.snapshot_json() == expected_json
+        assert database.to_bytes() == expected_bytes
+        path = tmp_path / "coverage.db"
+        database.write(path)
+        assert path.read_bytes() == expected_bytes
+    assert database.snapshot_document() == expected
+    expected["records"][0]["definition"]["points"][0]["bins"].clear()
+    expected["records"][0]["point_definitions"]["code_cp"]["normal_bins"].clear()
+    assert database.snapshot_document()["records"][0]["definition"]["points"][0]["bins"]
+    assert database.snapshot_document()["records"][0]["point_definitions"]["code_cp"]["normal_bins"]
+
+
+def test_document_clone_preserves_aliases_cycles_and_deepcopy_fallback():
+    from svtypes.coverage.database import _copy_document
+
+    shared = [{"value": 3}]
+    document = {"left": shared, "right": shared, "tuple": (shared,), "set": {1, 2}}
+    document["cycle"] = document
+    copied = _copy_document(document)
+    assert copied is not document
+    assert copied["cycle"] is copied
+    assert copied["left"] is copied["right"] is copied["tuple"][0]
+    assert copied["left"] is not shared
+    assert copied["set"] == document["set"] and copied["set"] is not document["set"]
 
 
 def test_per_instance_database_record_requires_bound_logical_key_and_checks_layout() -> None:

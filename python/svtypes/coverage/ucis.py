@@ -157,6 +157,7 @@ def _export_record(root: ET.Element, index: int, document: dict[str, Any], losse
             _loss(losses, index, cross, "", "cross omitted: one or more member coverpoints are not exportable")
             continue
         exported_bins = _exportable_cross_bins(ir, members, point_bin_index)
+        exported_bin_names = set(exported_bins)
         item = ET.SubElement(cg, "cross", name=cross, key=f"{index}:{cross}")
         ET.SubElement(item, "options", weight=str(definition["weight"]), goal=str(definition["goal"]), comment="",
                       at_least=str(definition["at_least"]), cross_num_print_missing="0")
@@ -171,7 +172,7 @@ def _export_record(root: ET.Element, index: int, document: dict[str, Any], losse
                 ET.SubElement(bin_, "index").text = str(point_bin_index[ref["point"]][ref["bin"]])
             ET.SubElement(bin_, "contents", coverageCount=str(_bin_count(counts, source)))
         for source in ir.get("bins", []):
-            if source["name"] not in exported_bins:
+            if source["name"] not in exported_bin_names:
                 _loss(losses, index, cross, source["name"], "cross bin selector cannot be losslessly projected to UCIS")
 
 

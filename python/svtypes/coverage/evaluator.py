@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
+from itertools import product
 from typing import Any
 
 from ..errors import CoverageError
@@ -152,6 +153,152 @@ def _matches_cross_selector(
     raise CoverageError("unsupported frozen cross selector")
 
 
+def _static_integer(selector: Any) -> int | None:
+    if isinstance(selector, dict) and selector.get("kind") in {"constant", "enum_literal", "parameter_literal"}:
+        value = selector.get("value")
+        if type(value) is int:
+            return value
+    return None
+
+
+def _singleton_values(selector: Any) -> set[int] | None:
+    """Index only frozen integer singleton sets; never evaluate user context."""
+    if not isinstance(selector, dict):
+        return None
+    kind = selector.get("kind")
+    if kind in {"constant", "enum_literal", "parameter_literal"}:
+        value = selector.get("value")
+        return {value} if type(value) is int else None
+    if kind == "values":
+        values: set[int] = set()
+        for item in selector["items"]:
+            child = _singleton_values(item)
+            if child is None:
+                return None
+            values.update(child)
+        return values
+    if kind == "range":
+        lower = _static_integer(selector.get("lower"))
+        upper = _static_integer(selector.get("upper"))
+        return {lower} if lower is not None and lower == upper else None
+    return None
+
+
+_RangeEntry = tuple[int, int, tuple[int, CoverageBinIR]]
+
+
+@dataclass(slots=True)
+class _RangeNode:
+    center: int
+    starts: tuple[_RangeEntry, ...]
+    ends: tuple[_RangeEntry, ...]
+    left: _RangeNode | None
+    right: _RangeNode | None
+
+
+def _static_ranges(selector: Any) -> list[tuple[int, int]] | None:
+    """Return disjoint static integer intervals, without enumerating their values."""
+    values = _singleton_values(selector)
+    if values is not None:
+        ranges = [(value, value) for value in values]
+    elif isinstance(selector, dict) and selector.get("kind") == "range":
+        low = _static_integer(selector.get("lower"))
+        high = _static_integer(selector.get("upper"))
+        if low is None or high is None:
+            return None
+        ranges = [(low, high)] if low <= high else []
+    elif isinstance(selector, dict) and selector.get("kind") == "values":
+        ranges = []
+        for item in selector["items"]:
+            child = _static_ranges(item)
+            if child is None:
+                return None
+            ranges.extend(child)
+    else:
+        return None
+    merged: list[tuple[int, int]] = []
+    for low, high in sorted(ranges):
+        if merged and low <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(high, merged[-1][1]))
+        else:
+            merged.append((low, high))
+    return merged
+
+
+def _range_tree(entries: list[_RangeEntry]) -> _RangeNode | None:
+    """Build a balanced interval tree from entries sorted by lower endpoint."""
+    if not entries:
+        return None
+    center = entries[len(entries) // 2][0]
+    left, right, overlap = [], [], []
+    for entry in entries:
+        if entry[1] < center:
+            left.append(entry)
+        elif entry[0] > center:
+            right.append(entry)
+        else:
+            overlap.append(entry)
+    return _RangeNode(center, tuple(overlap),
+                      tuple(sorted(overlap, key=lambda entry: entry[1], reverse=True)),
+                      _range_tree(left), _range_tree(right))
+
+
+def _range_candidates(node: _RangeNode | None, value: int) -> list[Any]:
+    matches = []
+    while node is not None:
+        if value < node.center:
+            for lower, _, entry in node.starts:
+                if lower > value:
+                    break
+                matches.append(entry)
+            node = node.left
+        elif value > node.center:
+            for _, upper, entry in node.ends:
+                if upper < value:
+                    break
+                matches.append(entry)
+            node = node.right
+        else:
+            matches.extend(entry for _, _, entry in node.starts)
+            break
+    return matches
+
+
+def _point_index(point: CoveragePointIR) -> tuple[dict[int, list[Any]], _RangeNode | None, list[Any]]:
+    index: dict[int, list[Any]] = {}
+    fallback = []
+    intervals = []
+    for position, bin_ in enumerate(point.bins):
+        values = _singleton_values(bin_.selector) if bin_.kind in {"normal", "ignore", "illegal"} else None
+        if values is None:
+            ranges = _static_ranges(bin_.selector) if bin_.kind in {"normal", "ignore", "illegal"} else None
+            if ranges is None:
+                fallback.append((position, bin_))
+            else:
+                intervals.extend((low, high, (position, bin_)) for low, high in ranges)
+        else:
+            for value in values:
+                index.setdefault(value, []).append((position, bin_))
+    return index, _range_tree(sorted(intervals, key=lambda entry: entry[0])), fallback
+
+
+def _cross_index(cross: CoverageCrossIR) -> tuple[dict[tuple[str, ...], list[Any]], list[Any]]:
+    index: dict[tuple[str, ...], list[Any]] = {}
+    fallback = []
+    for position, bin_ in enumerate(cross.bins):
+        if bin_.kind not in {"normal", "ignore"}:
+            continue
+        selector = bin_.selector
+        refs = selector.get("items", ()) if isinstance(selector, dict) and selector.get("kind") == "cross_bin_refs" else ()
+        by_point = {ref["point"]: ref["bin"] for ref in refs}
+        if len(refs) == len(cross.members) and len(by_point) == len(refs) and set(by_point) == set(cross.members):
+            key = tuple(by_point[member] for member in cross.members)
+            index.setdefault(key, []).append((position, bin_))
+        else:
+            fallback.append((position, bin_))
+    return index, fallback
+
+
 @dataclass(slots=True)
 class PointCounters:
     hits: Counter[str] = field(default_factory=Counter)
@@ -171,6 +318,8 @@ class CoverageRuntime:
     queue_value_sets: dict[tuple[str, str], set[tuple[Any, ...]]] = field(init=False)
     cross_local_illegal_hits: dict[tuple[str, str, str], int] = field(init=False)
     cross_local_illegal_source_ids: dict[tuple[str, str, str], list[str]] = field(init=False)
+    point_indexes: dict[int, Any] = field(init=False)
+    cross_indexes: dict[str, Any] = field(init=False)
     enabled: bool = field(init=False, default=True)
     source_limit: int = 3
     sample_count: int = 0
@@ -189,6 +338,36 @@ class CoverageRuntime:
         }
         self.cross_local_illegal_hits = {}
         self.cross_local_illegal_source_ids = {}
+        points = [*self.ir.points, *(view.point for cross in self.ir.crosses for view in cross.member_views)]
+        self.point_indexes = {id(point): _point_index(point) for point in points}
+        self.cross_indexes = {cross.name: _cross_index(cross) for cross in self.ir.crosses}
+
+    def _point_candidates(self, point: CoveragePointIR, value: Any) -> list[CoverageBinIR]:
+        index, ranges, fallback = self.point_indexes[id(point)]
+        # Four-state values retain the original equality/ordering matcher.
+        if type(value) is not int:
+            return list(point.bins)
+        return [bin_ for _, bin_ in sorted([*index.get(value, ()), *_range_candidates(ranges, value), *fallback], key=lambda item: item[0])]
+
+    def _cross_candidates(self, cross: CoverageCrossIR, classified: dict[str, Any]) -> list[CoverageBinIR]:
+        index, fallback = self.cross_indexes[cross.name]
+        matches = list(fallback)
+        choices = [classified[member] for member in cross.members]
+        count = 1
+        for choice in choices:
+            count *= len(choice)
+        # Overlapping member bins can make the Cartesian hit tuple space much
+        # larger than the explicitly declared cross. Never expand that space
+        # merely to find a few indexed tuples (or when all bins use fallback).
+        if count > len(index):
+            sets = [set(choice) for choice in choices]
+            for key, bins_ in index.items():
+                if all(name in names for name, names in zip(key, sets)):
+                    matches.extend(bins_)
+        else:
+            for key in product(*choices):
+                matches.extend(index.get(key, ()))
+        return [bin_ for _, bin_ in sorted(matches, key=lambda item: item[0])]
 
     def sample(self, context: dict[str, Any], *, case_id: str | None = None) -> None:
         if not self.enabled:
@@ -241,7 +420,8 @@ class CoverageRuntime:
 
     def _classify_value(self, point: CoveragePointIR, counters: PointCounters, value: Any, context: dict[str, Any], case_id: str | None) -> tuple[str, ...] | None:
         counters.samples += 1
-        transitions = [bin_ for bin_ in point.bins if bin_.kind == "transition"]
+        candidates = self._point_candidates(point, value)
+        transitions = [bin_ for bin_ in candidates if bin_.kind == "transition"]
         if transitions:
             history = self.histories[point.name]
             history.append(value)
@@ -251,22 +431,22 @@ class CoverageRuntime:
                 if any(len(history) >= len(sequence) and history[-len(sequence):] == sequence for sequence in sequences):
                     counters.hits[bin_.name] += 1
                     _record_source(counters.source_ids, bin_.name, case_id, self.source_limit)
-        ignored = [bin_ for bin_ in point.bins if bin_.kind == "ignore" and _matches_selector(value, bin_.selector, context)]
+        ignored = [bin_ for bin_ in candidates if bin_.kind == "ignore" and _matches_selector(value, bin_.selector, context)]
         if ignored:
             return None
-        illegal = [bin_ for bin_ in point.bins if bin_.kind == "illegal" and _matches_selector(value, bin_.selector, context)]
+        illegal = [bin_ for bin_ in candidates if bin_.kind == "illegal" and _matches_selector(value, bin_.selector, context)]
         if illegal:
             for bin_ in illegal:
                 counters.illegal_hits[bin_.name] += 1
                 _record_source(counters.illegal_source_ids, bin_.name, case_id, self.source_limit)
             return None
-        normal = [bin_ for bin_ in point.bins if bin_.kind == "normal" and _matches_selector(value, bin_.selector, context)]
+        normal = [bin_ for bin_ in candidates if bin_.kind == "normal" and _matches_selector(value, bin_.selector, context)]
         if normal:
             for bin_ in normal:
                 counters.hits[bin_.name] += 1
                 _record_source(counters.source_ids, bin_.name, case_id, self.source_limit)
             return tuple(bin_.name for bin_ in normal)
-        defaults = [bin_ for bin_ in point.bins if bin_.kind == "default"]
+        defaults = [bin_ for bin_ in candidates if bin_.kind == "default"]
         if defaults:
             counters.hits[defaults[0].name] += 1
             _record_source(counters.source_ids, defaults[0].name, case_id, self.source_limit)
@@ -300,15 +480,16 @@ class CoverageRuntime:
             return
         counters = self.counters[cross.name]
         counters.samples += 1
+        candidates = self._cross_candidates(cross, effective_classified)
         ignored = [
-            bin_ for bin_ in cross.bins
+            bin_ for bin_ in candidates
             if bin_.kind == "ignore" and _matches_cross_selector(
                 bin_.selector, effective_classified, values, self.queue_value_sets.get((cross.name, bin_.name))
             )
         ]
         if ignored:
             return
-        for bin_ in cross.bins:
+        for bin_ in candidates:
             if bin_.kind != "normal" or not _matches_cross_selector(
                 bin_.selector, effective_classified, values, self.queue_value_sets.get((cross.name, bin_.name))
             ):
@@ -330,10 +511,11 @@ class CoverageRuntime:
             value = eval_expr(point.expression, context)
         except IndexError:
             return None
-        ignored = [bin_ for bin_ in point.bins if bin_.kind == "ignore" and _matches_selector(value, bin_.selector, context)]
+        candidates = self._point_candidates(point, value)
+        ignored = [bin_ for bin_ in candidates if bin_.kind == "ignore" and _matches_selector(value, bin_.selector, context)]
         if ignored:
             return None
-        illegal = [bin_ for bin_ in point.bins if bin_.kind == "illegal" and _matches_selector(value, bin_.selector, context)]
+        illegal = [bin_ for bin_ in candidates if bin_.kind == "illegal" and _matches_selector(value, bin_.selector, context)]
         if illegal:
             for bin_ in illegal:
                 key = (cross.name, point.name, bin_.name)
@@ -342,10 +524,10 @@ class CoverageRuntime:
                 if case_id is not None and case_id not in ids and len(ids) < self.source_limit:
                     ids.append(case_id)
             return None
-        normal = [bin_ for bin_ in point.bins if bin_.kind == "normal" and _matches_selector(value, bin_.selector, context)]
+        normal = [bin_ for bin_ in candidates if bin_.kind == "normal" and _matches_selector(value, bin_.selector, context)]
         if normal:
             return tuple(bin_.name for bin_ in normal)
-        defaults = [bin_ for bin_ in point.bins if bin_.kind == "default"]
+        defaults = [bin_ for bin_ in candidates if bin_.kind == "default"]
         return (defaults[0].name,) if defaults else ()
 
     def snapshot(self) -> dict[str, Any]:

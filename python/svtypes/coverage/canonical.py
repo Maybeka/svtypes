@@ -10,6 +10,25 @@ from typing import Any
 from ..logic import LogicValue
 
 
+def _validate_canonical_value(value: Any) -> None:
+    """Validate static declaration data without allocating a canonical copy."""
+    if value is None or isinstance(value, (bool, int, str, LogicValue)):
+        return
+    if isinstance(value, (tuple, list)):
+        for item in value:
+            _validate_canonical_value(item)
+        return
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError("coverage canonical mappings require string keys")
+            _validate_canonical_value(item)
+        return
+    raise TypeError(
+        f"coverage declaration contains non-canonical value {type(value).__name__}"
+    )
+
+
 def canonical_value(value: Any) -> Any:
     """Return a JSON-compatible, recursively canonical representation.
 

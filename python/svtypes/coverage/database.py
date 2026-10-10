@@ -10,11 +10,40 @@ from typing import Any, Mapping
 from ..errors import CoverageError
 from .persistence import decode_database, encode_database, read_database, write_database
 
+_DOCUMENT_ATOMS = frozenset((str, int, float, bool, bytes, type(None)))
+
 
 @dataclass(frozen=True, slots=True)
 class CoverageRecord:
     logical_instance_key: str | None
     document: dict[str, Any]
+
+
+def _copy_document(value: Any, memo: dict[int, Any] | None = None) -> Any:
+    """Clone JSON document containers without deepcopy's scalar bookkeeping.
+
+    Retain memoized aliases/cycles and the general deepcopy fallback for values
+    outside the persistence data model, rather than changing snapshot semantics.
+    """
+    kind = type(value)
+    if kind in _DOCUMENT_ATOMS:
+        return value
+    if memo is None:
+        memo = {}
+    if id(value) in memo:
+        return memo[id(value)]
+    if kind is dict:
+        copied: dict[Any, Any] = {}
+        memo[id(value)] = copied
+        for key, item in value.items():
+            copied[key if type(key) is str else deepcopy(key, memo)] = _copy_document(item, memo)
+        return copied
+    if kind is list:
+        items: list[Any] = []
+        memo[id(value)] = items
+        items.extend(_copy_document(item, memo) for item in value)
+        return items
+    return deepcopy(value, memo)
 
 
 class CoverageDatabase:
@@ -180,7 +209,7 @@ class CoverageDatabase:
     def snapshot_document(self) -> dict[str, Any]:
         return {
             "records": [
-                {"logical_instance_key": record.logical_instance_key, **deepcopy(record.document)}
+                {"logical_instance_key": record.logical_instance_key, **_copy_document(record.document)}
                 for _, record in sorted(
                     self._records.items(), key=lambda item: (item[0][0], item[0][1])
                 )
@@ -188,11 +217,22 @@ class CoverageDatabase:
         }
 
     def snapshot_json(self) -> str:
-        return json.dumps(self.snapshot_document(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return json.dumps(self._serialization_document(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    def _serialization_document(self) -> dict[str, Any]:
+        """Borrow owned record data only for synchronous read-only encoding.
+
+        Public snapshots remain detached. Encoders accept plain JSON data and
+        neither mutate it nor return references to its nested structures.
+        """
+        return {"records": [
+            {"logical_instance_key": record.logical_instance_key, **record.document}
+            for _, record in sorted(self._records.items(), key=lambda item: (item[0][0], item[0][1]))
+        ]}
 
     def to_bytes(self) -> bytes:
         """Export portable aggregate coverage counters for cross-run merge."""
-        return encode_database(self.snapshot_document())
+        return encode_database(self._serialization_document())
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "CoverageDatabase":
@@ -201,7 +241,7 @@ class CoverageDatabase:
         return database
 
     def write(self, path: str) -> None:
-        write_database(path, self.snapshot_document())
+        write_database(path, self._serialization_document())
 
     @classmethod
     def read(cls, path: str) -> "CoverageDatabase":
