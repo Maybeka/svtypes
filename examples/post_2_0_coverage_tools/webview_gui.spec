@@ -68,10 +68,17 @@ for module, source, kind in a.pure:
     if module == "webview.http" and not Path(source).is_relative_to(Path(vendor_path)):
         raise RuntimeError("Dependency analysis did not use the isolated no-TLS adaptation")
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, [], exclude_binaries=True,
-          name="SvTypesCoverageGui", console=False, strip=False, upx=False)
-coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False,
-               name="SvTypesCoverageGui")
-if sys.platform == "darwin":
-    app = BUNDLE(coll, name="SvTypesCoverageGui.app",
-                 bundle_identifier="org.svtypes.coverage.preview")
+onefile = sys.platform == "win32" and os.environ.get("SVTYPES_GUI_ONEFILE") == "1"
+if onefile:
+    # The bootloader extracts resources to _MEIPASS at runtime. Scanner children
+    # reuse that extraction through PyInstaller's inherited process environment.
+    exe = EXE(pyz, a.scripts, a.binaries, a.datas, [],
+              name="SvTypesCoverageGui", console=False, strip=False, upx=False)
+else:
+    exe = EXE(pyz, a.scripts, [], exclude_binaries=True,
+              name="SvTypesCoverageGui", console=False, strip=False, upx=False)
+    coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False,
+                   name="SvTypesCoverageGui")
+    if sys.platform == "darwin":
+        app = BUNDLE(coll, name="SvTypesCoverageGui.app",
+                     bundle_identifier="org.svtypes.coverage.preview")

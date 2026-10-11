@@ -57,6 +57,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--distpath", type=Path, default=ROOT / ".tmp/coverage-gui-package/dist")
     parser.add_argument("--workpath", type=Path, default=ROOT / ".tmp/coverage-gui-package/build")
+    parser.add_argument("--onedir", action="store_true", help="Use a directory bundle on Windows instead of the default single EXE")
     args = parser.parse_args(argv)
     if sys.platform not in {"darwin", "win32"}:
         parser.error("Build on macOS or Windows; cross-compilation is not supported")
@@ -71,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     dist = args.distpath.resolve()
     vendor = prepare_vendor(Path(next(iter(spec.submodule_search_locations))), work)
     env = dict(os.environ, SVTYPES_GUI_VENDOR_PATH=str(vendor),
+               SVTYPES_GUI_ONEFILE="1" if sys.platform == "win32" and not args.onedir else "0",
                PYINSTALLER_CONFIG_DIR=str(work / "pyinstaller-cache"))
     # Fresh dependency analysis prevents reuse of bytecode from the TLS build.
     subprocess.run([sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm",

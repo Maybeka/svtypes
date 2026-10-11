@@ -1,6 +1,7 @@
 """Build preparation tests; do not start a desktop window or frozen executable."""
 
 import ast
+import runpy
 import sys
 from types import SimpleNamespace
 
@@ -72,3 +73,48 @@ def test_tls_branch_reports_explicit_error_without_ssl(monkeypatch):
     monkeypatch.setitem(sys.modules, "ssl", None)
     with pytest.raises(RuntimeError, match="does not provide Python TLS/HTTPS"):
         namespace["SSLWSGIRefServer"]().run(None)
+
+
+@pytest.mark.parametrize("arguments, expected", [([], "1"), (["--onedir"], "0")])
+def test_windows_bundle_selection(monkeypatch, tmp_path, arguments, expected):
+    monkeypatch.setattr(build.sys, "platform", "win32")
+    monkeypatch.setattr(build, "version", lambda name: build.BUILD_VERSIONS[name])
+    monkeypatch.setattr(build, "find_spec", lambda name: SimpleNamespace(submodule_search_locations=["installed"]))
+    monkeypatch.setattr(build, "prepare_vendor", lambda source, work: tmp_path)
+    calls = []
+    monkeypatch.setattr(build.subprocess, "run", lambda command, **kwargs: calls.append(kwargs))
+    assert build.main(["--distpath", str(tmp_path / "dist"), "--workpath", str(tmp_path / "build"), *arguments]) == 0
+    assert calls[0]["env"]["SVTYPES_GUI_ONEFILE"] == expected
+
+
+@pytest.mark.parametrize("platform, onefile", [("win32", True), ("win32", False), ("darwin", False)])
+def test_spec_packages_binaries_and_resources_in_selected_container(monkeypatch, tmp_path, platform, onefile):
+    vendor = tmp_path / "vendor"
+    (vendor / "webview").mkdir(parents=True)
+    (vendor / "webview/http.py").write_text("# prepared", encoding="utf-8")
+    monkeypatch.setenv("SVTYPES_GUI_VENDOR_PATH", str(vendor))
+    monkeypatch.setenv("SVTYPES_GUI_ONEFILE", "1" if onefile else "0")
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setitem(sys.modules, "PyInstaller.utils.hooks", SimpleNamespace(copy_metadata=lambda name: []))
+    binaries = [("python.dll", "python.dll", "BINARY")]
+    datas = [("packet.py", "packet.py", "DATA")]
+    calls = {}
+    def capture(name):
+        def call(*args, **kwargs):
+            calls[name] = (args, kwargs)
+            return name
+        return call
+    runpy.run_path(str(build.HERE / "webview_gui.spec"), init_globals={
+        "SPECPATH": str(build.HERE),
+        "Analysis": lambda *args, **kwargs: SimpleNamespace(pure=[], scripts=[], binaries=binaries, datas=datas),
+        "PYZ": capture("PYZ"), "EXE": capture("EXE"),
+        "COLLECT": capture("COLLECT"), "BUNDLE": capture("BUNDLE"),
+    })
+    if onefile:
+        assert calls["EXE"][0][2:4] == (binaries, datas)
+        assert "exclude_binaries" not in calls["EXE"][1]
+        assert "COLLECT" not in calls
+    else:
+        assert calls["EXE"][1]["exclude_binaries"] is True
+        assert calls["COLLECT"][0][1:3] == (binaries, datas)
+    assert ("BUNDLE" in calls) == (platform == "darwin")

@@ -87,13 +87,29 @@ python examples/post_2_0_coverage_tools/build_webview_gui.py
 默认产物：
 
 - macOS：`.tmp/coverage-gui-package/dist/SvTypesCoverageGui.app`。
-- Windows：`.tmp/coverage-gui-package/dist/SvTypesCoverageGui/`，分发整个目录，
-  不能只复制其中的 EXE。
+- Windows：默认 `.tmp/coverage-gui-package/dist/SvTypesCoverageGui.exe`，
+  一个可分发的 EXE，不需要同时分发 Python、DLL、示例源码或网页资源目录。
+  若需要目录式构建用于诊断，可加 `--onedir`，输出
+  `.tmp/coverage-gui-package/dist/SvTypesCoverageGui/`，此模式需分发整个目录。
+
+Windows 单文件构建命令与之前相同：
+
+```powershell
+python examples/post_2_0_coverage_tools/build_webview_gui.py
+```
+
+单文件 EXE 运行时会将依赖和资源解包到临时 `_MEI...` 目录，正常退出后由
+PyInstaller 清理；这不是额外的分发文件，但会增加启动开销和运行时临时磁盘
+占用。扫描子进程继续使用同一套解包资源，不重置 PyInstaller 的父子进程环境。
+单文件不包含系统 WebView2 Runtime，它仍是主机前提。构建不启动 EXE。
 
 macOS 构建还会保留一个目录式副本；它与 `.app` 是替代产物，不要把两者的
 体积相加作为安装占用。应用和构建用隔离依赖均保存在忽略的 `.tmp` 中。
-Windows 使用 WinForms/WebView2 后端，WebView2 Runtime 由系统提供；当前 Windows
-分支仅准备了构建配方，**未进行 Windows 构建、体积或运行验证**。未启用 UPX。
+Windows 使用 WinForms/WebView2 后端，WebView2 Runtime 由系统提供。2026-10-11
+用户完成了此前目录式 Windows 构建测试，报告大小 **19.5 MiB**；这是用户提供
+的构建结果，不是单文件体积或运行验收结论。新增单文件分支通过构建配置模拟
+测试，但尚待 Windows 实际构建及运行验证，不能在 macOS 上交叉编译验证。
+未启用 UPX。
 当前配方只内置 Packet 示例，还不是选择任意外部工程/解释器的正式分发工具。
 
 2026-10-11 裁剪后的 macOS arm64 `.app` 磁盘占用 **24.44 MiB**，相较此前
@@ -117,8 +133,8 @@ point/cross 页面及 transition 编辑入口、Escape 和本机 HTTP 接口探�
 人工交互验证。只启动并自动关闭了源码测试窗口，**没有运行打包应用**。
 打包流程的 5 项准备/版本拒绝/仅构建/TLS 错误测试通过；对自动生成的隔离依赖复测，
 工具/示例/桌面壳与构建测试合计 26 项通过。包的 ad-hoc 签名静态校验通过，
-这不等于 Developer ID 签名、公证或运行验收。正式流程产物没有启动，Windows
-尚未验证。
+这不等于 Developer ID 签名、公证或运行验收。正式流程产物没有启动。
+Windows 目录式构建的用户反馈及单文件验证边界见上文。
 
 桌面壳测试（模拟生命周期，不需要启动窗口）：
 
