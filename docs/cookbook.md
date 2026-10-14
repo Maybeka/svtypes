@@ -220,7 +220,7 @@ check = generate(package, output, mode="check")
 1. 将模型定义放在稳定 Python module，并用一个显式 `Package` 控制发布边界。
 2. 在构建步骤调用 `generate(...)`，不要把 `.to_sv_obj()` 的字符串拼接散落到多个脚本。
 3. 在 CI 运行 `generate(..., mode="check")`，防止 Python 声明与已提交生成物漂移。
-4. 让下游 SVX/仿真构建通过 `sv_runtime_file()`、`cpp_include_dir()` 等公开 helper 查找已安装 runtime，
+4. 让下游工程或仿真构建通过 `sv_runtime_file()`、`cpp_include_dir()` 等公开 helper 查找已安装 runtime，
    不要猜测源码树路径。
 
 **跟读代码：** 先看 `Package` 与 `@svobj(registry=package)` 的配对关系，再比较首次 `generate()` 与随后的

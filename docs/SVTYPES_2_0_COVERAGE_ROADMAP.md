@@ -241,7 +241,7 @@ illegal hit、有限用例来源、waiver/exclusion 和 merge history。数据�
        self.cg.instantiate(first, last)
    ```
 
-   Python 宿主在 `__init__` 内调用此方法，SV 生成器则生成同签名的专用初始化方法；SVX/测试台必须在
+   Python 宿主在 `__init__` 内调用此方法，SV 生成器则生成同签名的专用初始化方法；下游集成或测试台必须在
    对象完成初始化或解码后以相同的 SV actual 显式调用它。它不是把任意 Python `__init__` 或 Python
    运行时值跨进程复制到 SV 的机制。函数只允许参数、常量、宿主静态字段及已支持的受限表达式；禁止任意
    Python 调用、I/O、随机化、局部可变状态或不透明控制流。一次初始化后覆盖组实例及其 actual 均冻结。

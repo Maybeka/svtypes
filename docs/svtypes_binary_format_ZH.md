@@ -4,7 +4,8 @@
 > 两个版本必须在同一变更中同步更新；同步校验记录见
 > [translation_manifest.json](translation_manifest.json)。
 
-本文定义 Python SvTypes、生成的 SystemVerilog SvTypes 与 SVX typed payload channel 共用的稳定字节格式。
+本文定义 Python SvTypes、生成的 SystemVerilog SvTypes 与生成的 C++ codec 共用的稳定字节格式。
+下游传输层可以承载这些字节，但不定义或改变本格式。
 
 ## 通用规则
 
@@ -107,7 +108,7 @@ reference record 后没有 field byte。prototype version-1 object stream 不能
 - 生成 SV unpack 对同一情形调用 `$fatal`。
 - 不支持的 generated-SV type 必须在 generation 阶段以 `NotImplementedError` 失败。
 - recursive object graph 使用上述 M4 reference record。
-- packed union 不在当前 SVX 范围；加入前需要独立的 active-member/tag policy 和 bit-aliasing contract。
+- packed union 不在当前 SvTypes 范围；加入前需要独立的 active-member/tag policy 和 bit-aliasing contract。
 
 ## Decoder 资源限制与事务
 

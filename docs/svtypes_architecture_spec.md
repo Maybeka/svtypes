@@ -2,41 +2,26 @@
 
 ## TL;DR
 
-> **SvTypes** is the data definition layer of the SVX (SystemVerilog eXtensions) framework. It is a Python DSL that models hardware data structures once and generates equivalent SystemVerilog (packages/classes) and C++ (headers/structs) declarations, with binary serialization parity across those backends. DPI routing and any private C adaptation belong to SVX, not to SvTypes.
+> **SvTypes** is an independent Python library for SystemVerilog-like data modeling, constrained randomization, functional coverage, binary serialization, and SystemVerilog/C++ code generation. It models data structures once and provides equivalent declarations and binary serialization across supported backends. Transport integration, DPI routing, and private C adaptation are responsibilities of downstream consumers, not dependencies of SvTypes.
 
 ---
 
 ## 1. Context & Purpose
 
-### 1.1 What is SVX?
+### 1.1 Independent Project Scope
 
-SVX (SystemVerilog eXtensions) is a framework that brings Python into the SystemVerilog simulation ecosystem via the DPI (Direct Programming Interface). It comprises three layers:
-
-```
-┌──────────────────────────────────────────────────────────┐
-│  PyUVM                                                     │
-│  UVM-style verification framework in Python                │
-│  Consumes SvTypes for sequence items, configs, transactions│
-├──────────────────────────────────────────────────────────┤
-│  SVX Bridge (DPI Integration)                              │
-│  Connects SV simulator ↔ Python interpreter                │
-│  Handles DPI call routing, memory, handle mapping          │
-│  Consumes SvTypes for type-safe data marshaling            │
-├──────────────────────────────────────────────────────────┤
-│  SvTypes (Data Definition Layer)                           │
-│  Define data structures once in Python                     │
-│  Generate: SV classes/packages + C++ structs               │
-│  Binary serialization parity: Python ≡ SV ≡ C++            │
-└──────────────────────────────────────────────────────────┘
-                    ↓ runs on top of ↓
-┌──────────────────────────────────────────────────────────┐
-│  SystemVerilog conformance target                          │
-└──────────────────────────────────────────────────────────┘
-```
+SvTypes supports standalone modeling, randomization, coverage, serialization,
+and code-generation workflows. Its public APIs can also be consumed by
+verification frameworks, testbenches, and transport integrations. Those
+consumers do not define SvTypes' architecture, feature scope, or dependency
+boundary. SVX is one such downstream consumer, not the parent framework of
+SvTypes.
 
 ### 1.2 SvTypes' Role
 
-SvTypes is the **single source of truth for all data structures** that flow through the SVX stack. A verification engineer defines a transaction type once:
+SvTypes uses a **single declaration model** for its supported Python values,
+randomization and coverage semantics, generated declarations, and serialization
+contracts. A verification engineer defines a transaction type once:
 
 ```python
 class OpEnum(Enum[Bit[8]]):
@@ -345,16 +330,8 @@ package svtypes_pkg;
   function automatic void pack_length(int unsigned len, ref byte unsigned b[$]);
   function automatic int unsigned unpack_length(ref byte unsigned b[$], ref int offset);
 
-  import "DPI-C" function void svx_pack_int(int v, ref byte unsigned b[$]);
-  import "DPI-C" function void svx_unpack_int(ref int v, ref byte unsigned b[$], ref int offset);
-  import "DPI-C" function void svx_pack_longint(longint v, ref byte unsigned b[$]);
-  import "DPI-C" function void svx_unpack_longint(ref longint v, ref byte unsigned b[$], ref int offset);
-  import "DPI-C" function void svx_pack_real(real v, ref byte unsigned b[$]);
-  import "DPI-C" function void svx_unpack_real(ref real v, ref byte unsigned b[$], ref int offset);
-  import "DPI-C" function void svx_pack_shortreal(shortreal v, ref byte unsigned b[$]);
-  import "DPI-C" function void svx_unpack_shortreal(ref shortreal v, ref byte unsigned b[$], ref int offset);
-  import "DPI-C" function void svx_pack_string(string v, ref byte unsigned b[$]);
-  import "DPI-C" function void svx_unpack_string(ref string v, ref byte unsigned b[$], ref int offset);
+  // Scalar and collection codecs are implemented by the SvTypes SV runtime;
+  // no downstream transport's DPI functions are required.
 
   function automatic void pack_type(sv_object v, ref byte unsigned b[$]);
   function automatic void unpack_type(sv_object v, ref byte unsigned b[$], ref int offset);
@@ -379,7 +356,7 @@ struct SvObject {
 
 SvTypes 1.0 does not expose or generate a public C API. The supported native
 runtime is C++20. DPI routing and any private C ABI adaptation belong to a
-transport integration such as SVX and are not SvTypes data-model APIs.
+downstream transport integration and are not SvTypes data-model APIs.
 
 ---
 

@@ -1,10 +1,9 @@
 # SvTypes
 
-SvTypes is the independent data-modeling and serialization package used by
-SVX. It provides a Python DSL for SystemVerilog-like types, binary
-pack/unpack, and generated SystemVerilog/C++ support code.
-
-SvTypes does not depend on SVX.
+SvTypes is an independent Python library for SystemVerilog-like data modeling,
+constrained randomization, functional coverage, binary serialization, and
+SystemVerilog/C++ code generation. It can be used directly or integrated into
+other verification tools without depending on a particular host framework.
 
 当前稳定版本为 `1.4.1`。支持范围、明确排除项与兼容性承诺见
 [支持矩阵](docs/svtypes_support_matrix.md)和
@@ -40,7 +39,7 @@ The target configuration and its private adapter are development-environment
 configuration; an unavailable target is reported as a test failure, never as a
 skipped conformance result.
 
-SVX should depend on a versioned SvTypes release and discover support files
+Downstream projects should depend on a versioned SvTypes release and discover support files
 through the public `svtypes` package helpers.
 
 ## License

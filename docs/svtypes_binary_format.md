@@ -1,7 +1,8 @@
 # SvTypes Binary Format
 
 This file defines the stable byte format used by Python SvTypes,
-generated SystemVerilog SvTypes, and SVX typed payload channels.
+generated SystemVerilog SvTypes, and generated C++ codecs. Downstream
+transports may carry these bytes without defining or changing this format.
 
 ## General Rules
 
@@ -116,7 +117,7 @@ mismatch for an existing id is an error.
 - Unsupported generated-SV types must fail during generation with
   `NotImplementedError`.
 - Recursive object graphs use M4 reference records described above.
-- Packed unions are excluded from current SVX scope. They require a separate
+- Packed unions are excluded from current SvTypes scope. They require a separate
   active-member/tag policy and bit-aliasing contract before they can be added.
 
 ## Decoder Resource Limits and Transactions
