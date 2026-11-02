@@ -392,11 +392,22 @@ def _value_domain_declaration(cls: type[Any], point: CoveragePointIR) -> tuple[s
     if expression.get("kind") not in {"container_values", "container_nullness", "assoc_values", "assoc_nullness"}:
         raise ValueError(f"coverage point {point.name!r} is not a value-domain point")
     _, field = expression["path"].split(".", 1)
-    descriptor = next((base.__dict__[field] for base in cls.mro() if field in base.__dict__), None)
+    root, *members = field.split(".")
+    descriptor = next((base.__dict__[root] for base in cls.mro() if root in base.__dict__), None)
+    for member in members:
+        descriptor = dict(descriptor._SvObject__svtypes_members).get(member)
     for index in expression.get("indices", ()):
         descriptor = getattr(descriptor, "_elem_template", None)
         field += f"[{index}]"
-    template = getattr(descriptor, "_val_template", None)
+    if "projection" in expression:
+        template = descriptor
+        for step in expression["projection"]:
+            if step["kind"] == "member":
+                template = dict(template._SvObject__svtypes_members)[step["name"]]
+            else:
+                template = template._val_template if step["kind"] == "mapping" else template._elem_template
+    else:
+        template = getattr(descriptor, "_val_template", None)
     if template is None:
         template = getattr(descriptor, "_elem_template", None)
     if template is None:
@@ -526,6 +537,27 @@ def render_type_coverage(cls: type[Any], indent: str, unit: str) -> list[str]:
                 lines.append(f"{indent}{unit * 3}cg.sample(item);")
             for point in value_points:
                 field, _, index = _value_domain_declaration(cls, point)
+                if "projection" in point.expression:
+                    access = f"item.{field}"
+                    level = 3
+                    for number, projection in enumerate(point.expression["projection"]):
+                        kind = projection["kind"]
+                        if kind == "member":
+                            access += "." + projection["name"]
+                        elif kind == "index":
+                            slot = projection["index"]
+                            lines.append(f"{indent}{unit * level}if ($size({access}) > {slot}) begin")
+                            access += f"[{slot}]"
+                            level += 1
+                        else:
+                            variable = f"{index}_{number}"
+                            lines.append(f"{indent}{unit * level}foreach ({access}[{variable}]) begin")
+                            access += f"[{variable}]"
+                            level += 1
+                    lines.append(f"{indent}{unit * level}cg_{_identifier(point.name)}.sample({access});")
+                    for close in reversed(range(3, level)):
+                        lines.append(f"{indent}{unit * close}end")
+                    continue
                 depth = len(point.expression.get("container_kinds", ("sequence",)))
                 access = f"item.{field}"
                 base_level = 3

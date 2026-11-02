@@ -538,15 +538,38 @@ def _key_value(descriptor: Any, segment: FieldKey) -> Any:
 
 
 def _get_path(value: Any, descriptor: Any, path: FieldPath) -> Any:
+    from .object import SvObject, SvStruct, ObjectDescriptor
+
     for segment in path:
         if isinstance(segment, FieldMember):
-            value = getattr(value, segment.name).value
+            child_desc = _child_descriptor(descriptor, segment)
+            child = SvStruct._struct_member_value(value, segment.name, child_desc)
+            value = child if isinstance(child_desc, (SvObject, ObjectDescriptor)) else child.value
         elif isinstance(segment, FieldIndex):
             value = value[segment.index]
         else:
             value = value[_key_value(descriptor, segment)]
         descriptor = _child_descriptor(descriptor, segment)
     return value
+
+
+def _write_path(root: Any, descriptor: Any, path: FieldPath, value: Any) -> Any:
+    """Write through value-bearing members instead of mutating detached lists."""
+    from .object import SvObject
+
+    if not path.segments:
+        return value
+    first = path.segments[0]
+    child_desc = _child_descriptor(descriptor, first)
+    child = _get_path(root, descriptor, FieldPath((first,)))
+    updated = _write_path(child, child_desc, FieldPath(path.segments[1:]), value)
+    if isinstance(first, FieldMember):
+        SvObject._assign_unpacked_field(root, first.name, child_desc, updated)
+    elif isinstance(first, FieldIndex):
+        root[first.index] = updated
+    else:
+        root[_key_value(descriptor, first)] = updated
+    return root
 
 
 def _container_at(root: Any, descriptor: Any, path: FieldPath) -> tuple[Any, Any, FieldMember | FieldIndex | FieldKey | None]:
@@ -577,19 +600,14 @@ def _apply_operation(root: Any, descriptor: Any, path: FieldPath, operation: Fie
             else:
                 return value
             return root
-        if isinstance(last, FieldMember):
-            getattr(parent, last.name).value = value
-        elif isinstance(last, FieldIndex):
-            parent[last.index] = value
-        else:
-            parent[_key_value(parent_desc, last)] = value
-        return root
+        return _write_path(root, descriptor, path, value)
     target = _get_path(root, descriptor, path)
     target_desc = FieldDescriptor(descriptor).resolve_path(path).codec
     if operation is FieldOperation.APPEND:
         if not isinstance(target, list) or not isinstance(target_desc, (DynArray, Queue)):
             raise ExternalStorageError("append requires a dynamic array or queue")
         target.append(value)
+        return _write_path(root, descriptor, path, target)
     elif operation is FieldOperation.INSERT:
         if (
             not isinstance(parent, list)
@@ -598,6 +616,7 @@ def _apply_operation(root: Any, descriptor: Any, path: FieldPath, operation: Fie
         ):
             raise ExternalStorageError("insert requires an indexed sequence path")
         parent.insert(last.index, value)
+        return _write_path(root, descriptor, FieldPath(path.segments[:-1]), parent)
     elif operation in (FieldOperation.DELETE, FieldOperation.POP):
         if (
             isinstance(last, FieldIndex)
@@ -609,6 +628,7 @@ def _apply_operation(root: Any, descriptor: Any, path: FieldPath, operation: Fie
             del parent[_key_value(parent_desc, last)]
         else:
             raise ExternalStorageError("delete/pop requires an indexed or keyed element path")
+        return _write_path(root, descriptor, FieldPath(path.segments[:-1]), parent)
     elif operation is FieldOperation.RESIZE:
         if (
             not isinstance(target, list)
@@ -619,7 +639,11 @@ def _apply_operation(root: Any, descriptor: Any, path: FieldPath, operation: Fie
             raise ExternalStorageError("resize requires a sequence and a nonnegative length")
         del target[value:]
         while len(target) < value:
-            target.append(_unpack_exact(target_desc._elem_template, _pack_value(target_desc._elem_template, 0)))
+            from .collection import _container_elem_is_object_handle
+
+            template = target_desc._elem_template
+            target.append(None if _container_elem_is_object_handle(template) else copy.deepcopy(template.value))
+        return _write_path(root, descriptor, path, target)
     else:
         raise ExternalStorageError(f"unsupported external operation {operation!r}")
     return root

@@ -19,16 +19,39 @@ def _value(value: Any) -> Any:
     return value
 
 
+def _integral_value(value: Any) -> Any:
+    from ..object import SvPackedStruct
+
+    return _value(value._packed_value()) if isinstance(value, SvPackedStruct) else value
+
+
 def eval_expr(expression: Any, context: dict[str, Any]) -> Any:
     """Evaluate the restricted structural CoverageExpr IR."""
     kind = expression["kind"]
     if kind in {"field", "slot", "slot_is_null", "container_values", "container_nullness", "assoc_values", "assoc_nullness", "is_null"}:
         _, field_name = expression["path"].split(".", 1)
         item = context["item"]
+        *parents, field_name = field_name.split(".")
+        for parent in parents:
+            item = getattr(item, parent)
         if kind == "is_null":
             descriptor = next((base.__dict__[field_name] for base in type(item).mro() if field_name in base.__dict__), None)
             return int(item.__dict__.get(getattr(descriptor, "_cache_key", "")) is None)
         value = getattr(item, field_name)
+        if "projection" in expression:
+            values = [value]
+            for step in expression["projection"]:
+                if step["kind"] == "member":
+                    from ..object import SvStruct
+
+                    values = [SvStruct._struct_member_value(child, step["name"],
+                              dict(child._SvObject__svtypes_members)[step["name"]]) for child in values]
+                elif step["kind"] == "index":
+                    values = [child[step["index"]] for child in values if step["index"] < len(child)]
+                else:
+                    values = [leaf for child in values for leaf in
+                              (_value(child).values() if step["kind"] == "mapping" else _value(child))]
+            return [int(child is None) for child in values] if kind == "container_nullness" else values
         if kind in {"container_values", "container_nullness", "assoc_values", "assoc_nullness"}:
             for index in expression.get("indices", ()):
                 value = value[index]
@@ -72,10 +95,11 @@ def eval_expr(expression: Any, context: dict[str, Any]) -> Any:
             return _value(base[slice(lower, upper)])
         return _value(base[eval_expr(index, context)])
     if kind == "unary":
-        operand = eval_expr(expression["operand"], context)
+        operand = _integral_value(eval_expr(expression["operand"], context))
         return {"+": lambda: +operand, "-": lambda: -operand, "~": lambda: ~operand, "not": lambda: not operand}[expression["operator"]]()
     if kind == "binary":
         left, right = eval_expr(expression["left"], context), eval_expr(expression["right"], context)
+        left, right = _integral_value(left), _integral_value(right)
         return {
             "+": lambda: left + right, "-": lambda: left - right, "*": lambda: left * right,
             "/": lambda: left // right, "%": lambda: left % right, "**": lambda: left ** right,
@@ -83,12 +107,12 @@ def eval_expr(expression: Any, context: dict[str, Any]) -> Any:
             "<<": lambda: left << right, ">>": lambda: left >> right,
         }[expression["operator"]]()
     if kind == "boolean":
-        values = [bool(eval_expr(item, context)) for item in expression["values"]]
+        values = [bool(_integral_value(eval_expr(item, context))) for item in expression["values"]]
         return all(values) if expression["operator"] == "and" else any(values)
     if kind == "compare":
-        left = eval_expr(expression["left"], context)
+        left = _integral_value(eval_expr(expression["left"], context))
         for operator, right_node in zip(expression["operators"], expression["comparators"]):
-            right = eval_expr(right_node, context)
+            right = _integral_value(eval_expr(right_node, context))
             matched = {
                 "==": left == right, "!=": left != right, "<": left < right, "<=": left <= right,
                 ">": left > right, ">=": left >= right,
@@ -98,7 +122,7 @@ def eval_expr(expression: Any, context: dict[str, Any]) -> Any:
             left = right
         return True
     if kind == "if":
-        return eval_expr(expression["then"] if eval_expr(expression["condition"], context) else expression["else"], context)
+        return eval_expr(expression["then"] if _integral_value(eval_expr(expression["condition"], context)) else expression["else"], context)
     if kind == "tuple":
         return tuple(eval_expr(item, context) for item in expression["items"])
     raise CoverageError(f"unsupported frozen coverage expression kind {kind!r}")
@@ -146,7 +170,7 @@ def _matches_cross_selector(
             for reference in selector["items"]
         )
     if selector.get("kind") == "cross_queue_values":
-        sample = tuple(_value(values[member]) for member in values)
+        sample = tuple(_integral_value(_value(values[member])) for member in values)
         if queue_values is None:
             queue_values = {tuple(item) for item in selector["items"]}
         return sample in queue_values
@@ -406,7 +430,7 @@ class CoverageRuntime:
 
     def _sample_point(self, point: CoveragePointIR, context: dict[str, Any], case_id: str | None) -> tuple[str, ...] | None:
         counters = self.counters[point.name]
-        if point.iff is not None and not bool(eval_expr(point.iff, context)):
+        if point.iff is not None and not bool(_integral_value(eval_expr(point.iff, context))):
             return None
         try:
             values = eval_expr(point.expression, context)
@@ -419,6 +443,7 @@ class CoverageRuntime:
         return self._classify_value(point, counters, values, context, case_id)
 
     def _classify_value(self, point: CoveragePointIR, counters: PointCounters, value: Any, context: dict[str, Any], case_id: str | None) -> tuple[str, ...] | None:
+        value = _integral_value(value)
         counters.samples += 1
         candidates = self._point_candidates(point, value)
         transitions = [bin_ for bin_ in candidates if bin_.kind == "transition"]
@@ -460,7 +485,7 @@ class CoverageRuntime:
         context: dict[str, Any],
         case_id: str | None,
     ) -> None:
-        if cross.iff is not None and not bool(eval_expr(cross.iff, context)):
+        if cross.iff is not None and not bool(_integral_value(eval_expr(cross.iff, context))):
             return
         effective_classified = dict(classified)
         effective_points = {point.name: point for point in self.ir.points}
@@ -505,10 +530,10 @@ class CoverageRuntime:
         case_id: str | None,
     ) -> tuple[str, ...] | None:
         """Classify a private cross member without creating public point hits."""
-        if point.iff is not None and not bool(eval_expr(point.iff, context)):
+        if point.iff is not None and not bool(_integral_value(eval_expr(point.iff, context))):
             return None
         try:
-            value = eval_expr(point.expression, context)
+            value = _integral_value(eval_expr(point.expression, context))
         except IndexError:
             return None
         candidates = self._point_candidates(point, value)

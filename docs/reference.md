@@ -113,6 +113,25 @@ record name and ordered fields.
 
 ### 5.1 Generated SV expressions
 
+#### Struct kinds and migration
+
+`SvStruct` declares an unpacked value structure. Use `SvPackedStruct` for a
+packed integral structure; it is also a Python subtype of `SvStruct`. Both are
+non-null values, without an object envelope or object number. Unpacked members
+may include supported containers, strings and class handles. Assigning `.value`
+copies aggregate storage and preserves the references held by class handles.
+Packed structures accept packed integral members only, with the first member
+in the highest bits. Constraints and `unique()` treat their whole value as one
+unsigned integral operand; modes on individual packed members are not exposed.
+
+Existing definitions that require the historical packed behavior must change
+their base to `SvPackedStruct`. Struct identities and source schemas now include
+an explicit `packed` boolean. The fieldwise byte encoding is unchanged: packing
+a struct does not combine separately encoded fields or add host padding.
+Unpacked typedefs carry their member defaults; packed typedefs use a containing
+field assignment pattern instead. See the [struct contract](SVTYPES_STRUCT_CONTRACT.md)
+for integration, migration and the capability qualification status.
+
 `sv_type_expression(codec)`, `sv_packer_expression(codec)`, and
 `sv_declaration(codec, name)` are stable rendering entry points for an
 integration that generates a typed adapter around an existing SvTypes codec.
@@ -121,7 +140,7 @@ places unpacked dimensions correctly after `name`.
 
 `sv_declaration(codec, name, include_initializer=True)` also includes an explicit
 initializer supplied by `Bit`, `Int`, `LongInt`, `Logic`, `String`, `Real`,
-`ShortReal`, `Enum`, `SvStruct`, or fixed `Array` elements. The default
+`ShortReal`, `Enum`, `SvPackedStruct`, or fixed `Array` elements. The default
 remains declaration-only. `codec.sv_initializer()` returns the original declared
 initializer (or `None`), while `codec.sv_repr()` renders the current value;
 changing a value does not change its declaration. Logic initializers preserve

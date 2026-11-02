@@ -35,7 +35,8 @@ Status legend:
 | `Real` | covered | covered | covered | simulator parity instability must be documented or deferred |
 | `ShortReal` | covered | covered | covered | simulator parity instability must be documented or deferred |
 | `SvObject` | covered | covered | covered | missing generated unpack support must fail clearly |
-| `SvStruct` | covered | covered | covered | non-null by-value packed composite; dynamic/handle members and inheritance are rejected |
+| `SvStruct` | covered | covered | covered | default unpacked value; memberwise codecs, containers, graph handles and value copying; no user struct inheritance; see [struct contract](SVTYPES_STRUCT_CONTRACT.md) |
+| `SvPackedStruct` | covered | covered | covered | explicit packed integral value, retaining memberwise bytes; random packed enum full-domain target qualification is separately gated in the [struct contract](SVTYPES_STRUCT_CONTRACT.md) |
 | `RemoteRef` | covered | covered | covered | exactly one opaque nullable 64-bit object number; no graph/ownership behavior; resolution requires consumer transport context |
 | fixed `Array` | covered | covered | covered | public runtime class; unsupported element type must fail during generation |
 | multi-dimensional fixed `Array` | covered | covered | covered | tuple shapes recursively construct public nested `Array` instances; generated SV emits explicit loops |

@@ -180,6 +180,10 @@ _SV_LITERAL = re.compile(r"^(?:(?P<width>[0-9]+)'(?P<signed>[sS]?)(?P<base>[bBoO
 
 
 def _domain_descriptor(descriptor: Any) -> tuple[int, bool, bool] | None:
+    from ..object import SvPackedStruct
+
+    if isinstance(descriptor, SvPackedStruct):
+        return descriptor.width, descriptor.signed, descriptor.state_domain == "4state"
     if isinstance(descriptor, (Array, DynArray, Queue)):
         return _domain_descriptor(descriptor._elem_template)
     if isinstance(descriptor, AssocArray):
@@ -561,6 +565,20 @@ def _option_values(node: ast.ClassDef, owner: str, base: str, allowed: set[str])
 
 
 def _field_descriptor(owner: type[Any], source: ast.AST) -> Any | None:
+    from ..object import SvStruct
+
+    if isinstance(source, ast.Attribute) and isinstance(source.value, ast.Attribute):
+        parent = _field_descriptor(owner, source.value)
+        if isinstance(parent, SvStruct):
+            return dict(parent._SvObject__svtypes_members).get(source.attr)
+        return None
+    if isinstance(source, ast.Subscript):
+        parent = _field_descriptor(owner, source.value)
+        if isinstance(parent, (Array, DynArray, Queue)):
+            return parent._elem_template
+        if isinstance(parent, AssocArray):
+            return parent._val_template
+        return None
     if not (
         isinstance(source, ast.Attribute)
         and isinstance(source.value, ast.Name)
@@ -593,7 +611,8 @@ def _automatic_bins_for_descriptor(
             )
             for member in descriptor._enum_items
         )
-    if not isinstance(descriptor, (Bit, Logic)):
+    from ..object import SvPackedStruct
+    if not isinstance(descriptor, (Bit, Logic, SvPackedStruct)):
         raise _error(f"coverage point {point_name!r} needs explicit bins because its automatic value domain is unknown")
     lower = -(1 << (descriptor.width - 1)) if descriptor.signed else 0
     upper = (1 << (descriptor.width - 1)) - 1 if descriptor.signed else (1 << descriptor.width) - 1
@@ -707,6 +726,11 @@ def _point_class(
     if iff_expression is not None:
         _validate_expression_names(iff_expression, allowed_names, f"point {node.name!r} iff")
     descriptor = _field_descriptor(owner, keywords["source"])
+    from ..object import SvStruct, SvPackedStruct
+
+    scalar = _scalar_descriptor(descriptor)
+    if isinstance(scalar, SvStruct) and not isinstance(scalar, SvPackedStruct):
+        raise _error(f"coverage point {node.name!r} requires an integral source; select an unpacked struct member")
     bins: list[CoverageBinIR] = []
     options: list[tuple[str, Any]] = []
     for statement in node.body:

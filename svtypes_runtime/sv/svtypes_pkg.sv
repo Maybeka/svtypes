@@ -68,7 +68,8 @@ package svtypes_pkg;
         "svtypes.constraint-sample.v1",
         "svtypes.external-field-storage.v1",
         "svtypes.record-schema.v1",
-        "svtypes.remote-reference.v1"
+        "svtypes.remote-reference.v1",
+        "svtypes.struct-kinds.v1"
       };
     endfunction
 

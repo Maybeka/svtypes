@@ -472,6 +472,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         copied = cls._new_value_state(
             session=session, defer_identity=bool(memo.get("__svtypes_defer_identity__"))
         )
+        copied._field_options = self._field_options
         memo[id(self)] = copied
         for name, _ in self.__svtypes_members:
             desc = dict(self.__svtypes_members)[name]
@@ -792,6 +793,10 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
              raise TypeError(f"Expected {self.__class__.__name__}, got {type(value)}")
         return value
 
+    def to_bytes(self) -> bytes:
+        # Explicit record fields may legitimately be named ``value``.
+        return self.pack(self)
+
     def from_bytes(self, bytes_: bytes):
         decoded, count = self.unpack(bytes_, _target=self)
         if decoded is None:
@@ -860,7 +865,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         mro = cls.mro()
         cls.__svtypes_base_name = None
         for base in mro[1:]:
-            if base.__name__ in ('SvObject', 'SvStruct'):
+            if base.__name__ in ('SvObject', 'SvStruct', 'SvPackedStruct'):
                 break
             if issubclass(base, SvObject):
                 cls.__svtypes_base_name = base.__name__
@@ -911,7 +916,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                     break
 
         for base in reversed(mro):
-            if base is object or base.__name__ in ('SvObject', 'SvStruct'): continue
+            if base is object or base.__name__ in ('SvObject', 'SvStruct', 'SvPackedStruct'): continue
             for name, attr in base.__dict__.items():
                 if name.startswith('_') and name not in base.__dict__.get('_svtypes_record_field_names', ()):
                     continue
@@ -997,7 +1002,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         if (
             isinstance(direct_base, type)
             and issubclass(direct_base, SvObject)
-            and direct_base.__name__ not in ('SvObject', 'SvStruct')
+            and direct_base.__name__ not in ('SvObject', 'SvStruct', 'SvPackedStruct')
         ):
             from .constraint.collect import has_unbound_parameters
 
@@ -1059,19 +1064,27 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
             return isinstance(desc, (Bit, Logic, Int, LongInt, Enum)) or (
                 struct_type is not None and isinstance(desc, struct_type)
+                and desc._svtypes_packed
             )
 
-        if is_struct_class and cls.__name__ != "SvStruct":
+        is_packed_struct = is_struct_class and getattr(cls, "_svtypes_packed", False)
+        if is_struct_class and cls.__name__ not in {"SvStruct", "SvPackedStruct"}:
             if cls.__svtypes_base_name is not None:
                 raise UnsupportedTypeError(
-                    f"SvStruct inheritance is not supported in 1.0: {cls.__name__} extends {cls.__svtypes_base_name}"
+                    f"SvStruct inheritance is not supported: {cls.__name__} extends {cls.__svtypes_base_name}"
                 )
+            if not ordered_members:
+                raise DeclarationError(f"struct {cls.__name__} requires at least one member")
             for name, desc in ordered_members:
-                if not packed_struct_member_supported(desc):
+                if is_packed_struct and not packed_struct_member_supported(desc):
                     raise UnsupportedTypeError(
                         f"SvStruct member {cls.__name__}.{name} ({desc.__class__.__name__}) "
                         "is not a portable packed value"
                     )
+                if is_packed_struct and isinstance(desc, Enum):
+                    # IEEE 1800 18.4: enum members of a random packed struct
+                    # use their entire integral storage domain.
+                    desc._svtypes_packed_member = True
 
         def rand_supported(desc: Any) -> bool:
             from .randomizable import is_randomizable
@@ -1081,7 +1094,9 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         def randc_supported(desc: Any) -> bool:
             from .bit import Bit
 
-            return isinstance(desc, (Bit, Enum))
+            return isinstance(desc, (Bit, Enum)) or (
+                struct_type is not None and isinstance(desc, struct_type) and desc._svtypes_packed
+            )
 
         def plusarg_supported(desc: Any) -> bool:
             from .real import Real
@@ -1102,6 +1117,8 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             from .collection import Array, AssocArray, DynArray, Queue
 
             return isinstance(desc, (Bit, Logic, Enum, Array, DynArray, Queue, AssocArray, ObjectDescriptor, SymbolicPackedField, SymbolicArrayField, SymbolicCollectionField)) or (
+                struct_type is not None and isinstance(desc, struct_type)
+            ) or (
                 isinstance(desc, SvObject) and not (
                     struct_type is not None and isinstance(desc, struct_type)
                 )
@@ -1109,11 +1126,11 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
         for name, desc in ordered_members:
             if isinstance(desc, TypeBase):
-                if is_struct_class and desc.field_options.rand is True:
+                if is_packed_struct and desc.field_options.rand is True:
                     raise ValueError(
                         f"rand belongs to the containing field, not SvStruct member {cls.__name__}.{name}"
                     )
-                if is_struct_class and desc.field_options.randc:
+                if is_packed_struct and desc.field_options.randc:
                     raise ValueError(
                         f"randc belongs to the containing field, not SvStruct member {cls.__name__}.{name}"
                     )
@@ -1121,7 +1138,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                     raise ValueError(
                         f"plusarg belongs to the containing field, not SvStruct member {cls.__name__}.{name}"
                     )
-                if is_struct_class and desc.field_options.cov is True:
+                if is_packed_struct and desc.field_options.cov is True:
                     raise ValueError(
                         f"cov belongs to the containing field, not SvStruct member {cls.__name__}.{name}"
                     )
@@ -1149,7 +1166,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                     raise ValueError(
                         f"cov=True is unsupported for {cls.__name__}.{name} ({desc.__class__.__name__})"
                     )
-                if is_struct_class and not desc.pack_bytes:
+                if is_packed_struct and not desc.pack_bytes:
                     raise ValueError(
                         f"pack_bytes=False is illegal for packed SvStruct member {cls.__name__}.{name}"
                     )
@@ -2284,7 +2301,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 return value.pack(value, ctx)
             return cls.codec_template(session=ctx.session).pack(None, ctx)
         if isinstance(desc, SvStruct):
-            return desc.pack(value)
+            return desc.pack(value, ctx)
         if isinstance(desc, SvObject):
             return desc.pack(value, ctx)
         if isinstance(desc, Array):
@@ -2329,7 +2346,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 )
             return cls.codec_template(session=ctx.session).unpack(bytes_, ctx)
         if isinstance(desc, SvStruct):
-            return desc.unpack(bytes_)
+            return desc.unpack(bytes_, ctx)
         if isinstance(desc, SvObject):
             return desc.unpack(bytes_, ctx)
         if isinstance(desc, Array):
@@ -2629,7 +2646,9 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
 
 class SvStruct(SvObject):
-    """Pure by-value packed composite with no object numberentity or graph envelope."""
+    """Unpacked by-value structure, without an object identity or envelope."""
+
+    _svtypes_packed = False
 
     def __init__(self, **kwargs) -> None:
         TypeBase.__init__(self, **kwargs)
@@ -2662,33 +2681,97 @@ class SvStruct(SvObject):
         if not isinstance(val, self.__class__):
             raise TypeError(f"Expected {self.__class__.__name__}, got {type(val)}")
         for name, desc in self._SvObject__svtypes_members:
-            source = getattr(val, name)
+            source = self._struct_member_value(val, name, desc)
+            if isinstance(desc, ObjectDescriptor):
+                setattr(self, name, source)
+                continue
+            if isinstance(desc, SvObject) and not isinstance(desc, SvStruct):
+                object.__setattr__(self, desc._storage_key, source)
+                continue
             target = getattr(self, name)
             if isinstance(desc, SvStruct):
                 target.value = source
             else:
-                target.value = copy.deepcopy(source.value)
+                target.value = self._copy_struct_member_value(desc, source.value)
 
-    def pack(self, value: "SvStruct") -> bytes:
+    @staticmethod
+    def _struct_member_value(owner: "SvStruct", name: str, desc: Any) -> Any:
+        from .external_storage import external_binding
+
+        if isinstance(desc, ObjectDescriptor) and external_binding(owner) is None:
+            return owner.__dict__.get(desc._cache_key)
+        return getattr(owner, name)
+
+    @staticmethod
+    def _copy_struct_member_value(desc: Any, value: Any) -> Any:
+        """SV aggregate assignment copies containers, but never referent objects."""
+        from .collection import Array, AssocArray, DynArray, Queue
+
+        if isinstance(desc, ObjectDescriptor) or (isinstance(desc, SvObject) and not isinstance(desc, SvStruct)):
+            return value
+        if isinstance(desc, SvStruct):
+            copied = type(value).codec_template()
+            copied.value = value
+            return copied
+        if isinstance(desc, (Array, DynArray, Queue)):
+            return [SvStruct._copy_struct_member_value(desc._elem_template, item) for item in value]
+        if isinstance(desc, AssocArray):
+            return {SvStruct._copy_struct_member_value(desc._key_template, key):
+                    SvStruct._copy_struct_member_value(desc._val_template, item) for key, item in value.items()}
+        return copy.deepcopy(value)
+
+    def __copy__(self):
+        copied = type(self).codec_template()
+        copied._field_options = self._field_options
+        copied.value = self
+        return copied
+
+    def pack(self, value: "SvStruct", ctx: PackContext | None = None) -> bytes:
         if not isinstance(value, self.__class__):
             raise TypeError(f"Expected {self.__class__.__name__}, got {type(value)}")
         output = bytearray()
+        ctx = ctx or PackContext()
         for name, desc in self._SvObject__svtypes_members:
-            member = getattr(value, name)
-            output.extend(desc.pack(member if isinstance(desc, SvStruct) else member.value))
+            if not desc.pack_bytes:
+                continue
+            member = self._struct_member_value(value, name, desc)
+            raw = member if isinstance(desc, (SvObject, ObjectDescriptor)) else member.value
+            output.extend(SvObject._pack_field_value(desc, raw, ctx))
         return bytes(output)
 
-    def unpack(self, bytes_: bytes) -> tuple["SvStruct", int]:
-        result = self.__class__.codec_template()
-        offset = 0
-        for name, desc in self._SvObject__svtypes_members:
-            value, count = desc.unpack(bytes_[offset:])
-            offset += count
+    def unpack(self, bytes_: bytes, ctx: UnpackContext | None = None) -> tuple["SvStruct", int]:
+        ctx = ctx or UnpackContext()
+        root = ctx._begin(len(bytes_))
+        succeeded = False
+        try:
+            result = self.__class__.codec_template()
+            offset = 0
+            for name, desc in self._SvObject__svtypes_fields:
+                value, count = SvObject._unpack_field_value(desc, bytes_[offset:], ctx)
+                offset += count
+                if isinstance(desc, ObjectDescriptor):
+                    setattr(result, name, value)
+                elif isinstance(desc, SvObject):
+                    object.__setattr__(result, desc._storage_key, value)
+                else:
+                    getattr(result, name).value = value
+            succeeded = True
+            return result, offset
+        finally:
+            ctx._finish(root, succeeded)
+
+    @classmethod
+    def _contains_object_handles(cls) -> bool:
+        from .collection import Array, AssocArray, DynArray, Queue
+
+        def contains(desc):
             if isinstance(desc, SvStruct):
-                object.__setattr__(result, desc._storage_key, value)
-            else:
-                getattr(result, name).value = value
-        return result, offset
+                return any(contains(child) for _, child in desc._SvObject__svtypes_fields)
+            if isinstance(desc, (Array, DynArray, Queue, AssocArray)):
+                return contains(desc._val_template if isinstance(desc, AssocArray) else desc._elem_template)
+            return isinstance(desc, (SvObject, ObjectDescriptor))
+
+        return any(contains(desc) for _, desc in cls._SvObject__svtypes_fields)
 
     def from_bytes(self, bytes_: bytes) -> int:
         decoded, count = self.unpack(bytes_)
@@ -2698,25 +2781,40 @@ class SvStruct(SvObject):
     @classmethod
     def to_sv_obj(cls, level=0):
         ind_str = cls.IND * level
-        lines = [f"{ind_str}typedef struct packed {{"]
+        packing = " packed" if cls._svtypes_packed else ""
+        lines = [f"{ind_str}typedef struct{packing} {{"]
         for name, desc in cls._SvObject__svtypes_members:
-            lines.append(f"{ind_str}{cls.IND}{desc.sv_decl(name)};")
+            from .schema import sv_declaration
+            from .randomizable import is_randomizable
+
+            declaration = sv_declaration(desc, name, include_initializer=not cls._svtypes_packed)
+            if not cls._svtypes_packed and not declaration.startswith(("rand ", "randc ")) and desc.rand and is_randomizable(desc):
+                declaration = ("randc " if desc.randc else "rand ") + declaration
+            lines.append(f"{ind_str}{cls.IND}{declaration};")
         lines.append(f"{ind_str}}} {cls.__name__}_t;")
         lines.append("")
         lines.append(f"{ind_str}class {cls.__name__}_packer;")
         lines.append(f"{ind_str}{cls.IND}static function void pack(input {cls.__name__}_t value, ref byte unsigned bytes[$]);")
-        for name, desc in cls._SvObject__svtypes_members:
+        if cls._contains_object_handles():
+            lines.append(f"{ind_str}{cls.IND * 2}bit __svtypes_implicit_context;")
+            lines.append(f"{ind_str}{cls.IND * 2}__svtypes_implicit_context = svtypes_pkg::svtypes_pack_context_stack.size() == 0;")
+            lines.append(f"{ind_str}{cls.IND * 2}if (__svtypes_implicit_context) svtypes_pkg::begin_pack_graph();")
+        for name, desc in cls._SvObject__svtypes_fields:
             from .collection import CollectionBase
             if isinstance(desc, CollectionBase):
                 lines.extend(desc.sv_pack_loop(f"value.{name}", level + 2, ind_str + cls.IND * 2))
             else:
                 lines.extend(cls._sv_pack_lines(f"value.{name}", desc, ind_str + cls.IND * 2))
+        if cls._contains_object_handles():
+            lines.append(f"{ind_str}{cls.IND * 2}if (__svtypes_implicit_context) svtypes_pkg::end_pack_graph();")
         lines.append(f"{ind_str}{cls.IND}endfunction")
         lines.append("")
         lines.append(f"{ind_str}{cls.IND}static function void unpack(ref {cls.__name__}_t value, ref byte unsigned bytes[$], ref int offset);")
-        for name, desc in cls._SvObject__svtypes_members:
-            lines.append(f"{ind_str}{cls.IND * 2}{desc.sv_decl(f'__svtypes_{name}')};")
-        for name, desc in cls._SvObject__svtypes_members:
+        for name, desc in cls._SvObject__svtypes_fields:
+            declaration = desc.sv_decl(f'__svtypes_{name}')
+            declaration = declaration.removeprefix("rand ").removeprefix("randc ")
+            lines.append(f"{ind_str}{cls.IND * 2}{declaration};")
+        for name, desc in cls._SvObject__svtypes_fields:
             from .collection import CollectionBase
             temporary = f"__svtypes_{name}"
             if isinstance(desc, CollectionBase):
@@ -2754,6 +2852,10 @@ class SvStruct(SvObject):
         return "'{" + ", ".join(members) + "}", explicit
 
     def sv_initializer(self) -> str | None:
+        if not self._svtypes_packed:
+            # Unpacked member defaults live in their typedef, unlike packed
+            # defaults, which require a containing-field assignment pattern.
+            return None
         value, explicit = self._sv_declared_default()
         return value if explicit else None
 
@@ -2774,13 +2876,15 @@ class SvStruct(SvObject):
         lines.append(f"{ind_str}}};")
         lines.append("")
         lines.append(f"{ind_str}inline void pack(const {cls.__name__}& value, std::vector<uint8_t>& bytes) {{")
-        for name, desc in cls._SvObject__svtypes_members:
+        if cls._contains_object_handles():
+            lines.append(f"{ind_str}{cls.IND}svtypes::PackOperationGuard __svtypes_pack_operation(svtypes::svtypes_pack_context_stack.empty());")
+        for name, desc in cls._SvObject__svtypes_fields:
             namespace = "" if isinstance(desc, SvStruct) else "svtypes::"
             lines.append(f"{ind_str}{cls.IND}{namespace}pack(value.{name}, bytes);")
         lines.append(f"{ind_str}}}")
         lines.append("")
         lines.append(f"{ind_str}inline void unpack({cls.__name__}& value, const std::vector<uint8_t>& bytes, size_t& offset) {{")
-        for name, desc in cls._SvObject__svtypes_members:
+        for name, desc in cls._SvObject__svtypes_fields:
             namespace = "" if isinstance(desc, SvStruct) else "svtypes::"
             lines.append(f"{ind_str}{cls.IND}{namespace}unpack(value.{name}, bytes, offset);")
         lines.append(f"{ind_str}}}")
@@ -2797,6 +2901,44 @@ class SvStruct(SvObject):
         lines.append(f'{ind_str}{cls.IND}return result + "}}";')
         lines.append(f"{ind_str}}}")
         return "\n".join(lines)
+
+
+class SvPackedStruct(SvStruct):
+    """Packed integral structure; the first member occupies the highest bits."""
+
+    _svtypes_packed = True
+
+    @property
+    def width(self) -> int:
+        return sum(member.width for _, member in self._SvObject__svtypes_members)
+
+    @property
+    def signed(self) -> bool:
+        return False
+
+    @property
+    def state_domain(self) -> str:
+        return "4state" if any(getattr(member, "state_domain", "2state") == "4state"
+                               for _, member in self._SvObject__svtypes_members) else "2state"
+
+    def _packed_value(self):
+        from .logic import LogicValue
+
+        bits = xmask = zmask = 0
+        for name, desc in self._SvObject__svtypes_members:
+            member = getattr(self, name)
+            value = member._packed_value() if isinstance(member, SvPackedStruct) else member.value
+            width = desc.width
+            bits <<= width
+            xmask <<= width
+            zmask <<= width
+            if isinstance(value, LogicValue):
+                bits |= value.value_mask
+                xmask |= value.x_mask
+                zmask |= value.z_mask
+            else:
+                bits |= int(value) & ((1 << width) - 1)
+        return LogicValue(self.width, bits, xmask, zmask) if self.state_domain == "4state" else bits
 
 
 @overload

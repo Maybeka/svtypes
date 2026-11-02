@@ -93,7 +93,7 @@ def is_parameterized_template(cls: type) -> bool:
 
 
 def collect_constraints(cls: type) -> None:
-    if cls.__name__ in {"SvObject", "SvStruct"}:
+    if cls.__name__ in {"SvObject", "SvStruct", "SvPackedStruct"}:
         cls._SvObject__svtypes_is_template = False
         cls._SvObject__svtypes_constraint_decls = {}
         cls._SvObject__svtypes_constraint_irs = {}
@@ -111,7 +111,7 @@ def collect_constraints(cls: type) -> None:
     decls: dict[str, ConstraintDecl] = {}
     own_decls: dict[str, ConstraintDecl] = {}
     for base in reversed(cls.mro()):
-        if base is object or base.__name__ in {"SvObject", "SvStruct"}:
+        if base is object or base.__name__ in {"SvObject", "SvStruct", "SvPackedStruct"}:
             continue
         for name, attr in base.__dict__.items():
             if isinstance(attr, ConstraintDecl):
@@ -184,7 +184,7 @@ def _check_constraint_name(
     if name in fields or name in params:
         raise DeclarationError(f"constraint name {name!r} conflicts with a field or parameter")
     for base in cls.mro()[1:]:
-        if base is object or base.__name__ in {"SvObject", "SvStruct"}:
+        if base is object or base.__name__ in {"SvObject", "SvStruct", "SvPackedStruct"}:
             continue
         if name in base.__dict__:
             attr = base.__dict__[name]

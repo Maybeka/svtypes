@@ -175,6 +175,10 @@ def _require_concrete_object_type(annotation: type, location: str) -> None:
     """Reject an SvObject template whose parameters have not been bound."""
 
     from .parameter import Parameter
+    from .object import SvObject, SvStruct, SvPackedStruct
+
+    if annotation in (SvObject, SvStruct, SvPackedStruct):
+        raise _boundary_error(annotation, location, "a concrete declared type is required")
 
     claimed: set[str] = set()
     for owner in annotation.__mro__:
@@ -239,11 +243,13 @@ def _class_identity(
         raise _boundary_error(annotation, location, "packed type requires a concrete bracket specification")
     if issubclass(annotation, (SvObject, SvStruct)):
         _require_concrete_object_type(annotation, location)
+        packing = {"packed": annotation._svtypes_packed} if issubclass(annotation, SvStruct) else {}
         if "_SvObject__svtypes_emit_specialization_class" in annotation.__dict__:
             template = annotation.__dict__["_SvObject__svtypes_specialized_from"]
             overrides = annotation.__dict__["_SvObject__svtypes_parameter_overrides"]
             return {
                 "kind": "struct" if issubclass(annotation, SvStruct) else "object",
+                **packing,
                 "template": {
                     "module": template.__module__,
                     "qualname": template.__qualname__,
@@ -255,6 +261,7 @@ def _class_identity(
             }
         return {
             "kind": "struct" if issubclass(annotation, SvStruct) else "object",
+            **packing,
             "module": annotation.__module__,
             "qualname": annotation.__qualname__,
         }
@@ -400,6 +407,8 @@ def _annotation_from_identity(identity: Any, location: str) -> Any:
             raise _boundary_error(raw, location, "unknown scalar identity")
         return result
     if kind in {"object", "struct", "enum"}:
+        if kind == "struct" and type(raw.get("packed")) is not bool:
+            raise _boundary_error(raw, location, "struct identity requires an explicit packed boolean")
         return _identity_class(raw, location)
     if kind == "specialization":
         base = _identity_object(raw.get("base"), location)

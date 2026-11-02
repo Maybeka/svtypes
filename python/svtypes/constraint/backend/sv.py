@@ -50,8 +50,9 @@ def _dynamic_layer_roots(cls: type, names: tuple[str, ...] | list[str]) -> tuple
 
 def _nested_dynamic_shape(cls: type, root: str) -> tuple[str, ...]:
     from ...collection import Array, AssocArray, DynArray, Queue
+    from ..layer import declared_target_descriptor
 
-    descriptor = dict(getattr(cls, "_SvObject__svtypes_members", ()))[root]
+    descriptor = declared_target_descriptor(cls, root)
     indices = []
     while isinstance(descriptor, (Array, AssocArray, DynArray, Queue)):
         indices.append(f"__svtypes_index_{len(indices)}")
@@ -81,6 +82,58 @@ def _nested_dynamic_modes(root: str, indices: tuple[str, ...], tmp: str,
         lines.append(f"{inner}{access}.rand_mode(0);")
     for level in reversed(range(len(indices))):
         lines.append(f"{indent}{step * level}end")
+    return lines
+
+
+def _dynamic_struct_descriptor(cls, root):
+    from ...collection import Array, AssocArray, DynArray, Queue
+    from ...object import SvStruct
+    from ..layer import declared_target_descriptor
+
+    descriptor = declared_target_descriptor(cls, root)
+    leaf = descriptor
+    while isinstance(leaf, (Array, AssocArray, DynArray, Queue)):
+        leaf = leaf._val_template if isinstance(leaf, AssocArray) else leaf._elem_template
+    return descriptor if isinstance(leaf, SvStruct) and not leaf._svtypes_packed else None
+
+
+def _dynamic_mode_lines(cls, root, indices, tmp, indent, step, action):
+    descriptor = _dynamic_struct_descriptor(cls, root)
+    if descriptor is None:
+        return _nested_dynamic_modes(root, indices, tmp, indent, step, action)
+    from ...collection import Array, AssocArray, DynArray, Queue
+    from ...object import SvStruct
+    from ...randomizable import is_randomizable
+
+    lines = []
+
+    def visit(desc, access, key_format, variables, level):
+        inner = indent + step * level
+        if isinstance(desc, (Array, AssocArray, DynArray, Queue)):
+            index = f"__svtypes_index_{len(variables)}"
+            lines.append(f"{inner}foreach ({access}[{index}]) begin")
+            child = desc._val_template if isinstance(desc, AssocArray) else desc._elem_template
+            visit(child, f"{access}[{index}]", key_format + "[%p]", [*variables, index], level + 1)
+            lines.append(f"{inner}end")
+        elif isinstance(desc, SvStruct) and not desc._svtypes_packed:
+            for name, member in desc._SvObject__svtypes_members:
+                if member.rand and is_randomizable(member):
+                    visit(member, f"{access}.{name}", key_format + "." + name, variables, level)
+        else:
+            key = '$sformatf("' + key_format + '", ' + ', '.join(variables) + ')'
+            if action == "save":
+                lines.append(f"{inner}{tmp}[{key}] = {access}.rand_mode();")
+            elif action == "enable":
+                lines.append(f"{inner}if (!{tmp}.exists({key}) || {tmp}[{key}]) {access}.rand_mode(1);")
+            elif action == "close":
+                lines.append(f"{inner}if ({tmp}.exists({key})) {access}.rand_mode(0);")
+            elif action == "restore":
+                lines.append(f"{inner}if ({tmp}.exists({key})) {access}.rand_mode({tmp}[{key}]);")
+                lines.append(f"{inner}else {access}.rand_mode(1);")
+            else:
+                lines.append(f"{inner}{access}.rand_mode(0);")
+
+    visit(descriptor, root, "", [], 0)
     return lines
 
 
@@ -122,7 +175,7 @@ def render_layered_randomize(cls: type, indent: str, step: str) -> list[str]:
     for path in targets:
         lines.append(f"{inner}int {_mode_tmp('rand', path)};")
     for root in dynamic_roots:
-        dimension = "[string]" if len(_nested_dynamic_shape(cls, root)) > 1 else "[$]"
+        dimension = "[string]" if len(_nested_dynamic_shape(cls, root)) > 1 or _dynamic_struct_descriptor(cls, root) is not None else "[$]"
         lines.append(f"{inner}int {_mode_tmp('rand_dyn', root)}{dimension};")
     for name in constraints:
         lines.append(f"{inner}int {_mode_tmp('cstr', name)};")
@@ -135,10 +188,10 @@ def render_layered_randomize(cls: type, indent: str, step: str) -> list[str]:
     for root in dynamic_roots:
         tmp = _mode_tmp("rand_dyn", root)
         indices = _nested_dynamic_shape(cls, root)
-        if len(indices) > 1:
-            lines.extend(_nested_dynamic_modes(root, indices, tmp, inner, step, "save"))
+        if len(indices) > 1 or _dynamic_struct_descriptor(cls, root) is not None:
+            lines.extend(_dynamic_mode_lines(cls, root, indices, tmp, inner, step, "save"))
             lines.append(f"{inner}{root}.rand_mode(1);")
-            lines.extend(_nested_dynamic_modes(root, indices, tmp, inner, step, "disable"))
+            lines.extend(_dynamic_mode_lines(cls, root, indices, tmp, inner, step, "disable"))
             continue
         lines.append(f"{inner}foreach ({root}[i]) begin")
         lines.append(f"{inner}{step}{tmp}.push_back({root}[i].rand_mode());")
@@ -164,8 +217,8 @@ def render_layered_randomize(cls: type, indent: str, step: str) -> list[str]:
         for root in batch_dynamic_roots:
             tmp = _mode_tmp("rand_dyn", root)
             indices = _nested_dynamic_shape(cls, root)
-            if len(indices) > 1:
-                lines.extend(_nested_dynamic_modes(root, indices, tmp, inner + step, step, "enable"))
+            if len(indices) > 1 or _dynamic_struct_descriptor(cls, root) is not None:
+                lines.extend(_dynamic_mode_lines(cls, root, indices, tmp, inner + step, step, "enable"))
                 continue
             lines.append(f"{inner}{step}foreach ({root}[i]) begin")
             lines.append(f"{inner}{step}{step}if (i < {tmp}.size()) begin")
@@ -183,8 +236,8 @@ def render_layered_randomize(cls: type, indent: str, step: str) -> list[str]:
         for root in batch_dynamic_roots:
             tmp = _mode_tmp("rand_dyn", root)
             indices = _nested_dynamic_shape(cls, root)
-            if len(indices) > 1:
-                lines.extend(_nested_dynamic_modes(root, indices, tmp, inner + step * 2, step, "close"))
+            if len(indices) > 1 or _dynamic_struct_descriptor(cls, root) is not None:
+                lines.extend(_dynamic_mode_lines(cls, root, indices, tmp, inner + step * 2, step, "close"))
                 continue
             lines.append(f"{inner}{step}{step}foreach ({root}[i])")
             lines.append(f"{inner}{step}{step}{step}if (i < {tmp}.size()) {root}[i].rand_mode(0);")
@@ -197,8 +250,8 @@ def render_layered_randomize(cls: type, indent: str, step: str) -> list[str]:
     for root in dynamic_roots:
         tmp = _mode_tmp("rand_dyn", root)
         indices = _nested_dynamic_shape(cls, root)
-        if len(indices) > 1:
-            lines.extend(_nested_dynamic_modes(root, indices, tmp, inner, step, "restore"))
+        if len(indices) > 1 or _dynamic_struct_descriptor(cls, root) is not None:
+            lines.extend(_dynamic_mode_lines(cls, root, indices, tmp, inner, step, "restore"))
             continue
         lines.append(f"{inner}foreach ({root}[i]) begin")
         lines.append(f"{inner}{step}if (i < {tmp}.size()) {root}[i].rand_mode({tmp}[i]);")
@@ -283,7 +336,7 @@ def render_expr(expr: Expr) -> str:
         return "1'b1" if expr.args[0] else "1'b0"
     if expr.op == "int":
         return _render_int(expr)
-    if expr.op == "field":
+    if expr.op in {"field", "packed_struct"}:
         return _field_sv(str(expr.args[0]))
     if expr.op == "indexed_field":
         path = str(expr.args[0])

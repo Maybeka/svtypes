@@ -17,6 +17,7 @@ from svtypes import (
     String,
     SvObject,
     SvStruct,
+    SvPackedStruct,
     UnsupportedTypeError,
     schema_descriptor,
 )
@@ -188,11 +189,11 @@ def test_specialization_is_not_a_generated_coverage_unit():
 
 def test_struct_rejects_member_level_rand_and_pack_exclusion():
     with pytest.raises(ValueError, match="rand belongs to the containing field"):
-        class InvalidRand(SvStruct):
+        class InvalidRand(SvPackedStruct):
             value = Int(rand=True)
 
     with pytest.raises(ValueError, match="pack_bytes=False is illegal"):
-        class InvalidPack(SvStruct):
+        class InvalidPack(SvPackedStruct):
             value = Int(pack_bytes=False)
 
     with pytest.raises(ValueError, match="plusarg belongs to the containing field"):
@@ -200,7 +201,7 @@ def test_struct_rejects_member_level_rand_and_pack_exclusion():
             value = Int(plusarg=True)
 
     with pytest.raises(ValueError, match="cov belongs to the containing field"):
-        class InvalidCoverage(SvStruct):
+        class InvalidCoverage(SvPackedStruct):
             value = Int(cov=True)
 
 
@@ -228,7 +229,7 @@ def test_struct_field_owns_plusarg_policy_and_nested_objects_are_cycle_guarded()
 
 def test_struct_rejects_nonpacked_members_and_inheritance():
     with pytest.raises(UnsupportedTypeError, match="not a portable packed value"):
-        class DynamicMember(SvStruct):
+        class DynamicMember(SvPackedStruct):
             text = String()
 
     class Base(SvStruct):

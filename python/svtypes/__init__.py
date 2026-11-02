@@ -47,6 +47,7 @@ from .object import (
     Object,
     new,
     SvStruct,
+    SvPackedStruct,
 )
 from .enum import Enum
 from .errors import (

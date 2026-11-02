@@ -24,7 +24,10 @@ def is_randomizable(desc: Any) -> bool:
     if isinstance(desc, ObjectDescriptor):
         return bool(desc.rand)
     if isinstance(desc, SvStruct):
-        return all(is_randomizable(member) for _, member in desc._SvObject__svtypes_members)
+        # An unpacked struct may contain state-only members (strings/reals,
+        # non-rand handles, etc.). Their presence does not make rand members
+        # illegal. A packed struct's member legality is checked at declaration.
+        return True
     if isinstance(desc, Array):
         return is_randomizable(desc._elem_template)
     if isinstance(desc, (DynArray, Queue)):

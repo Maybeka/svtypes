@@ -24,6 +24,7 @@ from svtypes import (
     Signed,
     SvObject,
     SvStruct,
+    SvPackedStruct,
     Queue,
     constraint,
     dist,
@@ -143,7 +144,7 @@ class DiffMode(Enum[Bit[8]]):
     IDLE = 2
 
 
-class DiffHeader(SvStruct):
+class DiffHeader(SvPackedStruct):
     addr = Bit[16]()
     extra = Bit[8]()
 

@@ -236,7 +236,7 @@ def _descriptors(
     from .bit import Bit
     from .collection import AssocArray, DynArray, Queue, Array
     from .enum import Enum
-    from .object import ObjectDescriptor, SvObject, SvStruct
+    from .object import ObjectDescriptor, SvObject, SvStruct, SvPackedStruct
     from .logic import Logic
     from .parameter import Parameter, TypeParameterField
     from .symbolic import SymbolicPackedField, SymbolicArrayField, SymbolicCollectionField
@@ -324,7 +324,7 @@ def _descriptors(
                     "base_type_name": (
                         unified_type_name(codec.__bases__[0])
                         if codec.__bases__ and issubclass(codec.__bases__[0], SvObject)
-                        and codec.__bases__[0] not in (SvObject, SvStruct)
+                        and all(codec.__bases__[0] is not base for base in (SvObject, SvStruct, SvPackedStruct))
                         else None
                     ),
                     "fields": declared_fields,
@@ -340,6 +340,8 @@ def _descriptors(
                     if entries:
                         schema["constraints"] = entries
                     schema["rand_layers"] = layers_schema_entries(codec)
+                else:
+                    schema["packed"] = codec._svtypes_packed
                 encoding = {
                     "kind": kind,
                     "binary_format_version": BINARY_FORMAT_VERSION,
@@ -638,6 +640,6 @@ def checked_unpack(
 
         if not isinstance(context, UnpackContext):
             raise TypeError("checked_unpack context must be an UnpackContext")
-        if isinstance(codec, SvObject) and not isinstance(codec, SvStruct):
+        if isinstance(codec, SvObject):
             return codec.unpack(data, context)
     return codec.unpack(data)

@@ -99,6 +99,14 @@ def eval_expr(expr: Expr, env: Mapping[str, int], vars_width: Mapping[str, tuple
         width, signed = vars_width[path]
         bits = env[path] & ((1 << width) - 1)
         return _resize(Value(bits, bv(width, signed)), expr.ty)
+    if expr.op == "packed_struct":
+        bits = 0
+        undef = False
+        for child in expr.args[1:]:
+            value = eval_expr(child, env, vars_width)
+            bits = (bits << child.ty.width) | value.bits
+            undef = undef or value.undef
+        return _resize(Value(bits, bv(sum(child.ty.width for child in expr.args[1:])), undef), expr.ty)
     if expr.op == "not":
         inner = eval_expr(expr.args[0], env, vars_width)
         return Value(0 if inner.bits else 1, BOOL, inner.undef)

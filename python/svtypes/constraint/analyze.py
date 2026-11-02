@@ -70,7 +70,7 @@ class _Analyzer:
         # bound parameters); the class's own table is just the declarations.
         self.params: dict[str, Any] = {}
         for base in cls.__mro__:
-            if base is object or base.__name__ in ("SvObject", "SvStruct"):
+            if base is object or base.__name__ in ("SvObject", "SvStruct", "SvPackedStruct"):
                 continue
             for name, attr in base.__dict__.items():
                 if isinstance(attr, Parameter) and name not in self.params:
@@ -307,7 +307,7 @@ class _Analyzer:
                 raise ConstraintNameError(
                     f"{node.loc.format()}: object handle {path} cannot appear in unique()"
                 )
-            if isinstance(desc, SvStruct):
+            if isinstance(desc, SvStruct) and not desc._svtypes_packed:
                 raise ConstraintTypeError(
                     f"{node.loc.format()}: unique() does not accept unpacked structs"
                 )
@@ -343,6 +343,8 @@ class _Analyzer:
                 f"{loc.format()}: unique() does not flatten object handles in {path}"
             )
         if isinstance(desc, SvStruct):
+            if desc._svtypes_packed:
+                return
             raise ConstraintTypeError(
                 f"{loc.format()}: unique() does not accept unpacked structs"
             )
@@ -498,6 +500,10 @@ class _Analyzer:
         return self._indexed_leaf(path_parts, desc, node.loc)
 
     def _indexed_leaf(self, parts: list[Any], desc: Any, loc: SourceLoc) -> Expr:
+        if isinstance(desc, SvStruct) and desc._svtypes_packed:
+            members = tuple(self._indexed_leaf([*parts, name], member, loc)
+                            for name, member in desc._SvObject__svtypes_members)
+            return Expr("packed_struct", (format_path(parts), *members), bv(sum(member.ty.width for member in members)), loc)
         leaf = self.leaf_ref(format_path(parts), desc, loc)
         indices = tuple(part[1] for part in parts if isinstance(part, tuple) and part[0] == "idxexpr")
         return Expr("indexed_field", (leaf.args[0], *indices), leaf.ty, loc) if indices else leaf
@@ -626,7 +632,13 @@ class _Analyzer:
     def leaf_ref(self, path: str, desc: Any, loc: SourceLoc, rest_desc: Any | None = None) -> Expr:
         target = rest_desc if rest_desc is not None else desc
         if isinstance(target, SvStruct):
-            raise ConstraintTypeError(f"{loc.format()}: struct {path} cannot be used as a scalar")
+            if not target._svtypes_packed:
+                raise ConstraintTypeError(f"{loc.format()}: unpacked struct {path} cannot be used as a scalar")
+            members = tuple(self.leaf_ref(f"{path}.{name}", member, loc)
+                            for name, member in target._SvObject__svtypes_members)
+            if not members:
+                raise ConstraintTypeError(f"{loc.format()}: packed struct {path} has no members")
+            return Expr("packed_struct", (path, *members), bv(sum(member.ty.width for member in members)), loc)
         if isinstance(target, Array):
             raise ConstraintTypeError(f"{loc.format()}: array {path} cannot be used as a scalar")
         if isinstance(target, ObjectDescriptor) or (
@@ -650,9 +662,9 @@ class _Analyzer:
         return c_field(path, ty, loc)
 
     def _declared_rand(self, path: str) -> bool:
-        root = path.split("[", 1)[0].split(".", 1)[0]
-        desc = self.members.get(root)
-        return bool(getattr(desc, "rand", False))
+        from .leaves import declared_random_path
+
+        return declared_random_path(self.members, path)
 
     def solver_type(self, desc: Any, loc: SourceLoc) -> tuple[IRType, str | None, str | None]:
         if isinstance(desc, Logic):
@@ -660,6 +672,8 @@ class _Analyzer:
         if isinstance(desc, Bit):
             return bv(desc.width, desc.signed), None, None
         if isinstance(desc, Enum):
+            if getattr(desc, "_svtypes_packed_member", False):
+                return bv(desc.width, desc.signed), None, None
             return enum_ty(desc.__class__), None, unified_type_name(desc.__class__)
         raise ConstraintTypeError(
             f"{loc.format()}: type {type(desc).__name__} is not allowed in the solver domain"

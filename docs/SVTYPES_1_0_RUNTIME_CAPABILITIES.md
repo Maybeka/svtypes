@@ -46,3 +46,13 @@ Python 使用 `RuntimeCapabilities`、`runtime_capabilities()` 和
 `require_runtime_compatible()`。SystemVerilog 与 C++ 运行时提供同等描述和
 比较入口；生成类型也提供转发至其运行时的静态入口。
 `1.1.0` 运行时必须宣称上述新增能力名称。
+
+## 结构体导出与运行数据能力
+
+`svtypes.struct-kinds.v1` 表示支持默认 unpacked 的 `SvStruct` 与显式 packed 的
+`SvPackedStruct`，包含必需的 `packed` identity/schema、逐成员 codec、生成类型与
+packer、方法参数/结果记录所需的值、局部字段访问、按值复制、容器与引用身份，
+以及相应的兼容性校验。Python、SV 和 C++ 同步声明此能力。
+
+该名称不承诺消费者的调用调度协议，也不表示随机求解后端的所有目标能力门已解除。
+完整边界与迁移规则见[结构体契约](SVTYPES_STRUCT_CONTRACT.md)。

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from ..base import TypeBase
@@ -10,7 +11,7 @@ from ..collection import Array, AssocArray, DynArray, Queue
 from ..enum import Enum
 from ..errors import CoverageDeclarationError
 from ..logic import Logic
-from ..object import ObjectDescriptor, SvObject, SvStruct
+from ..object import ObjectDescriptor, SvObject, SvStruct, SvPackedStruct
 from .ir import CoverageBinIR, CoverageIR, CoveragePointIR
 
 AUTO_COVERGROUP_NAME = "svtypes_auto_cov"
@@ -74,7 +75,7 @@ def _automatic_bins(descriptor: Any) -> tuple[CoverageBinIR, ...]:
             )
             for member in descriptor._enum_items
         )
-    if isinstance(descriptor, (Bit, Logic)):
+    if isinstance(descriptor, (Bit, Logic, SvPackedStruct)):
         lower = -(1 << (descriptor.width - 1)) if descriptor.signed else 0
         upper = (1 << (descriptor.width - 1)) - 1 if descriptor.signed else (1 << descriptor.width) - 1
         count = min(upper - lower + 1, 64)
@@ -134,6 +135,45 @@ def _indexed_points(name: str, descriptor: Any, indices: tuple[int, ...]) -> lis
     return [_point(point_name, expression, None if nullness else descriptor)]
 
 
+def _contains_unpacked_struct(descriptor: Any) -> bool:
+    if isinstance(descriptor, SvStruct):
+        return not isinstance(descriptor, SvPackedStruct)
+    if isinstance(descriptor, (Array, DynArray, Queue, AssocArray)):
+        return _contains_unpacked_struct(descriptor._val_template if isinstance(descriptor, AssocArray)
+                                         else descriptor._elem_template)
+    return False
+
+
+def _struct_collection_points(name: str, descriptor: Any) -> list[CoveragePointIR]:
+    """Project each eligible struct member through its containing collections.
+
+    Fixed dimensions retain individual slots. Dynamic dimensions contribute
+    values to the same member point, without inventing a bound on their size.
+    """
+    points = []
+
+    def visit(desc, display, steps):
+        if isinstance(desc, SvStruct) and not isinstance(desc, SvPackedStruct):
+            for member, child in desc._SvObject__svtypes_members:
+                if getattr(child, "cov", False):
+                    visit(child, f"{display}.{member}", [*steps, {"kind": "member", "name": member}])
+        elif isinstance(desc, Array):
+            for index in range(len(desc)):
+                visit(desc._elem_template, f"{display}[{index}]", [*steps, {"kind": "index", "index": index}])
+        elif isinstance(desc, (DynArray, Queue, AssocArray)):
+            associative = isinstance(desc, AssocArray)
+            visit(desc._val_template if associative else desc._elem_template, display,
+                  [*steps, {"kind": "mapping" if associative else "sequence"}])
+        elif isinstance(desc, (Bit, Logic, Enum, SvPackedStruct)) or _object_element(desc):
+            nullness = _object_element(desc)
+            expression = {"kind": "container_nullness" if nullness else "container_values",
+                          "path": f"item.{name}", "projection": steps}
+            points.append(_point(display, expression, None if nullness else desc, value_domain=True))
+
+    visit(descriptor, name, [])
+    return points
+
+
 def auto_coverage_ir(cls: type["SvObject"]) -> CoverageIR | None:
     """Compile the default group implied by effective field ``cov`` policies.
 
@@ -165,7 +205,25 @@ def auto_coverage_ir(cls: type["SvObject"]) -> CoverageIR | None:
             )
             continue
         slots = descriptor.field_options.cov_slots
-        if isinstance(descriptor, Array):
+        if isinstance(descriptor, SvStruct) and not isinstance(descriptor, SvPackedStruct):
+            if slots is not None:
+                raise CoverageDeclarationError("SVT-COV-SLOTS", f"{cls.__name__}.{name} is not a dynamic indexed collection")
+            nested = auto_coverage_ir(type(descriptor))
+            if nested is not None:
+                for point in nested.points:
+                    expression = dict(point.expression)
+                    expression["path"] = f"item.{name}." + expression["path"].removeprefix("item.")
+                    points.append(replace(point, name=f"{name}.{point.name}", expression=expression))
+        elif isinstance(descriptor, (Array, DynArray, Queue, AssocArray)) and _contains_unpacked_struct(descriptor):
+            if slots is None:
+                points.extend(_struct_collection_points(name, descriptor))
+            else:
+                for index in range(slots):
+                    for point in _struct_collection_points(name, descriptor._elem_template):
+                        expression = dict(point.expression)
+                        expression["projection"] = [{"kind": "index", "index": index}, *expression["projection"]]
+                        points.append(replace(point, name=point.name.replace(name, f"{name}[{index}]", 1), expression=expression))
+        elif isinstance(descriptor, Array):
             if slots is not None:
                 raise CoverageDeclarationError(
                     "SVT-COV-SLOTS",
@@ -188,7 +246,7 @@ def auto_coverage_ir(cls: type["SvObject"]) -> CoverageIR | None:
                     f"{cls.__name__}.{name} is associative and has no stable numeric slots",
                 )
             points.append(_container_point(name, descriptor))
-        elif isinstance(descriptor, (Bit, Logic, Enum)):
+        elif isinstance(descriptor, (Bit, Logic, Enum, SvPackedStruct)):
             if slots is not None:
                 raise CoverageDeclarationError(
                     "SVT-COV-SLOTS",

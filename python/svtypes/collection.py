@@ -127,8 +127,9 @@ class Array(CollectionBase, Generic[T], metaclass=_ArrayMeta):
             )
         self._size = size
         self._elem_template = elem_type
-        # Create unique instances for each slot
-        self._elements = [copy.deepcopy(self._elem_template) for _ in range(self._size)]
+        # Value elements have independent storage; class-handle slots start null.
+        self._elements = [None if _container_elem_is_object_handle(self._elem_template)
+                          else copy.deepcopy(self._elem_template) for _ in range(self._size)]
 
     @property
     def rand(self):
@@ -144,7 +145,7 @@ class Array(CollectionBase, Generic[T], metaclass=_ArrayMeta):
         if binding is not None:
             return collection_view(binding)  # type: ignore[return-value]
         from .object import ObjectDescriptor
-        if isinstance(self._elem_template, ObjectDescriptor):
+        if _container_elem_is_object_handle(self._elem_template):
             return list(self._elements)
         return [e.value for e in self._elements]
 
@@ -160,10 +161,7 @@ class Array(CollectionBase, Generic[T], metaclass=_ArrayMeta):
             raise ValueError(f"Array size mismatch: expected {self._size}, got {len(vals)}")
         from .object import ObjectDescriptor, SvObject
         for i, v in enumerate(vals):
-            if (
-                isinstance(self._elem_template, ObjectDescriptor)
-                or (isinstance(self._elem_template, SvObject) and isinstance(v, SvObject))
-            ):
+            if _container_elem_is_object_handle(self._elem_template):
                 self._elements[i] = v
             else:
                 self._elements[i].value = v
@@ -298,7 +296,7 @@ class DynArray(CollectionBase, Generic[T]):
         if binding is not None:
             return collection_view(binding)  # type: ignore[return-value]
         from .object import ObjectDescriptor
-        if isinstance(self._elem_template, ObjectDescriptor):
+        if _container_elem_is_object_handle(self._elem_template):
             return list(self._elements)
         return [e.value for e in self._elements]
 
@@ -319,10 +317,7 @@ class DynArray(CollectionBase, Generic[T]):
         from .object import ObjectDescriptor, SvObject
         self._elements = []
         for v in vals:
-            if (
-                isinstance(self._elem_template, ObjectDescriptor)
-                or (isinstance(self._elem_template, SvObject) and isinstance(v, SvObject))
-            ):
+            if _container_elem_is_object_handle(self._elem_template):
                 self._elements.append(v)
             else:
                 new_elem = copy.deepcopy(self._elem_template)
@@ -364,7 +359,7 @@ class DynArray(CollectionBase, Generic[T]):
             # the pointed-to objects.
             from .object import ObjectDescriptor
 
-            if isinstance(self._elem_template, ObjectDescriptor):
+            if _container_elem_is_object_handle(self._elem_template):
                 self._elements.append(None)
             else:
                 self._elements.append(copy.deepcopy(self._elem_template))
@@ -464,10 +459,7 @@ class Queue(DynArray):
                 f"Queue length would exceed encoder limit {self._max_length}"
             )
         from .object import ObjectDescriptor, SvObject
-        if (
-            isinstance(self._elem_template, ObjectDescriptor)
-            or (isinstance(self._elem_template, SvObject) and isinstance(val, SvObject))
-        ):
+        if _container_elem_is_object_handle(self._elem_template):
             self._elements.append(val)
         else:
             new_elem = copy.deepcopy(self._elem_template)
@@ -494,7 +486,7 @@ class Queue(DynArray):
         # again.  Rebind closures after the indices shift.
         self._bind_mode_elements()
         from .object import ObjectDescriptor
-        if isinstance(self._elem_template, ObjectDescriptor):
+        if _container_elem_is_object_handle(self._elem_template):
             return elem
         return elem.value
 
@@ -573,7 +565,7 @@ class AssocArray(CollectionBase, Generic[K, V]):
         if binding is not None:
             return collection_view(binding)  # type: ignore[return-value]
         from .object import ObjectDescriptor
-        if isinstance(self._val_template, ObjectDescriptor):
+        if _container_elem_is_object_handle(self._val_template):
             return dict(self._elements)
         return {k: e.value for k, e in self._elements.items()}
 
@@ -595,10 +587,7 @@ class AssocArray(CollectionBase, Generic[K, V]):
 
         self._elements = {}
         for k, v in vals.items():
-            if (
-                isinstance(self._val_template, ObjectDescriptor)
-                or (isinstance(self._val_template, SvObject) and isinstance(v, SvObject))
-            ):
+            if _container_elem_is_object_handle(self._val_template):
                 self._elements[k] = v
             else:
                 new_val_elem = copy.deepcopy(self._val_template)
@@ -702,11 +691,14 @@ class AssocArray(CollectionBase, Generic[K, V]):
         ]
 
 
-def _cpp_container_elem_is_object_handle(elem_template: Any) -> bool:
+def _container_elem_is_object_handle(elem_template: Any) -> bool:
     from .object import ObjectDescriptor, SvObject, SvStruct
     return isinstance(elem_template, ObjectDescriptor) or (
         isinstance(elem_template, SvObject) and not isinstance(elem_template, SvStruct)
     )
+
+
+_cpp_container_elem_is_object_handle = _container_elem_is_object_handle
 
 
 def _cpp_container_elem_type(elem_template: Any) -> str:

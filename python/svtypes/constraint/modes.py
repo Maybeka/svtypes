@@ -16,6 +16,21 @@ def _require_mode_arg(on: Any) -> int:
     return on
 
 
+def _aggregate_rand_mode(root: Any, path: str, on: int | None) -> int:
+    if on is None:
+        raise ConstraintError("rand_mode() query requires a singular variable; select a member or array element")
+    from .layer import dynamic_layer_roots, expand_declared_paths
+
+    mode = _require_mode_arg(on)
+    modes = root._SvObject__svtypes_rand_modes
+    for existing in list(modes):
+        if existing == path or existing.startswith(path + ".") or existing.startswith(path + "["):
+            del modes[existing]
+    for target in (*expand_declared_paths(type(root), (path,)), *dynamic_layer_roots(type(root), (path,))):
+        modes[target] = mode
+    return mode
+
+
 class ConstraintHandle:
     def __init__(self, obj: Any, name: str) -> None:
         object.__setattr__(self, "_obj", obj)
@@ -57,11 +72,15 @@ def bind_runtime_field(value: Any, owner: Any, name: str, desc: Any) -> Any:
         path = f"{prefix}.{name}" if prefix else name
         if declared is None:
             declared = bool(getattr(desc, "rand", False)) and is_randomizable(desc)
+        elif isinstance(owner, SvStruct) and not owner._svtypes_packed:
+            declared = declared and bool(getattr(desc, "rand", False)) and is_randomizable(desc)
     object.__setattr__(value, "_svtypes_mode_root", root)
     object.__setattr__(value, "_svtypes_mode_path", path)
     object.__setattr__(value, "_svtypes_declared_rand", declared)
-    if declared:
+    if declared and not (isinstance(owner, SvStruct) and owner._svtypes_packed):
         def rand_mode(on: int | None = None, _root=root, _path=path) -> int:
+            if isinstance(value, Array):
+                return _aggregate_rand_mode(_root, _path, on)
             if on is None and isinstance(value, (DynArray, Queue)):
                 raise ConstraintError(
                     "rand_mode() query is not valid on a non-singular dynamic collection; "
@@ -71,20 +90,20 @@ def bind_runtime_field(value: Any, owner: Any, name: str, desc: Any) -> Any:
 
         object.__setattr__(value, "rand_mode", rand_mode)
     if isinstance(value, SvStruct):
-        bind_nested(value, root, path, declared)
+        bind_nested(value, root, path, declared,
+                    expose_mode=not (isinstance(owner, SvStruct) and owner._svtypes_packed))
         return value
     if isinstance(value, Array):
+        from ..collection import _container_elem_is_object_handle
+
+        if _container_elem_is_object_handle(value._elem_template):
+            return value
         for index, element in enumerate(value._elements):
             child_path = f"{path}[{index}]"
             object.__setattr__(element, "_svtypes_mode_root", root)
             object.__setattr__(element, "_svtypes_mode_path", child_path)
             object.__setattr__(element, "_svtypes_declared_rand", declared)
             bind_nested(element, root, child_path, declared)
-            if declared:
-                def element_rand_mode(on: int | None = None, _root=root, _path=child_path) -> int:
-                    return _root._svtypes_rand_mode(_path, on)
-
-                object.__setattr__(element, "rand_mode", element_rand_mode)
     elif isinstance(value, (DynArray, Queue)):
         bind_runtime_collection_elements(value)
     return value
@@ -111,25 +130,43 @@ def bind_runtime_collection_elements(value: Any) -> None:
         bind_nested(element, root, child_path, declared)
 
 
-def bind_nested(value: Any, root: Any, path: str, declared: bool) -> None:
+def bind_nested(value: Any, root: Any, path: str, declared: bool, *, expose_mode: bool = True) -> None:
     from ..collection import Array, DynArray, Queue
 
     object.__setattr__(value, "_svtypes_mode_root", root)
     object.__setattr__(value, "_svtypes_mode_path", path)
     object.__setattr__(value, "_svtypes_declared_rand", declared)
-    if declared:
+    if declared and expose_mode:
         def rand_mode(on: int | None = None, _root=root, _path=path) -> int:
+            if isinstance(value, Array) or (isinstance(value, SvStruct) and not value._svtypes_packed):
+                return _aggregate_rand_mode(_root, _path, on)
+            if on is None and isinstance(value, (DynArray, Queue)):
+                raise ConstraintError("rand_mode() query requires a singular variable; select an array element")
             return _root._svtypes_rand_mode(_path, on)
 
         object.__setattr__(value, "rand_mode", rand_mode)
+    else:
+        value.__dict__.pop("rand_mode", None)
     if isinstance(value, Array):
+        from ..collection import _container_elem_is_object_handle
+
+        if _container_elem_is_object_handle(value._elem_template):
+            return
         for index, element in enumerate(value._elements):
             bind_nested(element, root, f"{path}[{index}]", declared)
     elif isinstance(value, (DynArray, Queue)):
         bind_runtime_collection_elements(value)
     elif isinstance(value, SvStruct):
-        for member_name, _member_desc in value.__class__._SvObject__svtypes_members:
-            bind_nested(getattr(value, member_name), root, f"{path}.{member_name}", declared)
+        from ..object import ObjectDescriptor, SvObject
+
+        for member_name, member_desc in value.__class__._SvObject__svtypes_members:
+            if isinstance(member_desc, ObjectDescriptor) or (
+                isinstance(member_desc, SvObject) and not isinstance(member_desc, SvStruct)
+            ):
+                continue
+            member_rand = declared and (value._svtypes_packed or bool(getattr(member_desc, "rand", False)))
+            bind_nested(getattr(value, member_name), root, f"{path}.{member_name}", member_rand,
+                        expose_mode=not value._svtypes_packed)
 
 
 def path_prefixes(path: str) -> list[str]:

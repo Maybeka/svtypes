@@ -14,7 +14,7 @@ from ..object import ObjectDescriptor, SvObject, SvStruct
 from ..randomizable import is_randomizable
 
 
-def split_path(path: str) -> list[str | int | tuple[str, Any]]:
+def split_path(path: str, *, symbolic_indices: bool = False) -> list[str | int | tuple[str, Any]]:
     tokens: list[str | int | tuple[str, Any]] = []
     buf = ""
     index = 0
@@ -31,7 +31,8 @@ def split_path(path: str) -> list[str | int | tuple[str, Any]]:
                 tokens.append(buf)
                 buf = ""
             end = path.index("]", index)
-            tokens.append(int(path[index + 1:end]))
+            index_text = path[index + 1:end]
+            tokens.append(0 if symbolic_indices and not index_text.lstrip("-").isdigit() else int(index_text))
             index = end + 1
             continue
         if char == "{":
@@ -107,7 +108,27 @@ def iter_class_leaves(cls: type) -> Iterator[tuple[str, Any, bool]]:
     for name, desc in members:
         declared_rand = bool(getattr(desc, "rand", False)) and is_randomizable(desc)
         for path, leaf in flatten_descriptor(desc, name):
-            yield path, leaf, declared_rand
+            yield path, leaf, declared_random_path(dict(members), path)
+
+
+def declared_random_path(members: dict[str, Any], path: str) -> bool:
+    """Resolve random qualification through unpacked struct members."""
+    tokens = split_path(path, symbolic_indices=True)
+    desc = members.get(tokens[0]) if tokens else None
+    declared = bool(getattr(desc, "rand", False))
+    for token in tokens[1:]:
+        if isinstance(token, int) and isinstance(desc, (Array, DynArray, Queue)):
+            desc = desc._elem_template
+        elif isinstance(token, str) and isinstance(desc, SvStruct):
+            parent = desc
+            desc = dict(desc._SvObject__svtypes_members).get(token)
+            if not parent._svtypes_packed:
+                declared = declared and bool(getattr(desc, "rand", False))
+        else:
+            # Class handles are qualified by the graph collector, not by
+            # treating their referents as struct fields here.
+            break
+    return declared
 
 
 def iter_object_leaves(obj: Any, cls: type | None = None) -> Iterator[tuple[str, Any, bool]]:
@@ -149,8 +170,11 @@ def _flatten_object_descriptor(
         return
     if isinstance(desc, SvStruct):
         for name, member in desc.__class__._SvObject__svtypes_members:
+            if _is_handle(member):
+                continue
+            member_rand = declared_rand and (desc._svtypes_packed or bool(getattr(member, "rand", False)))
             yield from _flatten_object_descriptor(
-                getattr(value, name), member, f"{path}.{name}", declared_rand
+                getattr(value, name), member, f"{path}.{name}", member_rand
             )
         return
     if isinstance(desc, (Bit, Logic, Enum)):

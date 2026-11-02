@@ -1,5 +1,8 @@
 # SvTypes Documentation
 
+- [SVTYPES_STRUCT_CONTRACT.md](SVTYPES_STRUCT_CONTRACT.md):
+  默认 unpacked `SvStruct` 与显式 `SvPackedStruct` 的导出/运行数据契约、capability 与迁移规则；随机目标能力门单独记录。
+
 - [SVTYPES_1_0_RUNTIME_CAPABILITIES.md](SVTYPES_1_0_RUNTIME_CAPABILITIES.md):
   初始化时的版本与能力比对契约。
 - [SVTYPES_1_5_DYNAMIC_COLLECTION_RANDOMIZATION.md](SVTYPES_1_5_DYNAMIC_COLLECTION_RANDOMIZATION.md):

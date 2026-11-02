@@ -111,7 +111,7 @@ def _prefix_ir(ir: ConstraintIR, prefix: str) -> ConstraintIR:
                 new = arg
             args.append(new)
             changed = changed or new is not arg
-        if value.op in {"field", "indexed_field"}:
+        if value.op in {"field", "indexed_field", "packed_struct"}:
             args[0] = _with_prefix(prefix, str(args[0]))
             changed = True
         elif value.op == "size":
@@ -179,7 +179,7 @@ def _remap_graph_ir(ir: ConstraintIR, aliases: dict[str, str]) -> ConstraintIR:
                 new = arg
             args.append(new)
             changed = changed or new is not arg
-        if value.op in {"field", "indexed_field"}:
+        if value.op in {"field", "indexed_field", "packed_struct"}:
             args[0] = canonical(str(args[0]))
             changed = changed or args[0] != value.args[0]
         elif value.op == "size":
@@ -349,14 +349,36 @@ def _visit_rand_container_handles(
     local_path: str,
     visit: Callable[[Any, type, str, bool], None],
     mode_active: Callable[[str], bool],
+    declared_rand: bool | None = None,
 ) -> None:
     """Visit allocated ``rand Object`` elements below one collection member."""
 
     from ..collection import Array, AssocArray, DynArray, Queue
-    from ..object import ObjectDescriptor, SvObject
+    from ..object import ObjectDescriptor, SvObject, SvStruct
 
+    if declared_rand is None:
+        declared_rand = bool(getattr(desc, "rand", False))
+        # Associative handle values retain their established per-value random
+        # qualification without changing the container's public field policy.
+        if isinstance(desc, AssocArray) and desc.field_options.rand is None:
+            declared_rand = bool(getattr(desc._val_template, "rand", False))
+    if not declared_rand:
+        return
     if isinstance(desc, ObjectDescriptor):
-        if desc.rand and isinstance(value, SvObject):
+        if isinstance(value, SvObject):
+            visit(value, value.__class__, path, mode_active(local_path))
+        return
+    if isinstance(desc, SvStruct):
+        for name, member in desc._SvObject__svtypes_members:
+            if not member.rand:
+                continue
+            child = (value.__dict__.get(member._cache_key) if isinstance(member, ObjectDescriptor)
+                     else getattr(value, name))
+            _visit_rand_container_handles(child, member, f"{path}.{name}",
+                                          f"{local_path}.{name}", visit, mode_active, True)
+        return
+    if isinstance(desc, SvObject):
+        if value is not None:
             visit(value, value.__class__, path, mode_active(local_path))
         return
     if isinstance(desc, Array):
@@ -368,6 +390,7 @@ def _visit_rand_container_handles(
                 f"{local_path}[{index}]",
                 visit,
                 mode_active,
+                declared_rand,
             )
         return
     if isinstance(desc, (DynArray, Queue)):
@@ -379,6 +402,7 @@ def _visit_rand_container_handles(
                 f"{local_path}[{index}]",
                 visit,
                 mode_active,
+                declared_rand,
             )
         return
     if isinstance(desc, AssocArray):
@@ -390,6 +414,7 @@ def _visit_rand_container_handles(
                 assoc_path(local_path, key),
                 visit,
                 mode_active,
+                declared_rand,
             )
 
 
@@ -643,6 +668,7 @@ def _current_dynamic_element_paths(
 ) -> set[str]:
     from ..collection import DynArray, Queue
     from ..object import ObjectDescriptor
+    from .layer import declared_target_descriptor
 
     prefixes = tuple(f"{root}[" for root in roots)
     paths = {
@@ -652,12 +678,12 @@ def _current_dynamic_element_paths(
     }
     members = dict(getattr(cls, "_SvObject__svtypes_members", ()))
     for root in roots:
-        desc = members.get(root)
+        desc = declared_target_descriptor(cls, root)
         if not isinstance(desc, (DynArray, Queue)) or not isinstance(
             desc._elem_template, ObjectDescriptor
         ):
             continue
-        collection = getattr(obj, root)
+        collection = resolve_attr(obj, root)
         paths.update(f"{root}[{index}]" for index in range(collection.size()))
     return paths
 
@@ -733,6 +759,12 @@ def _solve(
             mentioned.add(var.path)
             var_index[var.path] = var
 
+    packed_cycles = _packed_randc_groups(obj, leaves, graph)
+    for members in packed_cycles.values():
+        for path, desc in members:
+            mentioned.add(path)
+            var_index.setdefault(path, _leaf_var_decl(path, desc, True))
+
     unconstrained: list[tuple[str, Any]] = []
     constrained: list[tuple[str, Any]] = []
     state_paths: list[str] = []
@@ -776,7 +808,7 @@ def _solve(
             graph.rand_mode(path) if graph is not None else _effective_rand_mode(obj, path)
         ) == 1
     ]
-    randc_seen = _prepare_randc_seen(obj, randc_paths, leaves, signature, graph)
+    randc_seen = _prepare_randc_seen(obj, randc_paths + list(packed_cycles), leaves, signature, graph)
 
     assignments: dict[str, Any] = {}
     for path, desc in unconstrained:
@@ -796,7 +828,7 @@ def _solve(
         best_soft_score: tuple[bool, ...] | None = None
         solve_order = _solve_before_order(enabled, constrained)
         exact_ordered = bool(solve_order) and not randc_seen and not _irs_contain_dist(enabled)
-        ordered_sampling = bool(solve_order) or any(path in randc_seen for path, _ in constrained)
+        ordered_sampling = bool(solve_order) or bool(packed_cycles) or any(path in randc_seen for path, _ in constrained)
         for _ in range(0 if ordered_sampling else 32):
             poll()
             candidate: dict[str, Any] = {}
@@ -840,10 +872,11 @@ def _solve(
                 random_paths=tuple(path for path, _ in constrained),
                 state=state_values,
                 var_index=var_index,
-                assumptions=_randc_remaining_assumptions(var_index, randc_seen),
+                assumptions=_randc_remaining_assumptions(var_index, randc_seen, packed_cycles),
                 soft_constraints=soft_constraints,
                 selection_order=tuple(dict.fromkeys((*[path for path, _ in constrained if path in randc_seen], *solve_order))),
-                selection_groups=tuple((path,) for path, _ in constrained if path in randc_seen) + _solve_before_groups(enabled, constrained),
+                selection_groups=tuple(tuple(path for path, _ in members) for members in packed_cycles.values())
+                    + tuple((path,) for path, _ in constrained if path in randc_seen) + _solve_before_groups(enabled, constrained),
             )
             request = freeze_soft(request)
             feasibility = witness(request)
@@ -1341,6 +1374,12 @@ def _unique_fields_from_value(value: Any, path: str, loc: Any) -> list[Expr]:
         for index, element in enumerate(value._elements):
             fields.extend(_unique_fields_from_value(element, f"{path}[{index}]", loc))
         return fields
+    from ..object import SvPackedStruct
+    if isinstance(value, SvPackedStruct):
+        members = tuple(child
+                        for name, _ in value._SvObject__svtypes_members
+                        for child in _unique_fields_from_value(getattr(value, name), f"{path}.{name}", loc))
+        return [Expr("packed_struct", (path, *members), bv(sum(member.ty.width for member in members)), loc)]
     from ..bit import Bit
     from ..enum import Enum
     from .ir import enum_ty
@@ -1372,6 +1411,8 @@ def _leaf_var_decl(path: str, desc: Any, declared_rand: bool) -> VarDecl:
     if isinstance(desc, Logic):
         return VarDecl(path, declared_rand, desc.width, bool(desc.signed), "logic", None, desc)
     if isinstance(desc, Enum):
+        if getattr(desc, "_svtypes_packed_member", False):
+            return VarDecl(path, declared_rand, desc.width, bool(desc.signed), None, None, desc)
         ty = enum_ty(desc.__class__)
         return VarDecl(path, declared_rand, ty.width, ty.signed, None, unified_type_name(desc.__class__), desc)
     width = int(getattr(desc, "width", 1))
@@ -1809,6 +1850,35 @@ def _value_as_int(bits: int, width: int, signed: bool) -> int:
     return bits - (1 << width) if bits & sign else bits
 
 
+def _packed_randc_groups(obj, leaves, graph):
+    """Keep one cycle for an integral packed value, never one per member."""
+    from ..object import SvPackedStruct
+
+    groups = {}
+    checked = {}
+    for path, desc, declared in leaves:
+        if not declared or not (graph.rand_mode(path) if graph else _effective_rand_mode(obj, path)):
+            continue
+        for prefix in path_prefixes(path)[:-1]:
+            if prefix not in checked:
+                target = resolve_attr(obj, prefix)
+                checked[prefix] = isinstance(target, SvPackedStruct) and target.randc
+            if checked[prefix]:
+                groups.setdefault(prefix, []).append((path, desc))
+                break
+    return groups
+
+
+def _randc_owner(obj, graph, path):
+    if graph is not None:
+        if path in graph.owners:
+            return graph.owners[path]
+        for node in sorted(graph.nodes, key=lambda node: len(node.path), reverse=True):
+            if node.path and path.startswith(node.path + "."):
+                return node.obj, path[len(node.path) + 1:]
+    return obj, path
+
+
 def _prepare_randc_seen(
     obj: Any,
     paths: list[str],
@@ -1819,10 +1889,10 @@ def _prepare_randc_seen(
     descriptors = {path: desc for path, desc, _ in leaves}
     working: dict[str, set[int]] = {}
     for path in paths:
-        owner, key = graph.owners[path] if graph is not None else (obj, path)
+        owner, key = _randc_owner(obj, graph, path)
         old = owner._SvObject__svtypes_randc_state.get(key)
         seen = set(old[1]) if old is not None and old[0] == signature else set()
-        desc = descriptors[path]
+        desc = descriptors[path] if path in descriptors else resolve_attr(obj, path)
         if _randc_domain_exhausted(desc, seen):
             seen.clear()
         working[path] = seen
@@ -1855,15 +1925,21 @@ def _sample_randc(desc: Any, stream: BitStream, seen: set[int]) -> Any:
 def _randc_remaining_assumptions(
     var_index: dict[str, VarDecl],
     seen_by_path: dict[str, set[int]],
+    packed_cycles=None,
 ) -> tuple[Expr, ...]:
     from .ir import bv, c_field, c_int
 
     assumptions: list[Expr] = []
     for path, seen in seen_by_path.items():
-        decl = var_index.get(path)
-        if decl is None:
-            continue
-        field = c_field(path, bv(decl.width, decl.signed))
+        if path in (packed_cycles or {}):
+            members = packed_cycles[path]
+            fields = tuple(c_field(member_path, bv(desc.width, desc.signed)) for member_path, desc in members)
+            field = Expr("packed_struct", (path, *fields), bv(sum(desc.width for _, desc in members)))
+        else:
+            decl = var_index.get(path)
+            if decl is None:
+                continue
+            field = c_field(path, bv(decl.width, decl.signed))
         for value in seen:
             assumptions.append(Expr("ne", (field, c_int(value, hint=None)), BOOL))
     return tuple(assumptions)
@@ -1878,8 +1954,14 @@ def _commit_randc_state(
     for path, seen in seen_by_path.items():
         target = resolve_attr(obj, path)
         updated = set(seen)
-        updated.add(leaf_unsigned(target, target.value))
-        owner, key = graph.owners[path] if graph is not None else (obj, path)
+        from ..object import SvPackedStruct
+
+        if isinstance(target, SvPackedStruct):
+            value = target._packed_value()
+            updated.add(value.value_mask if hasattr(value, "value_mask") else value)
+        else:
+            updated.add(leaf_unsigned(target, target.value))
+        owner, key = _randc_owner(obj, graph, path)
         owner._SvObject__svtypes_randc_state[key] = (signature, updated)
 
 

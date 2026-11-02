@@ -130,6 +130,12 @@ def _encode(z3: Any, expr: Expr, terms: dict[str, Any], widths: dict[str, int]) 
         path = str(expr.args[1])
         term = terms[path]
         return (_cast_bv(z3, term, widths[path], expr.ty.width or widths[path], False), z3.BoolVal(False))
+    if expr.op == "packed_struct":
+        children = [_encode(z3, child, terms, widths) for child in expr.args[1:]]
+        values = [value for value, _ in children]
+        combined = values[0] if len(values) == 1 else z3.Concat(*values)
+        return (_cast_bv(z3, combined, combined.size(), expr.ty.width, expr.ty.signed),
+                z3.Or([undef for _, undef in children]))
     if expr.op == "not":
         value, undef = _encode(z3, expr.args[0], terms, widths)
         return (z3.Not(value), undef)

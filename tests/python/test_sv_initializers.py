@@ -1,6 +1,6 @@
 import pytest
 
-from svtypes import Array, Bit, Enum, Int, Logic, Real, ShortReal, String, SvStruct, sv_declaration
+from svtypes import Array, Bit, Enum, Int, Logic, Real, ShortReal, String, SvPackedStruct, sv_declaration
 
 
 class InitializerMode(Enum[Bit[8]]):
@@ -33,12 +33,12 @@ def test_string_literal_preserves_utf8_bytes_and_control_characters():
     assert value.to_sv_code(name="field").endswith(" = " + value.sv_initializer() + ";")
 
 
-class DefaultHeader(SvStruct):
+class DefaultHeader(SvPackedStruct):
     tag = Bit[8](7)
     flags = Logic[4]()
 
 
-class DefaultPacket(SvStruct):
+class DefaultPacket(SvPackedStruct):
     header = DefaultHeader()
     count = Bit[8](9)
 

@@ -1,10 +1,10 @@
 import subprocess
 from pathlib import Path
 
-from svtypes import SvObject, SvStruct, Int, Bit, Array, DynArray, Queue, AssocArray, String, svobj
+from svtypes import SvObject, SvStruct, SvPackedStruct, Int, Bit, Array, DynArray, Queue, AssocArray, String, svobj
 
 @svobj
-class Pixel(SvStruct):
+class Pixel(SvPackedStruct):
     r = Bit[8]()
     g = Bit[8]()
     b = Bit[8]()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pathlib import Path
 
 from svtypes import (
     Bit,
@@ -30,6 +31,14 @@ def test_runtime_capabilities_include_constraint_names():
     provided = runtime_capabilities().provided
     assert "svtypes.constraint-ir.v1" in provided
     assert "svtypes.constraint-sample.v1" in provided
+
+
+def test_struct_data_contract_capability_is_available_in_all_runtimes():
+    capability = "svtypes.struct-kinds.v1"
+    require_runtime_compatible((capability,), runtime_capabilities())
+    root = Path(__file__).resolve().parents[2]
+    for runtime in ("sv/svtypes_pkg.sv", "cpp/svtypes.hpp"):
+        assert f'"{capability}"' in (root / "svtypes_runtime" / runtime).read_text()
 
 
 def test_generated_types_expose_runtime_capabilities():

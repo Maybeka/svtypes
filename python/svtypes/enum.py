@@ -162,6 +162,11 @@ class Enum(UserDefinedType):
             else:
                 raise ValueError(f"'{val}' 不是有效的 {self.__class__.__name__} 成员名称")
         elif isinstance(val, int):
+            if getattr(self, "_svtypes_packed_member", False):
+                val &= (1 << self.width) - 1
+                if self.signed and val & (1 << (self.width - 1)):
+                    val -= 1 << self.width
+                return self._enum_cls(val) if val in self._enum_cls._value2member_map_ else val
             # 2. 尝试从数值转换（IntEnum 本身支持传入 value 返回成员）
             try:
                 return self._enum_cls(val)
@@ -175,7 +180,7 @@ class Enum(UserDefinedType):
                 raise TypeError(f"不支持的赋值类型: {type(val)}")
 
     def name(self):
-        return self._value.name
+        return getattr(self._value, "name", "")
 
     @property
     def width(self) -> int:
@@ -293,7 +298,7 @@ class Enum(UserDefinedType):
         return f"{self.__class__.__name__} {name}"
 
     def __repr__(self):
-        return f"<{self.__class__.__name__}: {self._value.name}({self._value.value})>"
+        return f"<{self.__class__.__name__}: {self.name()}({int(self._value)})>"
 
     @classmethod
     def _item_byte_num(cls):
@@ -305,7 +310,7 @@ class Enum(UserDefinedType):
 
     def pack(self, value):
         val = self._normalize(value)
-        unsigned = val.value & ((1 << self.width) - 1)
+        unsigned = int(val) & ((1 << self.width) - 1)
         return unsigned.to_bytes(self.byte_num, byteorder='little', signed=False)
 
     def unpack(self, bytes_: bytes):

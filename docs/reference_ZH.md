@@ -127,6 +127,21 @@ naming 与 transport semantics；SvTypes 只验证并 materialize 给定 record 
 
 ### 生成 SV expression
 
+#### 结构体种类与迁移
+
+`SvStruct` 声明 unpacked 值结构体；packed integral 结构体使用
+`SvPackedStruct`，它也是 `SvStruct` 的 Python 子类型。两者均非空，没有对象
+envelope 或对象编号。unpacked 成员可以包含已支持的容器、字符串和 class handle。
+通过 `.value` 赋值会复制聚合存储，并保留 handle 指向的对象引用。packed 仅接受
+packed integral 成员，首成员位于最高位；约束和 `unique()` 将其整体视为一个
+unsigned integral 操作数，不暴露 packed 成员的独立模式控制。
+
+需要保留历史 packed 行为的定义应将基类改为 `SvPackedStruct`。结构体类型身份
+和源 schema 现在包含显式 `packed` 布尔值。逐字段字节编码不变：不会将原来独立
+编码的字段合并，也不增加宿主 padding。unpacked typedef 保留成员声明默认值；
+packed typedef 则通过所在字段的赋值模式初始化。完整集成、迁移规则及 capability
+验收状态见[结构体契约](SVTYPES_STRUCT_CONTRACT.md)。
+
 嵌套容器 adapter 使用 `sv_codegen_context(codec, prefix=...)`：上下文返回
 按依赖顺序排列的局部 `typedef` 声明。将这些声明放在同一作用域，再使用
 上下文内渲染的 type/packer expression。等价 codec 实例共享别名；退出或异常
@@ -137,7 +152,7 @@ naming 与 transport semantics；SvTypes 只验证并 materialize 给定 record 
 unpacked dimension：
 
 `sv_declaration(codec, name, include_initializer=True)` 还会包含 `Bit`、`Int`、
-`LongInt`、`Logic`、`String`、`Real`、`ShortReal`、`Enum`、`SvStruct` 或固定 `Array` 元素
+`LongInt`、`Logic`、`String`、`Real`、`ShortReal`、`Enum`、`SvPackedStruct` 或固定 `Array` 元素
 显式声明的初值；默认仍只输出声明。
 `codec.sv_initializer()` 返回原始声明初值（或 `None`），而 `codec.sv_repr()`
 返回当前值。运行时赋值不会改变声明初值；Logic 的初值保留 X/Z 和有符号属性。

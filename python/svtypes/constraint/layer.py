@@ -149,22 +149,15 @@ def _layer_statement(
 
 
 def _self_target_path(node: ast.AST, self_name: str, loc: SourceLoc) -> str | None:
-    indices: list[int] = []
-    current: ast.AST = node
-    while isinstance(current, ast.Subscript):
-        indices.append(_const_index(current.slice, loc))
-        current = current.value
-    indices.reverse()
-    if not (
-        isinstance(current, ast.Attribute)
-        and isinstance(current.value, ast.Name)
-        and current.value.id == self_name
-    ):
-        return None
-    path = current.attr
-    for index in indices:
-        path = f"{path}[{index}]"
-    return path
+    if isinstance(node, ast.Name) and node.id == self_name:
+        return ""
+    if isinstance(node, ast.Attribute):
+        base = _self_target_path(node.value, self_name, loc)
+        return None if base is None else (f"{base}.{node.attr}" if base else node.attr)
+    if isinstance(node, ast.Subscript):
+        base = _self_target_path(node.value, self_name, loc)
+        return None if not base else f"{base}[{_const_index(node.slice, loc)}]"
+    return None
 
 
 def _const_index(node: ast.AST, loc: SourceLoc) -> int:
@@ -219,7 +212,7 @@ def collect_rand_layers(cls: type) -> None:
 
     parent_table: dict[str, RandLayerInfo] = {}
     for base in cls.__mro__[1:]:
-        if base is object or base.__name__ in {"SvObject", "SvStruct"}:
+        if base is object or base.__name__ in {"SvObject", "SvStruct", "SvPackedStruct"}:
             continue
         inherited = getattr(base, "_SvObject__svtypes_layer_table", None)
         if inherited:
@@ -330,7 +323,7 @@ def _check_layer_alias(
             f"rand_layer alias {alias!r} conflicts with constraint {alias!r}"
         )
     for base in cls.mro()[1:]:
-        if base is object or base.__name__ in {"SvObject", "SvStruct"}:
+        if base is object or base.__name__ in {"SvObject", "SvStruct", "SvPackedStruct"}:
             continue
         if alias not in base.__dict__:
             continue
@@ -401,6 +394,17 @@ def _validate_variable_target(
     walked = root
     for index in indices:
         from ..collection import Array
+        from ..object import SvStruct
+
+        if isinstance(index, str):
+            if not isinstance(current, SvStruct) or current._svtypes_packed:
+                raise DeclarationError(f"{loc.format()}: {path!r} is not an independently controllable unpacked struct member")
+            child = dict(current._SvObject__svtypes_members).get(index)
+            if child is None or not bool(getattr(child, "rand", False)):
+                raise DeclarationError(f"{loc.format()}: {path!r} names an unknown or non-rand struct member")
+            current = child
+            walked = f"{walked}.{index}"
+            continue
 
         if not isinstance(current, Array):
             raise DeclarationError(
@@ -420,17 +424,19 @@ def _validate_variable_target(
             f"{loc.format()}: {cls.__name__}.{decl.alias} lists "
             f"{path!r}, which is not a SystemVerilog-controllable rand target"
         )
+    if isinstance(current, AssocArray):
+        raise DeclarationError(f"{loc.format()}: {path!r} has associative-array entries with no stable rand_layer target")
 
 
-def _split_root_indices(path: str) -> tuple[str, tuple[int, ...]]:
+def _split_root_indices(path: str) -> tuple[str, tuple[int | str, ...]]:
     from .leaves import split_path
 
     tokens = split_path(path)
     if not tokens or not isinstance(tokens[0], str):
         raise DeclarationError(f"invalid rand_layer path {path!r}")
-    indices: list[int] = []
+    indices: list[int | str] = []
     for token in tokens[1:]:
-        if not isinstance(token, int):
+        if not isinstance(token, (int, str)):
             raise DeclarationError(f"invalid rand_layer path {path!r}")
         indices.append(token)
     return tokens[0], tuple(indices)
@@ -470,11 +476,22 @@ def dynamic_layer_roots(
     from ..collection import DynArray, Queue
 
     members = dict(getattr(cls, "_SvObject__svtypes_members", ()))
-    return tuple(
-        path
-        for path in paths
-        if "[" not in path and isinstance(members.get(path), (DynArray, Queue))
-    )
+    from ..collection import Array
+    from ..object import SvStruct
+
+    def roots(path: str, desc: Any):
+        if isinstance(desc, (DynArray, Queue)):
+            yield path
+        elif isinstance(desc, Array):
+            for index in range(desc._size):
+                yield from roots(f"{path}[{index}]", desc._elem_template)
+        elif isinstance(desc, SvStruct) and not desc._svtypes_packed:
+            for name, member in desc._SvObject__svtypes_members:
+                if bool(getattr(member, "rand", False)) and is_randomizable(member):
+                    yield from roots(f"{path}.{name}", member)
+
+    return tuple(dict.fromkeys(root for path in paths
+                               for root in roots(path, declared_target_descriptor(cls, path))))
 
 
 def singular_rand_paths(cls: type) -> tuple[str, ...]:
@@ -492,13 +509,26 @@ def _expand_one_path(path: str, members: dict[str, Any]) -> list[str]:
     walked = root
     current = desc
     for index in indices:
-        current = current._elem_template
-        walked = f"{walked}[{index}]"
+        if isinstance(index, str):
+            current = dict(current._SvObject__svtypes_members)[index]
+            walked = f"{walked}.{index}"
+        else:
+            current = current._elem_template
+            walked = f"{walked}[{index}]"
     return _expand_descriptor(walked, current)
+
+
+def declared_target_descriptor(cls: type, path: str) -> Any:
+    root, tokens = _split_root_indices(path)
+    current = dict(cls._SvObject__svtypes_members)[root]
+    for token in tokens:
+        current = dict(current._SvObject__svtypes_members)[token] if isinstance(token, str) else current._elem_template
+    return current
 
 
 def _expand_descriptor(path: str, desc: Any) -> list[str]:
     from ..collection import Array, AssocArray, DynArray, Queue
+    from ..object import SvStruct
 
     if isinstance(desc, Array):
         out: list[str] = []
@@ -507,6 +537,10 @@ def _expand_descriptor(path: str, desc: Any) -> list[str]:
         return out
     if isinstance(desc, (AssocArray, DynArray, Queue)):
         return []
+    if isinstance(desc, SvStruct) and not desc._svtypes_packed:
+        return [leaf for name, member in desc._SvObject__svtypes_members
+                if bool(getattr(member, "rand", False)) and is_randomizable(member)
+                for leaf in _expand_descriptor(f"{path}.{name}", member)]
     return [path]
 
 
@@ -527,9 +561,9 @@ def _builtin_variables(
         if not related:
             builtin.append(name)
             continue
-        owned = set(expand_declared_paths(cls, tuple(related)))
-        for item in _expand_descriptor(name, desc):
-            if item not in owned:
+        units = [*_expand_descriptor(name, desc), *dynamic_layer_roots(cls, (name,))]
+        for item in units:
+            if not any(_paths_overlap(item, owned) for owned in related):
                 builtin.append(item)
     return tuple(builtin)
 

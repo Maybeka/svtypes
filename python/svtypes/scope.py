@@ -69,7 +69,7 @@ class Scope(ObjectRegistry):
         """Collect all parameters and types from a module."""
         import sys
         from .parameter import Parameter
-        from .object import SvObject, SvStruct
+        from .object import SvObject, SvStruct, SvPackedStruct
 
         module = sys.modules.get(module_name)
         if not module:
@@ -80,7 +80,7 @@ class Scope(ObjectRegistry):
             if isinstance(attr, Parameter):
                 print('parameter:', name)
                 self.add_parameter(name, attr)
-            elif attr is SvStruct or attr is SvObject:
+            elif any(attr is base for base in (SvStruct, SvPackedStruct, SvObject)):
                 continue
             elif isinstance(attr, type) and issubclass(attr, SvObject):
                 print('attribute:', name)
