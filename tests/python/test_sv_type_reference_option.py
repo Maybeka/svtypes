@@ -1,4 +1,4 @@
-from svtypes import Array, Bit, Package, Queue, SvObject, SvStruct, generate
+from svtypes import Array, Bit, Package, Queue, SvObject, SvPackedStruct, SvStruct, generate
 
 
 def test_sv_type_reference_option_for_object_struct_and_package_generation(tmp_path):
@@ -34,3 +34,17 @@ def test_sv_type_reference_option_for_object_struct_and_package_generation(tmp_p
     package.register(Packet)
     assert 'type(this.' not in package.to_sv_pkg()
     assert 'type(this.' in package.to_sv_pkg(use_type_reference=True)
+
+
+def test_type_reference_variable_declarations_use_var(monkeypatch):
+    class Record(SvPackedStruct):
+        tag = Bit[8]()
+
+    inferred = Record.to_sv_obj(use_type_reference=True)
+    assert 'var type(value.tag) member;' in inferred
+    assert '\n      type(value.tag) member;' not in inferred
+    explicit = Record.to_sv_obj()
+    assert 'bit [$bits(value.tag)-1:0] member;' in explicit
+    monkeypatch.setattr(Record, '_supports_shared_field_operations', classmethod(lambda cls: False))
+    fallback = Record.to_sv_obj(use_type_reference=True)
+    assert 'var type(value.tag) member;' in fallback

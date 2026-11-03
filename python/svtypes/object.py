@@ -75,6 +75,12 @@ def _sv_reference_type(desc, expression):
     return aliases[expression]
 
 
+def _sv_local_variable_declaration(desc, expression, name):
+    type_name = _sv_reference_type(desc, expression)
+    qualifier = 'var ' if type_name.startswith('type(') else ''
+    return f'{qualifier}{type_name} {name};'
+
+
 def _sv_explicit_type_declarations(members, prefix, indent, reserved=(), owner='value'):
     """Render named types for field expressions used by the SV helpers."""
     from .collection import Array, AssocArray, DynArray, Queue
@@ -3393,7 +3399,7 @@ class SvStruct(SvObject):
                     lines.append(f"{ind_str}{cls.IND * 2}begin")
                     lines.extend(cls.IND + declaration for declaration in field_declarations)
                 if cls._svtypes_packed:
-                    lines.append(f"{ind_str}{cls.IND * 3}{_sv_reference_type(desc, expression)} member;")
+                    lines.append(f"{ind_str}{cls.IND * 3}{_sv_local_variable_declaration(desc, expression, 'member')}")
                     lines.append(f"{ind_str}{cls.IND * 3}member = {expression};")
                 inner = cls.IND * (3 if cls._svtypes_packed or field_declarations else 2)
                 lines.append(f'{ind_str}{inner}{helper}#({parameters})::apply({target}, "{name}", {flags}, action, bytes, offset, count, result, prefix);')
@@ -3459,7 +3465,7 @@ class SvStruct(SvObject):
                 continue
             lines.append(f"{ind_str}{cls.IND * 2}begin")
             lines.extend(cls.IND + declaration for declaration in field_declarations)
-            lines.append(f"{ind_str}{cls.IND * 3}{_sv_reference_type(desc, expression)} member;")
+            lines.append(f"{ind_str}{cls.IND * 3}{_sv_local_variable_declaration(desc, expression, 'member')}")
             lines.append(f"{ind_str}{cls.IND * 3}if (!decode) member = {expression};")
             lines.append(f"{ind_str}{cls.IND * 3}svtypes_pkg::field_codec#({_sv_reference_type(desc, expression)}, {codec})::apply(member, bytes, offset, decode);")
             lines.append(f"{ind_str}{cls.IND * 3}if (decode) {expression} = member;")
