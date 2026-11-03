@@ -49,7 +49,7 @@ def test_remote_generated_business_edits_work_without_regeneration():
         def legal(self):
             self.code == 3
 
-    source = EditableBehavior.to_sv_obj()
+    source = EditableBehavior.to_sv_obj(use_type_reference=True)
     assert "code = 8'h3;" in source
     assert "code == 8'd3" in source
     source = source.replace("code = 8'h3;", "code = 8'h5;", 1)
@@ -85,7 +85,7 @@ def test_remote_renamed_fields_do_not_shadow_codec_locals():
         payload = Bit[8](rand=False, cov=False)
         position = Bit[16](rand=False, cov=False)
 
-    source = EditableNames.to_sv_obj()
+    source = EditableNames.to_sv_obj(use_type_reference=True)
     assert "bit [7:0] payload;" in source and "bit [15:0] position;" in source
     source = source.replace("bit [7:0] payload;", "bit [7:0] bytes;", 1)
     source = source.replace("bit [15:0] position;", "bit [15:0] offset;", 1)
@@ -182,7 +182,7 @@ def test_remote_generated_coverage_edit_changes_samples_without_regeneration():
                 zero = bins[0]
                 one = bins[1]
 
-    source = EditableCoverage.to_sv_obj()
+    source = EditableCoverage.to_sv_obj(use_type_reference=True)
     assert "bins one = {1};" in source
     source = source.replace("bins one = {1};", "bins one = {2};", 1)
     bench = r'''
@@ -209,7 +209,7 @@ def test_remote_generated_counts_fields_on_encode_and_strict_decode_only():
     class CountedObject(SvObject):
         number = Bit[8](rand=False, cov=False)
 
-    source = CountedObject.to_sv_obj()
+    source = CountedObject.to_sv_obj(use_type_reference=True)
     signature = "  function int __svtypes_wire_field_count();"
     declaration = "    int unused_offset = 0;"
     assert source.count(signature) == 1 and source.count(declaration) == 1
@@ -281,7 +281,7 @@ def test_remote_field_count_backfill_respects_buffer_prefix_and_disabled_fields(
     class EmptyRecord(SvObject):
         pass
 
-    source = PrefixRecord.to_sv_obj() + "\n" + EmptyRecord.to_sv_obj()
+    source = PrefixRecord.to_sv_obj(use_type_reference=True) + "\n" + EmptyRecord.to_sv_obj(use_type_reference=True)
     bench = r'''
 module tb;
   initial begin
@@ -346,7 +346,7 @@ module tb;
   end
 endmodule
 '''
-    _run_target("codegen-editability-wide-count", many.to_sv_obj() + "\n" + bench,
+    _run_target("codegen-editability-wide-count", many.to_sv_obj(use_type_reference=True) + "\n" + bench,
                 "SVTYPES_WIDE_FIELD_COUNT_PASS")
 
 
@@ -358,7 +358,7 @@ def test_remote_multifile_template_declaration_edit_without_regeneration():
 
     name = "codegen-editability-multifile-template"
     output = Path(__file__).resolve().parents[2] / ".tmp" / name
-    result = generate(EditableTemplate, output, targets={"sv", "schema"})
+    result = generate(EditableTemplate, output, targets={"sv", "schema"}, use_type_reference=True)
     assert not result.failed
     source = (output / "EditableTemplate.sv").read_text()
     assert "bit [7:0] data;" in source
@@ -394,7 +394,7 @@ def test_remote_multifile_template_and_specialized_member_follow_edit():
 
     name = "codegen-editability-template-member"
     output = Path(__file__).resolve().parents[2] / ".tmp" / name
-    result = generate([PacketTemplate, PacketHolder], output, targets={"sv"})
+    result = generate([PacketTemplate, PacketHolder], output, targets={"sv"}, use_type_reference=True)
     assert not result.failed
     source = (output / "schema.sv").read_text()
     assert source.count("bit [7:0] data;") == 1
@@ -437,7 +437,7 @@ def test_remote_multifile_package_template_and_specialized_member_follow_edit():
     package.register(NamespaceHolder)
     name = "codegen-editability-package-template"
     output = Path(__file__).resolve().parents[2] / ".tmp" / name
-    result = generate(package, output, targets={"sv"})
+    result = generate(package, output, targets={"sv"}, use_type_reference=True)
     assert not result.failed
     source = (output / "editable_pkg.sv").read_text()
     assert source.count("bit [7:0] data;") == 1
@@ -479,7 +479,7 @@ def test_remote_multifile_inherits_registered_specialized_template_after_edit():
     package.register(AChild)
     name = "codegen-editability-template-base"
     output = Path(__file__).resolve().parents[2] / ".tmp" / name
-    result = generate(package, output, targets={"sv"})
+    result = generate(package, output, targets={"sv"}, use_type_reference=True)
     assert not result.failed
     source = (output / "inherit_pkg.sv").read_text()
     assert source.index("class ZBase #(") < source.index("class AChild extends")
@@ -513,7 +513,7 @@ def test_remote_multifile_type_parameter_field_follows_edited_declaration():
 
     name = "codegen-editability-multifile-type-parameter"
     output = Path(__file__).resolve().parents[2] / ".tmp" / name
-    result = generate(TypePacket, output, targets={"sv", "schema"})
+    result = generate(TypePacket, output, targets={"sv", "schema"}, use_type_reference=True)
     assert not result.failed
     source = (output / "TypePacket.sv").read_text()
     assert "T value;" in source
@@ -643,7 +643,7 @@ def test_remote_generated_bit_field_deletion_updates_all_helpers(multifile):
     target_name = "codegen-editability-deleted-field" + ("-multifile" if multifile else "-inline")
     output = Path(__file__).resolve().parents[2] / ".tmp" / target_name
     if multifile:
-        result = generate(EditableDeletion, output, targets={"sv"}, overwrite_modified=True)
+        result = generate(EditableDeletion, output, targets={"sv"}, use_type_reference=True, overwrite_modified=True)
         assert not result.failed
         source = (output / "EditableDeletion.sv").read_text()
         support_files = [output / name for name in result.written if name.startswith("support/")]
@@ -652,7 +652,7 @@ def test_remote_generated_bit_field_deletion_updates_all_helpers(multifile):
         assert support.count("::apply(this.second,") == 1
         fields_file.write_text("\n".join(line for line in support.splitlines() if "::apply(this.second," not in line) + "\n")
     else:
-        source = EditableDeletion.to_sv_obj()
+        source = EditableDeletion.to_sv_obj(use_type_reference=True)
         assert source.count("::apply(this.second,") == 1
         source = "\n".join(line for line in source.splitlines() if "::apply(this.second," not in line)
     assert "  bit [7:0] second;" in source
@@ -690,7 +690,7 @@ def test_remote_shared_bit_field_operations_preserve_independent_policies():
         display_only = Bit[8](rand=False, cov=False, pack_bytes=False, plusarg=False)
         wire_only = Bit[8](rand=False, cov=False, dump=False, plusarg=False)
 
-    source = EditablePolicies.to_sv_obj()
+    source = EditablePolicies.to_sv_obj(use_type_reference=True)
     bench = r'''
 module tb;
   initial begin
@@ -731,7 +731,7 @@ def test_remote_shared_numeric_fields_keep_logic_and_integer_semantics(remove_lo
         counter = Int(rand=False, cov=False)
         total = LongInt(rand=False, cov=False)
 
-    source = EditableNumeric.to_sv_obj()
+    source = EditableNumeric.to_sv_obj(use_type_reference=True)
     assert source.count("::apply(this.status,") == 1
     if remove_logic:
         assert "  logic [7:0] status;" in source
@@ -790,7 +790,7 @@ def test_remote_shared_numeric_collection_fields_and_deletion(remove_dynamic):
         dynamic = DynArray[Logic[4]](rand=False, cov=False)
         queue_data = Queue[Int](rand=False, cov=False)
 
-    source = EditableCollections.to_sv_obj()
+    source = EditableCollections.to_sv_obj(use_type_reference=True)
     assert source.count("::apply(this.dynamic,") == 1
     if remove_dynamic:
         assert "  logic [3:0] dynamic [];" in source
@@ -846,7 +846,7 @@ def test_remote_shared_string_and_real_fields_and_deletion(remove_text):
         measurement = Real(rand=False, cov=False)
         short_value = ShortReal(rand=False, cov=False)
 
-    source = EditableScalars.to_sv_obj()
+    source = EditableScalars.to_sv_obj(use_type_reference=True)
     assert source.count("::apply(this.text,") == 1
     if remove_text:
         assert "  string text;" in source
@@ -904,7 +904,7 @@ def test_remote_shared_string_and_real_collections_and_deletion(remove_labels):
         labels = Queue[String](rand=False, cov=False)
         samples = DynArray[Real](rand=False, cov=False)
 
-    source = EditableTextArrays.to_sv_obj()
+    source = EditableTextArrays.to_sv_obj(use_type_reference=True)
     assert source.count("::apply(this.labels,") == 1
     if remove_labels:
         assert "  string labels [$];" in source
@@ -967,7 +967,7 @@ def test_remote_shared_object_handles_preserve_identity_and_deletion(remove_null
         right = Object["SharedChild"](registry=registry)
         empty = Object["SharedChild"](registry=registry)
 
-    source = SharedChild.to_sv_obj() + "\n" + EditableGraph.to_sv_obj()
+    source = SharedChild.to_sv_obj(use_type_reference=True) + "\n" + EditableGraph.to_sv_obj(use_type_reference=True)
     assert source.count("::apply(this.empty,") == 1
     if remove_null_handle:
         assert "  SharedChild empty;" in source
@@ -1025,7 +1025,7 @@ def test_remote_shared_object_fields_keep_self_cycles():
         next_node = Object["EditableCycle"](registry=registry)
 
     registry.register(EditableCycle)
-    source = EditableCycle.to_sv_obj()
+    source = EditableCycle.to_sv_obj(use_type_reference=True)
     bench = r'''
 module tb;
   initial begin
@@ -1063,7 +1063,7 @@ def test_remote_direct_object_field_preserves_existing_policies():
         control = Bit[8](rand=False, cov=False)
         child = NestedValue(pack_bytes=False, dump=False, plusarg=False, cov=False)
 
-    source = NestedValue.to_sv_obj() + "\n" + ObjectPolicies.to_sv_obj()
+    source = NestedValue.to_sv_obj(use_type_reference=True) + "\n" + ObjectPolicies.to_sv_obj(use_type_reference=True)
     bench = r'''
 module tb;
   initial begin
@@ -1111,7 +1111,7 @@ def test_remote_shared_object_collection_fields_keep_identity(remove_queue, kind
         primary = Object["ListChild"](registry=registry)
         items = collection(rand=False, cov=False)
 
-    source = ListChild.to_sv_obj() + "\n" + EditableObjectCollections.to_sv_obj()
+    source = ListChild.to_sv_obj(use_type_reference=True) + "\n" + EditableObjectCollections.to_sv_obj(use_type_reference=True)
     assert source.count("::apply(this.items,") == 1
     if remove_queue:
         declaration = {"fixed": "  ListChild items [3];", "dynamic": "  ListChild items [];", "queue": "  ListChild items [$];"}[kind]
@@ -1171,7 +1171,7 @@ def test_remote_shared_associative_fields_keep_codecs_and_display(remove_map):
         mapping = AssocArray[Bit[8], String](cov=False)
         counts = AssocArray[String, Int](cov=False)
 
-    source = EditableMaps.to_sv_obj()
+    source = EditableMaps.to_sv_obj(use_type_reference=True)
     assert source.count("::apply(this.mapping,") == 1
     if remove_map:
         assert "  string mapping [bit [7:0]];" in source
@@ -1230,7 +1230,7 @@ def test_remote_shared_associative_object_values_keep_identity():
         primary = Object["MapChild"](registry=registry)
         mapping = AssocArray[Bit[8], Object["MapChild"](registry=registry)](cov=False)
 
-    source = MapChild.to_sv_obj() + "\n" + EditableObjectMap.to_sv_obj()
+    source = MapChild.to_sv_obj(use_type_reference=True) + "\n" + EditableObjectMap.to_sv_obj(use_type_reference=True)
     bench = r'''
 module tb;
   initial begin
@@ -1266,7 +1266,7 @@ def test_remote_edited_associative_value_width_follows_declaration():
         numeric_keys = AssocArray[Bit[8], Bit[8]](cov=False)
         string_keys = AssocArray[String, Bit[8]](cov=False)
 
-    source = EditableMapWidths.to_sv_obj()
+    source = EditableMapWidths.to_sv_obj(use_type_reference=True)
     for declaration in ("bit [7:0] numeric_keys [bit [7:0]];", "bit [7:0] string_keys [string];"):
         assert declaration in source
         source = source.replace(declaration, declaration.replace("bit [7:0]", "bit [20:0]", 1))
@@ -1313,7 +1313,7 @@ def test_remote_shared_enum_field_preserves_names_numeric_plusargs_and_validatio
         color = Color(rand=False, cov=False)
         tone = Tone(rand=False, cov=False)
 
-    source = Color.to_sv_enum() + "\n" + Tone.to_sv_enum() + "\n" + EditableEnums.to_sv_obj()
+    source = Color.to_sv_enum() + "\n" + Tone.to_sv_enum() + "\n" + EditableEnums.to_sv_obj(use_type_reference=True)
     bench = r'''
 module tb;
   initial begin
@@ -1353,7 +1353,7 @@ def test_remote_generated_enum_deletion_changes_only_declaration_and_field_list(
         control = Bit[8](rand=False, cov=False)
         color = Color(rand=False, cov=False)
 
-    source = EditableEnumDeletion.to_sv_obj()
+    source = EditableEnumDeletion.to_sv_obj(use_type_reference=True)
     assert "  Color color;" in source and source.count("::apply(this.color,") == 1
     source = source.replace("  Color color;", "")
     source = "\n".join(line for line in source.splitlines() if "::apply(this.color," not in line)
@@ -1393,7 +1393,7 @@ def test_remote_shared_enum_collection_roundtrip_and_display():
         fixed = Array[Color, 2](rand=False, cov=False)
         values = Queue[Color](rand=False, cov=False)
 
-    source = Color.to_sv_enum() + "\n" + EditableEnumArrays.to_sv_obj()
+    source = Color.to_sv_enum() + "\n" + EditableEnumArrays.to_sv_obj(use_type_reference=True)
     bench = r'''
 module tb;
   initial begin
@@ -1429,7 +1429,7 @@ def test_remote_struct_member_deletion_updates_containing_object_helpers(packed)
         control = Bit[8](rand=False, cov=False)
         data = EditableRecord(plusarg=True, rand=False, cov=False)
 
-    record = EditableRecord.to_sv_obj()
+    record = EditableRecord.to_sv_obj(use_type_reference=True)
     declaration = "  int drop;" if packed else "  int drop = 32'd0;"
     assert declaration in record
     record = record.replace(declaration, "")
@@ -1439,7 +1439,7 @@ def test_remote_struct_member_deletion_updates_containing_object_helpers(packed)
     else:
         record = "\n".join(line for line in record.splitlines() if "::apply(value.drop," not in line)
     assert "value.drop" not in record
-    source = record + "\n" + EditableRecordOwner.to_sv_obj()
+    source = record + "\n" + EditableRecordOwner.to_sv_obj(use_type_reference=True)
     bench = r'''
 module tb;
   initial begin
@@ -1478,8 +1478,8 @@ def test_remote_nonuniform_packed_defaults_follow_field_deletion(remove_member):
     class DefaultOwner(SvObject):
         data = DefaultRecord(rand=False, cov=False)
 
-    record = DefaultRecord.to_sv_obj()
-    owner = DefaultOwner.to_sv_obj()
+    record = DefaultRecord.to_sv_obj(use_type_reference=True)
+    owner = DefaultOwner.to_sv_obj(use_type_reference=True)
     assert "DefaultRecord_packer::svtypes_default()" in owner
     if remove_member:
         assert "  bit [7:0] removed;" in record
@@ -1525,13 +1525,13 @@ def test_remote_nested_packed_defaults_follow_inner_field_deletion():
     class NestedDefaultOwner(SvObject):
         data = DefaultOuter(rand=False, cov=False)
 
-    inner = DefaultInner.to_sv_obj()
+    inner = DefaultInner.to_sv_obj(use_type_reference=True)
     assert "  bit [7:0] removed;" in inner
     inner = inner.replace("  bit [7:0] removed;", "")
     block = next(part for part in inner.split("    begin\n") if "type(value.removed) member;" in part)
     inner = inner.replace("    begin\n" + block.split("    end\n", 1)[0] + "    end\n", "")
     assert "value.removed" not in inner
-    source = inner + "\n" + DefaultOuter.to_sv_obj() + "\n" + NestedDefaultOwner.to_sv_obj()
+    source = inner + "\n" + DefaultOuter.to_sv_obj(use_type_reference=True) + "\n" + NestedDefaultOwner.to_sv_obj(use_type_reference=True)
     bench = r'''
 module tb;
   initial begin
@@ -1571,7 +1571,7 @@ def test_remote_nested_struct_member_deletion_preserves_parent_behavior(packed):
     class NestedRecordOwner(SvObject):
         data = OuterRecord(plusarg=True, rand=False, cov=False)
 
-    inner = InnerRecord.to_sv_obj()
+    inner = InnerRecord.to_sv_obj(use_type_reference=True)
     assert "  bit [7:0] drop;" in inner
     inner = inner.replace("  bit [7:0] drop;", "")
     if packed:
@@ -1580,7 +1580,7 @@ def test_remote_nested_struct_member_deletion_preserves_parent_behavior(packed):
     else:
         inner = "\n".join(line for line in inner.splitlines() if "::apply(value.drop," not in line)
     assert "value.drop" not in inner
-    source = inner + "\n" + OuterRecord.to_sv_obj() + "\n" + NestedRecordOwner.to_sv_obj()
+    source = inner + "\n" + OuterRecord.to_sv_obj(use_type_reference=True) + "\n" + NestedRecordOwner.to_sv_obj(use_type_reference=True)
     bench = r'''
 module tb;
   initial begin
@@ -1626,12 +1626,12 @@ def test_remote_unpacked_struct_container_and_handle_deletion(remove_handle):
     class ComplexRecordOwner(SvObject):
         data = ComplexRecord(rand=False, cov=False)
 
-    record = ComplexRecord.to_sv_obj()
+    record = ComplexRecord.to_sv_obj(use_type_reference=True)
     assert "  StructChild child;" in record and record.count("::apply(value.child,") == 1
     if remove_handle:
         record = record.replace("  StructChild child;", "")
         record = "\n".join(line for line in record.splitlines() if "::apply(value.child," not in line)
-    source = StructChild.to_sv_obj() + "\n" + record + "\n" + ComplexRecordOwner.to_sv_obj()
+    source = StructChild.to_sv_obj(use_type_reference=True) + "\n" + record + "\n" + ComplexRecordOwner.to_sv_obj(use_type_reference=True)
     bench = r'''
 module tb;
   initial begin
@@ -1687,11 +1687,11 @@ def test_remote_struct_arrays_follow_deleted_element_member():
         group = ItemGroup(rand=False, cov=False)
         pending = Queue[ItemRecord](rand=False, cov=False)
 
-    item = ItemRecord.to_sv_obj()
+    item = ItemRecord.to_sv_obj(use_type_reference=True)
     assert "  bit [7:0] removed;" in item and item.count("::apply(value.removed,") == 1
     item = item.replace("  bit [7:0] removed;", "")
     item = "\n".join(line for line in item.splitlines() if "::apply(value.removed," not in line)
-    source = item + "\n" + ItemGroup.to_sv_obj() + "\n" + ItemOwner.to_sv_obj()
+    source = item + "\n" + ItemGroup.to_sv_obj(use_type_reference=True) + "\n" + ItemOwner.to_sv_obj(use_type_reference=True)
     bench = r'''
 module tb;
   initial begin
@@ -1732,11 +1732,11 @@ def test_remote_associative_enum_and_struct_values_follow_deleted_member():
         by_color = AssocArray[MapColor, MapItem](cov=False)
         colors = AssocArray[Bit[8], MapColor](cov=False)
 
-    item = MapItem.to_sv_obj()
+    item = MapItem.to_sv_obj(use_type_reference=True)
     assert "  bit [7:0] removed;" in item and item.count("::apply(value.removed,") == 1
     item = item.replace("  bit [7:0] removed;", "")
     item = "\n".join(line for line in item.splitlines() if "::apply(value.removed," not in line)
-    source = MapColor.to_sv_enum() + "\n" + item + "\n" + EnumStructMap.to_sv_obj()
+    source = MapColor.to_sv_enum() + "\n" + item + "\n" + EnumStructMap.to_sv_obj(use_type_reference=True)
     bench = r'''
 module tb;
   initial begin
@@ -1774,13 +1774,13 @@ def test_remote_associative_member_of_struct_uses_shared_list(remove_entries):
     class MapRecordOwner(SvObject):
         record = MapRecord(rand=False, cov=False)
 
-    record = MapRecord.to_sv_obj()
+    record = MapRecord.to_sv_obj(use_type_reference=True)
     assert record.count("::apply(value.entries,") == 1
     if remove_entries:
         assert "  bit [7:0] entries [string];" in record
         record = record.replace("  bit [7:0] entries [string];", "")
         record = "\n".join(line for line in record.splitlines() if "::apply(value.entries," not in line)
-    source = record + "\n" + MapRecordOwner.to_sv_obj()
+    source = record + "\n" + MapRecordOwner.to_sv_obj(use_type_reference=True)
     bench = r'''
 module tb;
   initial begin
@@ -1821,7 +1821,8 @@ endmodule
 @pytest.mark.remote_sv
 @pytest.mark.parametrize("outer", ["fixed", "dynamic", "queue", "assoc"])
 @pytest.mark.parametrize("inner", ["fixed", "dynamic", "queue", "assoc"])
-def test_remote_two_level_containers_share_fields_and_preserve_wire(outer, inner):
+@pytest.mark.parametrize("use_type_reference", [False, True])
+def test_remote_two_level_containers_share_fields_and_preserve_wire(outer, inner, use_type_reference):
     def collection(kind, element):
         if kind == "fixed":
             return Array[element, 2](rand=False, cov=False)
@@ -1834,7 +1835,7 @@ def test_remote_two_level_containers_share_fields_and_preserve_wire(outer, inner
     class NestedMatrix(SvObject):
         values = collection(outer, collection(inner, Int(rand=False, cov=False)))
 
-    source = NestedMatrix.to_sv_obj()
+    source = NestedMatrix.to_sv_obj(use_type_reference=use_type_reference)
     assert source.count('::apply(this.values, "values",') == 1
     inner_init = {
         "fixed": "element[0] = 7; element[1] = 8;",
@@ -1884,7 +1885,7 @@ def test_remote_nested_reference_container_preserves_target_and_shadowed_name():
     class NestedReferences(SvObject):
         result = AssocArray[String, Queue[RemoteRef["item.Type"]]](cov=False)
 
-    source = NestedReferences.to_sv_obj()
+    source = NestedReferences.to_sv_obj(use_type_reference=True)
     bench = r'''
 module tb;
   initial begin
@@ -1923,7 +1924,7 @@ def test_remote_nested_container_inside_struct_roundtrips():
     class MatrixOwner(SvObject):
         record = MatrixRecord(rand=False, cov=False)
 
-    source = MatrixRecord.to_sv_obj() + "\n" + MatrixOwner.to_sv_obj()
+    source = MatrixRecord.to_sv_obj(use_type_reference=True) + "\n" + MatrixOwner.to_sv_obj(use_type_reference=True)
     bench = r'''
 module tb;
   initial begin
@@ -1956,7 +1957,7 @@ def test_remote_nested_container_deletion_needs_only_declaration_and_field_list(
         marker = Bit[8](rand=False, cov=False)
         matrix = Queue[Queue[Int]](rand=False, cov=False)
 
-    source = EditableNestedContainer.to_sv_obj()
+    source = EditableNestedContainer.to_sv_obj(use_type_reference=True)
     assert "  int matrix [$] [$];" in source
     assert source.count('::apply(this.matrix, "matrix",') == 1
     source = source.replace("  int matrix [$] [$];", "")
@@ -1994,7 +1995,7 @@ def test_remote_symbolic_fields_share_list_and_follow_actual_declarations(remove
         tag = Bit[width](rand=False, cov=False)
         values = Array[Bit[width], depth](rand=False, cov=False)
 
-    source = SymbolicBuffer.to_sv_obj()
+    source = SymbolicBuffer.to_sv_obj(use_type_reference=True)
     assert source.count('::apply(this.values, "values",') == 1
     if remove_values:
         declaration = "  bit [(width) - 1:0] values [(depth)];"
@@ -2036,7 +2037,7 @@ def test_remote_type_parameter_field_follows_edited_declaration():
         T = Parameter[type]()
         value = T()
 
-    source = SymbolicTypeHolder.to_sv_obj()
+    source = SymbolicTypeHolder.to_sv_obj(use_type_reference=True)
     assert "  T value;" in source
     assert "bit_packer#(type(this.value))" in source
     source = source.replace("  T value;", "  bit [20:0] value;")
@@ -2061,14 +2062,15 @@ endmodule
 
 
 @pytest.mark.remote_sv
-def test_remote_multidimensional_symbolic_array_uses_actual_shape():
+@pytest.mark.parametrize('use_type_reference', [False, True])
+def test_remote_multidimensional_symbolic_array_uses_actual_shape(use_type_reference):
     class SymbolicMatrix(SvObject):
         width = Parameter[Int]()
         depth = Parameter[Int]()
         values = Array[Bit[width], (2, depth)](rand=False, cov=False)
 
-    source = SymbolicMatrix.to_sv_obj()
-    assert "fixed_sequence_packer#(type(this.values)" in source
+    source = SymbolicMatrix.to_sv_obj(use_type_reference=use_type_reference)
+    assert ("fixed_sequence_packer#(type(this.values)" in source) == use_type_reference
     bench = r'''
 module tb;
   initial begin
@@ -2091,12 +2093,13 @@ endmodule
 
 
 @pytest.mark.remote_sv
-def test_remote_symbolic_queue_uses_actual_element_type():
+@pytest.mark.parametrize('use_type_reference', [False, True])
+def test_remote_symbolic_queue_uses_actual_element_type(use_type_reference):
     class SymbolicQueue(SvObject):
         width = Parameter[Int]()
         values = Queue[Bit[width]](rand=False, cov=False)
 
-    source = SymbolicQueue.to_sv_obj()
+    source = SymbolicQueue.to_sv_obj(use_type_reference=use_type_reference)
     assert source.count('::apply(this.values, "values",') == 1
     bench = r'''
 module tb;
@@ -2126,7 +2129,7 @@ def test_remote_edited_symbolic_array_width_and_length_follow_declaration():
         depth = Parameter[Int]()
         values = Array[Bit[width], depth](rand=False, cov=False)
 
-    source = EditableSymbolicArray.to_sv_obj()
+    source = EditableSymbolicArray.to_sv_obj(use_type_reference=True)
     declaration = "  bit [(width) - 1:0] values [(depth)];"
     assert declaration in source
     source = source.replace(declaration, "  bit [20:0] values [5];")
@@ -2160,7 +2163,7 @@ def test_remote_reference_field_and_collections_share_operations(remove_ref):
         refs = Queue[RemoteRef["item.Type"]](cov=False)
         lookup = AssocArray[Bit[8], RemoteRef["item.Type"]](cov=False)
 
-    source = EditableRemoteRefs.to_sv_obj()
+    source = EditableRemoteRefs.to_sv_obj(use_type_reference=True)
     assert '  svtypes_pkg::remote_ref ref_value = new("item.Type");' in source
     assert source.count("::apply(this.ref_value,") == 1
     if remove_ref:
@@ -2216,11 +2219,11 @@ def test_remote_generated_object_declaration_edits_follow_actual_types(multifile
         opcode = Bit[13](rand=False, cov=False)
         data = Array[Bit[16], 3](rand=False, cov=False)
 
-    generated = EditableOwner.to_sv_obj()
+    generated = EditableOwner.to_sv_obj(use_type_reference=True)
     target_name = "codegen-editability-edited-object" + ("-multifile" if multifile else "")
     if multifile:
         output = Path(__file__).resolve().parents[2] / ".tmp" / target_name
-        result = generate(EditableOwner, output, targets={"sv"})
+        result = generate(EditableOwner, output, targets={"sv"}, use_type_reference=True)
         assert not result.failed
         generated = (output / "EditableOwner.sv").read_text()
     assert "bit [12:0] opcode;" in generated and "data [3];" in generated
@@ -2324,7 +2327,7 @@ int main(int argc, char** argv) {
     python_binary.write_bytes(python_bytes)
     subprocess.run([str(executable), str(python_binary)], check=True, capture_output=True)
 
-    sv = EditableOrder.to_sv_obj()
+    sv = EditableOrder.to_sv_obj(use_type_reference=True)
     assert sv.count("  bit [7:0] second;") == 1
     sv = sv.replace("  bit [7:0] second;", "  bit [7:0] second;\n  bit [7:0] third;")
     sv_lines = sv.splitlines()
@@ -2417,7 +2420,7 @@ def test_remote_generated_graph_propagates_strict_to_child(strict):
     class DiagnosticGraph(SvObject):
         child = Object["DiagnosticChild"](registry=registry)
 
-    source = DiagnosticChild.to_sv_obj() + "\n" + DiagnosticGraph.to_sv_obj()
+    source = DiagnosticChild.to_sv_obj(use_type_reference=True) + "\n" + DiagnosticGraph.to_sv_obj(use_type_reference=True)
     bench = r'''
 module tb;
   initial begin
@@ -2465,7 +2468,7 @@ def test_remote_multifile_struct_codec_compiles_in_declaring_scope():
 
     name = "codegen-editability-split-struct"
     output = Path(__file__).resolve().parents[2] / ".tmp" / name
-    result = generate(SplitRecord, output, targets={"sv"})
+    result = generate(SplitRecord, output, targets={"sv"}, use_type_reference=True)
     assert not result.failed
     main = (output / "SplitRecord.sv").read_text()
     assert '`include "support/' in main
@@ -2516,3 +2519,44 @@ endmodule
 '''.replace("POLICY", "svtypes_pkg::DIAGNOSTICS_STRICT" if strict else "svtypes_pkg::DIAGNOSTICS_OFF")
     source = source.replace("MUTATION", mutation)
     _run_target("codegen-editability-invalid-" + case, source, "", expected_error=expected)
+
+
+@pytest.mark.remote_sv
+@pytest.mark.parametrize('use_type_reference', [False, True])
+def test_remote_type_reference_modes_cover_packed_and_inherited_fields(use_type_reference):
+    class TypeModeRecord(SvPackedStruct):
+        code = Bit[8]()
+
+    class TypeModeBase(SvObject):
+        values = Queue[Bit[8]](cov=False)
+
+    class TypeModeChild(TypeModeBase):
+        record = TypeModeRecord()
+        more = Queue[Bit[4]](cov=False)
+
+    source = '\n'.join(cls.to_sv_obj(use_type_reference=use_type_reference)
+                       for cls in (TypeModeRecord, TypeModeBase, TypeModeChild))
+    if not use_type_reference:
+        assert 'type(this.' not in source and 'type(value.' not in source
+    bench = r'''
+module tb;
+  initial begin
+    TypeModeChild source, restored;
+    byte unsigned bytes[$];
+    int offset = 0;
+    source = new(); restored = new();
+    source.values.push_back(8'h53);
+    source.more.push_back(4'h9);
+    source.record.code = 8'h27;
+    source.pack_body(bytes);
+    restored.unpack_body(bytes, offset);
+    if (offset != bytes.size() || restored.values[0] != 8'h53 ||
+        restored.more[0] != 4'h9 || restored.record.code != 8'h27)
+      $fatal(1, "type mode roundtrip failed");
+    $display("SVTYPES_TYPE_MODE_PASS");
+    $finish;
+  end
+endmodule
+'''
+    _run_target('type-mode-' + ('inferred' if use_type_reference else 'explicit'),
+                source + bench, 'SVTYPES_TYPE_MODE_PASS')

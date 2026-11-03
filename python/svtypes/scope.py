@@ -162,7 +162,7 @@ class Scope(ObjectRegistry):
             pending.difference_update(ready)
         return ordered
 
-    def to_sv_pkg(self, level=0):
+    def to_sv_pkg(self, level=0, *, use_type_reference=False):
         from .enum import Enum
         from .object import SvObject, SvStruct
         from .parameter import Parameter
@@ -209,7 +209,7 @@ class Scope(ObjectRegistry):
         # Objects
         for cls in ordered_types:
             if issubclass(cls, SvObject):
-                lines.append(cls.to_sv_obj(content_level))
+                lines.append(cls.to_sv_obj(content_level, use_type_reference=use_type_reference))
 
         if not is_unit:
             lines.append(f"{ind_str}endpackage")

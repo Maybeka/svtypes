@@ -939,4 +939,4 @@ def test_struct_request_response_codecs_preserve_value_fields_and_opaque_referen
     assert restored.current.payload.data.value == [3]
     assert restored.result.owner.value.object_number == 42
     assert [item.object_number for item in restored.result.references.value] == [42, 0, 42]
-    assert 'struct_field_operations#(type(this.value), Data_packer)::apply(this.value, "value",' in request.to_sv_obj()
+    assert 'struct_field_operations#(Data_t, Data_packer)::apply(this.value, "value",' in request.to_sv_obj()

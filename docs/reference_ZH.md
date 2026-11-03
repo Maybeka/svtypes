@@ -364,8 +364,14 @@ C++ 使用 `DecodeContext` 的 `DiagnosticPolicy::off/strict` 和 `DecodeContext
 默认不要求生成文件摘要与源码一致才能运行。生成时 `generate()` 会保护被手改的受管文件和
 同名非受管文件：冲突路径返回在 `failed` 中，不发布任何新文件。
 `overwrite_modified=True` 显式允许覆盖；`mode="check"` 始终只读报告差异。
-完整实现状态与尚未完成的产物分层及性能验收见
+实施与验证详情见
 [实施记录](SVTYPES_GENERATED_CODE_EDITABILITY_IMPLEMENTATION.md)。
+
+SV 生成默认使用显式声明类型；容器类型需要时会生成命名 `typedef`。通过
+`to_sv_obj(use_type_reference=True)`、`to_sv_pkg(use_type_reference=True)` 或
+`generate(..., use_type_reference=True)` 可让辅助代码使用 SystemVerilog `type(expression)`。
+后者可跟随手工字段类型修改；默认模式侧重工具兼容，手工修改字段类型时还需同步修改对应的
+辅助类型或 `typedef`。
 
 `generate()` 可将未绑定参数的类输出为目标语言模板。此时尚无具体的源 schema，其名称记录在
 schema 文档和生成清单的 `unbound_templates` 中，不加入 `types` 或具体指纹列表。需要具体

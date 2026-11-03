@@ -107,5 +107,5 @@ def test_generated_record_dump_qualifies_shadowed_collection_member():
     ), class_name='ShadowedResult').build()
     text = record.to_sv_obj()
     assert text.count('::apply(this.result, "result",') == 1
-    assert 'type(this.result["\"])' in text
+    assert 'type(this.result' not in text
     assert 'svtypes_pkg::remote_ref_field_formatter' in text

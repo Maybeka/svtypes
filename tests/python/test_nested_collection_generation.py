@@ -18,7 +18,7 @@ def collection(kind, element):
 def test_nested_collection_packer_uses_dependency_ordered_local_type(outer, inner):
     descriptor = collection(outer, collection(inner, Int(rand=False, cov=False)))
     cls = type('NestedValue', (SvObject,), {'values': descriptor})
-    text = cls.to_sv_obj()
+    text = cls.to_sv_obj(use_type_reference=True)
     alias = '__svtypes_values_element_t'
     assert 'typedef ' in text
     assert alias in text
@@ -27,7 +27,7 @@ def test_nested_collection_packer_uses_dependency_ordered_local_type(outer, inne
     assert text.count('::apply(this.values, "values",') == 1
     assert '__svtypes_transfer_fields(bytes, __svtypes_offset, 0);' in text
     assert '__svtypes_transfer_fields(bytes, offset, 1);' in text
-    assert cls.to_sv_obj() == text
+    assert cls.to_sv_obj(use_type_reference=True) == text
 
 
 def test_nested_collection_types_are_deduplicated_and_context_does_not_leak():
@@ -36,15 +36,15 @@ def test_nested_collection_types_are_deduplicated_and_context_does_not_leak():
         second = DynArray[Queue[Int]](rand=False, cov=False)
         deep = Queue[Queue[Queue[Int]]](rand=False, cov=False)
 
-    text = NestedValue.to_sv_obj()
+    text = NestedValue.to_sv_obj(use_type_reference=True)
     assert text.count('typedef ') == 2
     assert text.index('__svtypes_first_element_t') < text.index('__svtypes_deep_element_t')
 
     class FlatValue(SvObject):
         values = Queue[Int](rand=False, cov=False)
 
-    assert 'typedef ' not in FlatValue.to_sv_obj()
-    assert '__svtypes_first_element_t' not in FlatValue.to_sv_obj()
+    assert 'typedef ' not in FlatValue.to_sv_obj(use_type_reference=True)
+    assert '__svtypes_first_element_t' not in FlatValue.to_sv_obj(use_type_reference=True)
 
 
 @pytest.mark.parametrize('outer', ['fixed', 'queue', 'dynamic', 'assoc'])

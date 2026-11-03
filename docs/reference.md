@@ -400,8 +400,13 @@ Running generated code does not require its artifact hashes to match source. Dur
 `generate()` protects edited managed files and conflicting unmanaged files: it returns their paths in
 `failed` and publishes nothing. `overwrite_modified=True` explicitly permits replacement;
 `mode="check"` always reports differences without writing. See the
-[implementation record](SVTYPES_GENERATED_CODE_EDITABILITY_IMPLEMENTATION.md) for current status,
-including pending artifact organization and performance qualification.
+[implementation record](SVTYPES_GENERATED_CODE_EDITABILITY_IMPLEMENTATION.md) for implementation and verification details.
+
+SV generation uses explicit declared types by default, with named `typedef`s where container types
+require them. `to_sv_obj(use_type_reference=True)`, `to_sv_pkg(use_type_reference=True)`, and
+`generate(..., use_type_reference=True)` instead use SystemVerilog `type(expression)` in helper code.
+The latter follows manual field-type changes, while the default favors tool compatibility; manual
+type changes in the default output also require updating the corresponding helper types or typedefs.
 
 `generate()` can emit an unbound parameterized class as a target-language template. Since that
 declaration has no concrete source schema, its name appears in `unbound_templates` in the schema

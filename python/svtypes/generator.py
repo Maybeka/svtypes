@@ -64,16 +64,16 @@ def _json_bytes(value: Any) -> bytes:
     return (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
-def _render_outputs(registry_or_schema: Any, targets: set[str], layout: str) -> tuple[str, dict[str, bytes], list[dict[str, Any]], list[str]]:
+def _render_outputs(registry_or_schema: Any, targets: set[str], layout: str, use_type_reference: bool = False) -> tuple[str, dict[str, bytes], list[dict[str, Any]], list[str]]:
     from .codegen_artifacts import collect_support_artifacts
 
     with collect_support_artifacts() as support:
-        package, outputs, schemas, templates = _render_outputs_inline(registry_or_schema, targets, layout)
+        package, outputs, schemas, templates = _render_outputs_inline(registry_or_schema, targets, layout, use_type_reference)
     outputs.update(support)
     return package, outputs, schemas, templates
 
 
-def _render_outputs_inline(registry_or_schema: Any, targets: set[str], layout: str) -> tuple[str, dict[str, bytes], list[dict[str, Any]], list[str]]:
+def _render_outputs_inline(registry_or_schema: Any, targets: set[str], layout: str, use_type_reference: bool = False) -> tuple[str, dict[str, bytes], list[dict[str, Any]], list[str]]:
     if layout != "package":
         raise DeclarationError("SvTypes 1.0 generator currently supports only layout='package'")
     unknown = targets - {"sv", "cpp", "schema"}
@@ -94,9 +94,9 @@ def _render_outputs_inline(registry_or_schema: Any, targets: set[str], layout: s
 
         renderer = getattr(registry_or_schema, "to_sv_pkg", None)
         if renderer is None:
-            body = "\n\n".join(value.to_sv_obj() for value in types)
+            body = "\n\n".join(value.to_sv_obj(use_type_reference=use_type_reference) for value in types)
         else:
-            body = renderer()
+            body = renderer(use_type_reference=True) if use_type_reference else renderer()
         outputs[f"{stem}.sv"] = (body.rstrip() + "\n").encode("utf-8")
         outputs[f"{stem}.coverage-manifest.json"] = _json_bytes(observation_manifest(types))
     if "cpp" in targets:
@@ -185,6 +185,7 @@ def generate(
     layout: str = "package",
     mode: str = "write",
     overwrite_modified: bool = False,
+    use_type_reference: bool = False,
 ) -> GenerationResult:
     """Generate or check a deterministic package artifact set.
 
@@ -192,11 +193,13 @@ def generate(
     and returns their paths in ``failed`` without publishing any files.
     ``overwrite_modified=True`` explicitly authorizes replacing those files.
     Check mode remains read-only and reports differences regardless of this flag.
+    ``use_type_reference=True`` emits SV type references instead of explicit
+    helper types; it does not change C++ or schema output.
     """
     if mode not in {"write", "check"}:
         raise DeclarationError("generation mode must be 'write' or 'check'")
     target_set = set(targets)
-    package_name, outputs, schemas, templates = _render_outputs(registry_or_schema, target_set, layout)
+    package_name, outputs, schemas, templates = _render_outputs(registry_or_schema, target_set, layout, use_type_reference)
     manifest_value = _manifest(package_name, outputs, schemas, templates)
     manifest_bytes = _json_bytes(manifest_value)
     managed_outputs = {**outputs, MANIFEST_NAME: manifest_bytes}
