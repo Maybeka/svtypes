@@ -489,13 +489,6 @@ endmodule
 @pytest.mark.remote_sv
 def test_remote_sv_constraint_simulation():
     host = os.environ["SVTYPES_REMOTE_SV_HOST"]
-    reachable = subprocess.run(
-        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
-        capture_output=True,
-        text=True,
-    )
-    if reachable.returncode != 0:
-        pytest.skip(f"remote target host {host} is not reachable")
     out = Path(__file__).resolve().parents[2] / ".tmp" / "constraint_sv"
     if out.exists():
         shutil.rmtree(out)
@@ -517,13 +510,6 @@ def test_remote_sv_constraint_simulation():
 def test_remote_sv_dynamic_collection_simulation():
     """Dynamic-array and queue size/foreach constraints run in target."""
     host = os.environ["SVTYPES_REMOTE_SV_HOST"]
-    reachable = subprocess.run(
-        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
-        capture_output=True,
-        text=True,
-    )
-    if reachable.returncode != 0:
-        pytest.skip(f"remote target host {host} is not reachable")
     out = Path(__file__).resolve().parents[2] / ".tmp" / "dynamic_collection_sv"
     if out.exists():
         shutil.rmtree(out)
@@ -595,13 +581,6 @@ endmodule
 def test_remote_sv_rand_handle_randomization():
     """A pre-allocated rand class handle is solved with its parent in target."""
     host = os.environ["SVTYPES_REMOTE_SV_HOST"]
-    reachable = subprocess.run(
-        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
-        capture_output=True,
-        text=True,
-    )
-    if reachable.returncode != 0:
-        pytest.skip(f"remote target host {host} is not reachable")
 
     out = Path(__file__).resolve().parents[2] / ".tmp" / "rand_handle_sv"
     if out.exists():
@@ -677,13 +656,6 @@ endmodule
 def test_remote_sv_rand_handle_container_randomization():
     """Pre-allocated rand handles in every unpacked container randomize in target."""
     host = os.environ["SVTYPES_REMOTE_SV_HOST"]
-    reachable = subprocess.run(
-        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
-        capture_output=True,
-        text=True,
-    )
-    if reachable.returncode != 0:
-        pytest.skip(f"remote target host {host} is not reachable")
 
     out = Path(__file__).resolve().parents[2] / ".tmp" / "rand_handle_container_sv"
     if out.exists():
@@ -746,13 +718,6 @@ endmodule
 def test_remote_sv_rand_handle_dynamic_collections_resize_without_allocation():
     """Resizing rand handle collections retains objects and adds null slots."""
     host = os.environ["SVTYPES_REMOTE_SV_HOST"]
-    reachable = subprocess.run(
-        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
-        capture_output=True,
-        text=True,
-    )
-    if reachable.returncode != 0:
-        pytest.skip(f"remote target host {host} is not reachable")
 
     out = Path(__file__).resolve().parents[2] / ".tmp" / "rand_handle_resize_sv"
     if out.exists():
@@ -839,13 +804,6 @@ def test_remote_sv_dist_expression_simulation():
     """The same expression/range/weight dist IR accepted by Python compiles
     and constrains target-language randomization."""
     host = os.environ["SVTYPES_REMOTE_SV_HOST"]
-    reachable = subprocess.run(
-        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
-        capture_output=True,
-        text=True,
-    )
-    if reachable.returncode != 0:
-        pytest.skip(f"remote target host {host} is not reachable")
 
     class ConditionalDistPacket(SvObject):
         gate = Bit[1]()
@@ -972,13 +930,6 @@ endmodule
 def test_remote_sv_randc_cycle_simulation():
     """Generated `randc` follows the observable SV cycle and mode rules."""
     host = os.environ["SVTYPES_REMOTE_SV_HOST"]
-    reachable = subprocess.run(
-        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
-        capture_output=True,
-        text=True,
-    )
-    if reachable.returncode != 0:
-        pytest.skip(f"remote target host {host} is not reachable")
     out = Path(__file__).resolve().parents[2] / ".tmp" / "randc_sv"
     if out.exists():
         shutil.rmtree(out)
@@ -1048,13 +999,6 @@ endmodule
 @pytest.mark.remote_sv
 def test_remote_sv_unique_scalar_simulation():
     host = os.environ["SVTYPES_REMOTE_SV_HOST"]
-    reachable = subprocess.run(
-        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
-        capture_output=True,
-        text=True,
-    )
-    if reachable.returncode != 0:
-        pytest.skip(f"remote target host {host} is not reachable")
     out = Path(__file__).resolve().parents[2] / ".tmp" / "unique_sv"
     if out.exists():
         shutil.rmtree(out)
@@ -1106,13 +1050,6 @@ endmodule
 @pytest.mark.remote_sv
 def test_remote_sv_unique_collection_simulation():
     host = os.environ["SVTYPES_REMOTE_SV_HOST"]
-    reachable = subprocess.run(
-        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
-        capture_output=True,
-        text=True,
-    )
-    if reachable.returncode != 0:
-        pytest.skip(f"remote target host {host} is not reachable")
     out = Path(__file__).resolve().parents[2] / ".tmp" / "unique_collection_sv"
     if out.exists():
         shutil.rmtree(out)
@@ -1179,13 +1116,6 @@ endmodule
 @pytest.mark.remote_sv
 def test_remote_sv_soft_constraint_simulation():
     host = os.environ["SVTYPES_REMOTE_SV_HOST"]
-    reachable = subprocess.run(
-        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
-        capture_output=True,
-        text=True,
-    )
-    if reachable.returncode != 0:
-        pytest.skip(f"remote target host {host} is not reachable")
     out = Path(__file__).resolve().parents[2] / ".tmp" / "soft_sv"
     if out.exists():
         shutil.rmtree(out)
@@ -1249,13 +1179,6 @@ endmodule
 @pytest.mark.remote_sv
 def test_remote_sv_solve_before_simulation():
     host = os.environ["SVTYPES_REMOTE_SV_HOST"]
-    reachable = subprocess.run(
-        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
-        capture_output=True,
-        text=True,
-    )
-    if reachable.returncode != 0:
-        pytest.skip(f"remote target host {host} is not reachable")
 
     class WideSolveBeforePacket(SvObject):
         first = Bit[13]()
@@ -1328,13 +1251,6 @@ def test_remote_sv_template_specialization_simulation():
     specialization and a direct Templated#(.WIDTH(...)) instance (resolved
     entirely by the target language) simulate correctly."""
     host = os.environ["SVTYPES_REMOTE_SV_HOST"]
-    reachable = subprocess.run(
-        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
-        capture_output=True,
-        text=True,
-    )
-    if reachable.returncode != 0:
-        pytest.skip(f"remote target host {host} is not reachable")
 
     class Templated(SvObject):
         WIDTH = Parameter[Int]()
@@ -1414,13 +1330,6 @@ def test_remote_sv_type_parameter_simulation():
     """A type-parameter template compiles; direct Kind#(.T(Payload))
     instances are resolved by the target language and simulate."""
     host = os.environ["SVTYPES_REMOTE_SV_HOST"]
-    reachable = subprocess.run(
-        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
-        capture_output=True,
-        text=True,
-    )
-    if reachable.returncode != 0:
-        pytest.skip(f"remote target host {host} is not reachable")
 
     class Kind(SvObject):
         T = Parameter[type]()
@@ -1491,13 +1400,6 @@ def test_remote_sv_template_constraint_on_parameterized_instance():
     direct Bound#(.WIDTH(8)) instance is constrained by the target-language
     solver."""
     host = os.environ["SVTYPES_REMOTE_SV_HOST"]
-    reachable = subprocess.run(
-        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
-        capture_output=True,
-        text=True,
-    )
-    if reachable.returncode != 0:
-        pytest.skip(f"remote target host {host} is not reachable")
 
     class Bound(SvObject):
         WIDTH = Parameter[Int]()
@@ -1568,13 +1470,6 @@ def test_remote_sv_paramref_forwarding_and_symbolic_for():
     symbolic `for i in range(WIDTH)` constraint is solved by the target
     language on a Sub#(.WIDTH(4)) instance."""
     host = os.environ["SVTYPES_REMOTE_SV_HOST"]
-    reachable = subprocess.run(
-        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
-        capture_output=True,
-        text=True,
-    )
-    if reachable.returncode != 0:
-        pytest.skip(f"remote target host {host} is not reachable")
 
     class Base(SvObject):
         WIDTH = Parameter[Int]()
@@ -1648,13 +1543,6 @@ endmodule
 @pytest.mark.remote_sv
 def test_remote_sv_layered_randomize_simulation():
     host = os.environ["SVTYPES_REMOTE_SV_HOST"]
-    reachable = subprocess.run(
-        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
-        capture_output=True,
-        text=True,
-    )
-    if reachable.returncode != 0:
-        pytest.skip(f"remote target host {host} is not reachable")
 
     class LayerPkt(SvObject):
         addr = Bit[32]()

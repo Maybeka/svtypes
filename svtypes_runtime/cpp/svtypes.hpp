@@ -15,7 +15,44 @@
 #include <initializer_list>
 #include <sstream>
 
+// Keep generated field visitors transparent to the optimizer without exposing
+// compiler-specific syntax throughout generated classes.
+#if defined(__clang__) || defined(__GNUC__)
+#define SVTYPES_INLINE_FIELD_VISITOR inline __attribute__((always_inline))
+#define SVTYPES_INLINE_FIELD_OPERATION __attribute__((always_inline))
+#elif defined(_MSC_VER)
+#define SVTYPES_INLINE_FIELD_VISITOR __forceinline
+#define SVTYPES_INLINE_FIELD_OPERATION
+#else
+#define SVTYPES_INLINE_FIELD_VISITOR inline
+#define SVTYPES_INLINE_FIELD_OPERATION
+#endif
+
 namespace svtypes {
+
+enum class DiagnosticPolicy { off, strict };
+
+struct DecodeContext {
+    DiagnosticPolicy diagnostics = DiagnosticPolicy::off;
+};
+
+// Operation-local propagation for the existing generated unpack signatures.
+inline thread_local const DecodeContext* active_decode_context = nullptr;
+
+class DecodeContextGuard {
+    const DecodeContext* previous_;
+public:
+    explicit DecodeContextGuard(const DecodeContext& context)
+        : previous_(active_decode_context) { active_decode_context = &context; }
+    DecodeContextGuard(const DecodeContextGuard&) = delete;
+    DecodeContextGuard& operator=(const DecodeContextGuard&) = delete;
+    DecodeContextGuard(DecodeContext&&) = delete;
+    ~DecodeContextGuard() { active_decode_context = previous_; }
+};
+
+inline bool strict_decode_diagnostics() {
+    return active_decode_context && active_decode_context->diagnostics == DiagnosticPolicy::strict;
+}
 
 inline constexpr uint32_t max_dynamic_length = 1'000'000;
 
@@ -65,6 +102,10 @@ struct RuntimeCapabilities {
         "svtypes.record-schema.v1",
         "svtypes.remote-reference.v1",
         "svtypes.struct-kinds.v1",
+        "svtypes.optional-codec-diagnostics.v1",
+        "svtypes.generated-field-visitors.v1",
+        "svtypes.generated-field-operations.v1",
+        "svtypes.generated-wire-helpers.v1",
     };
 };
 
@@ -593,7 +634,7 @@ inline void unpack(std::string& v, const std::vector<uint8_t>& b, size_t& o) {
     o += len;
 }
 
-inline uint8_t hex_nibble(char value) {
+constexpr uint8_t hex_nibble(char value) {
     if (value >= '0' && value <= '9') return static_cast<uint8_t>(value - '0');
     if (value >= 'a' && value <= 'f') return static_cast<uint8_t>(value - 'a' + 10);
     throw std::runtime_error("SvTypes encoding fingerprint is not lowercase hexadecimal");
@@ -607,9 +648,23 @@ inline uint8_t fingerprint_byte(const std::string& fingerprint, size_t index) {
                                 hex_nibble(fingerprint[index * 2 + 1]));
 }
 
-inline void pack_object_header(
+constexpr std::array<uint8_t, 32> fingerprint_literal(const char (&text)[65]) {
+    std::array<uint8_t, 32> result{};
+    for (size_t i = 0; i < result.size(); ++i) {
+        result[i] = static_cast<uint8_t>((hex_nibble(text[i * 2]) << 4) |
+                                         hex_nibble(text[i * 2 + 1]));
+    }
+    return result;
+}
+
+inline uint8_t fingerprint_byte(const std::array<uint8_t, 32>& fingerprint, size_t index) {
+    return fingerprint[index];
+}
+
+template<class Fingerprint>
+inline void pack_object_header_impl(
     const std::string& type_name,
-    const std::string& encoding_fingerprint,
+    const Fingerprint& encoding_fingerprint,
     uint16_t field_count,
     uint64_t object_number,
     std::vector<uint8_t>& b
@@ -627,9 +682,20 @@ inline void pack_object_header(
     }
 }
 
-inline void unpack_object_header(
+inline void pack_object_header(const std::string& type_name, const std::string& fingerprint,
+                               uint16_t count, uint64_t number, std::vector<uint8_t>& bytes) {
+    pack_object_header_impl(type_name, fingerprint, count, number, bytes);
+}
+
+inline void pack_object_header(const std::string& type_name, const std::array<uint8_t, 32>& fingerprint,
+                               uint16_t count, uint64_t number, std::vector<uint8_t>& bytes) {
+    pack_object_header_impl(type_name, fingerprint, count, number, bytes);
+}
+
+template<class Fingerprint>
+inline void unpack_object_header_impl(
     const std::string& expected_type_name,
-    const std::string& expected_encoding_fingerprint,
+    const Fingerprint& expected_encoding_fingerprint,
     uint16_t expected_field_count,
     uint64_t& object_number,
     const std::vector<uint8_t>& b,
@@ -659,16 +725,30 @@ inline void unpack_object_header(
             ", got " + type_name
         );
     }
-    if (field_count != expected_field_count) {
+    if (strict_decode_diagnostics() && field_count != expected_field_count) {
         throw std::runtime_error("SvTypes object field-count mismatch");
     }
     require_available(b, o, 32);
-    for (size_t i = 0; i < 32; ++i) {
-        if (b[o + i] != fingerprint_byte(expected_encoding_fingerprint, i)) {
-            throw std::runtime_error("SvTypes object encoding fingerprint mismatch");
+    if (strict_decode_diagnostics()) {
+        for (size_t i = 0; i < 32; ++i) {
+            if (b[o + i] != fingerprint_byte(expected_encoding_fingerprint, i)) {
+                throw std::runtime_error("SvTypes object encoding fingerprint mismatch");
+            }
         }
     }
     o += 32;
+}
+
+inline void unpack_object_header(const std::string& type_name, const std::string& fingerprint,
+                                 uint16_t count, uint64_t& number,
+                                 const std::vector<uint8_t>& bytes, size_t& offset) {
+    unpack_object_header_impl(type_name, fingerprint, count, number, bytes, offset);
+}
+
+inline void unpack_object_header(const std::string& type_name, const std::array<uint8_t, 32>& fingerprint,
+                                 uint16_t count, uint64_t& number,
+                                 const std::vector<uint8_t>& bytes, size_t& offset) {
+    unpack_object_header_impl(type_name, fingerprint, count, number, bytes, offset);
 }
 
 inline void pack_object_reference(uint64_t object_number, std::vector<uint8_t>& b) {

@@ -378,3 +378,39 @@ exact width and sign in generated SV.
 Use `CoverageDatabase.import_ucis()` only with explicit bindings to frozen
 declarations. UCIS is an interchange projection with a documented loss report,
 not a replacement for the SvTypes coverage database.
+
+## Optional decode diagnostics and generated-code editing
+
+Ordinary object decoding defaults to `UnpackContext(diagnostics="off")`: it neither constructs an expected
+digest nor compares the expected field count or encoding fingerprint. Format versions, input bounds,
+type identity and reference resolution remain checked. Use
+`codec.unpack(data, UnpackContext(diagnostics="strict"))` or
+`target.from_bytes(data, context=UnpackContext(diagnostics="strict"))` for explicit strict decoding.
+`checked_unpack()` remains strict, propagates that policy to nested objects, and restores a supplied
+context after success or failure. Independent contexts can use different policies concurrently; sharing
+one mutable context across concurrent operations is unsupported.
+
+C++ provides `DecodeContext`, `DiagnosticPolicy::off/strict`, and `DecodeContextGuard`; the RAII scope
+propagates policy to nested unpack calls with thread isolation. SV provides `decode_context` with
+`DIAGNOSTICS_OFF/DIAGNOSTICS_STRICT`; `begin_decode_context(context)` returns the previous context,
+which must be restored with `end_decode_context(previous)`. SV policy is simulation-process local,
+and explicit scopes must be paired.
+
+Running generated code does not require its artifact hashes to match source. During generation,
+`generate()` protects edited managed files and conflicting unmanaged files: it returns their paths in
+`failed` and publishes nothing. `overwrite_modified=True` explicitly permits replacement;
+`mode="check"` always reports differences without writing. See the
+[implementation record](SVTYPES_GENERATED_CODE_EDITABILITY_IMPLEMENTATION.md) for current status,
+including pending artifact organization and performance qualification.
+
+`generate()` can emit an unbound parameterized class as a target-language template. Since that
+declaration has no concrete source schema, its name appears in `unbound_templates` in the schema
+document and generation manifest; it is not included in `types` or the concrete fingerprint lists.
+Bind its parameters before requesting a concrete `schema_descriptor()`.
+
+The single-text `to_sv_obj()` and `to_cpp_obj()` interfaces do not create a manifest. An integration
+that wants an explicit runtime compatibility check for their output can require
+`svtypes.generated-field-visitors.v1`, `svtypes.optional-codec-diagnostics.v1`, and
+`svtypes.generated-wire-helpers.v1`; SV output additionally requires
+`svtypes.generated-field-operations.v1`. Pass these names to the relevant runtime's
+`require_runtime_compatible` API. Ordinary compilation and execution do not perform this check.

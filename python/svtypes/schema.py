@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 import json
 from types import MappingProxyType
@@ -17,6 +18,12 @@ SCHEMA_FORMAT_VERSION = 1
 BINARY_FORMAT_VERSION = 1
 OBJECT_ENVELOPE_VERSION = 2
 GENERATOR_RUNTIME_ABI_VERSION = 1
+
+# Populated only while preparing a class's static wire metadata.  Ordinary
+# schema requests and value encoding do not collect dependency information.
+_encoding_dependency_collector: ContextVar[Any | None] = ContextVar(
+    "svtypes_encoding_dependency_collector", default=None
+)
 
 
 def _stable_json(value: Mapping[str, Any]) -> bytes:
@@ -138,6 +145,16 @@ def unified_type_name(codec_or_type: Any) -> str:
     from .remote_ref import RemoteRef
     from .string import String
 
+    collector = _encoding_dependency_collector.get()
+    if collector is not None:
+        if isinstance(codec_or_type, ObjectDescriptor):
+            collector[1].add((codec_or_type.registry, codec_or_type.cls_name))
+        elif isinstance(codec_or_type, type):
+            if issubclass(codec_or_type, (SvObject, Enum)):
+                collector[0].add(codec_or_type)
+        elif isinstance(codec_or_type, (SvObject, Enum)):
+            collector[0].add(type(codec_or_type))
+
     if isinstance(codec_or_type, type):
         if issubclass(codec_or_type, (SvObject, Enum)):
             specialized_from = getattr(codec_or_type, "_SvObject__svtypes_specialized_from", None)
@@ -245,6 +262,15 @@ def _descriptors(
     from .string import String
 
     codec = codec_or_type
+    collector = _encoding_dependency_collector.get()
+    if collector is not None:
+        if isinstance(codec, ObjectDescriptor):
+            collector[1].add((codec.registry, codec.cls_name))
+        elif isinstance(codec, type):
+            if issubclass(codec, (SvObject, Enum)):
+                collector[0].add(codec)
+        elif isinstance(codec, (SvObject, Enum)):
+            collector[0].add(type(codec))
     if isinstance(codec, type):
         if issubclass(codec, Enum):
             codec = codec()
@@ -635,11 +661,17 @@ def checked_unpack(
         raise CompatibilityError(
             "SvTypes encoding fingerprint mismatch for " + expected.unified_type_name
         )
-    if context is not None:
-        from .object import SvObject, SvStruct, UnpackContext
+    from .object import SvObject, UnpackContext
 
+    if context is not None:
         if not isinstance(context, UnpackContext):
             raise TypeError("checked_unpack context must be an UnpackContext")
-        if isinstance(codec, SvObject):
+    if isinstance(codec, SvObject):
+        context = context if context is not None else UnpackContext(diagnostics="strict")
+        previous = context.diagnostics
+        context.diagnostics = "strict"
+        try:
             return codec.unpack(data, context)
+        finally:
+            context.diagnostics = previous
     return codec.unpack(data)

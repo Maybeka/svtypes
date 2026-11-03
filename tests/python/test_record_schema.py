@@ -98,8 +98,7 @@ def test_record_sv_field_references_do_not_bind_pack_unpack_locals():
                           [(name, Int()) for name in ('bytes', 'offset', 'result', 'present')]).build()
     source = record.to_sv_obj()
     for name in ('bytes', 'offset', 'result', 'present'):
-        assert f'::pack(this.{name}, bytes);' in source
-        assert f'::unpack(this.{name}, bytes, offset);' in source
+        assert source.count(f'::apply(this.{name}, "{name}",') == 1
 def test_generated_record_dump_qualifies_shadowed_collection_member():
     from svtypes import AssocArray, Queue, RemoteRef, String
 
@@ -107,6 +106,6 @@ def test_generated_record_dump_qualifies_shadowed_collection_member():
         ('result', AssocArray[String, Queue[RemoteRef['sv://test/Item']]](cov=False)),
     ), class_name='ShadowedResult').build()
     text = record.to_sv_obj()
-    assert 'this.result.first(' in text
-    assert 'foreach (this.result[' in text
-    assert 'this.result[__svtypes_key_0][__svtypes_index_1].object_number' in text
+    assert text.count('::apply(this.result, "result",') == 1
+    assert 'type(this.result["\"])' in text
+    assert 'svtypes_pkg::remote_ref_field_formatter' in text

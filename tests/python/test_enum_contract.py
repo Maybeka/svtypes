@@ -134,6 +134,5 @@ def test_enum_plusarg_accepts_member_names_and_validates_numeric_values():
         state = SignedState()
 
     generated = Payload.to_sv_obj()
-    assert '"NEGATIVE": state = NEGATIVE;' in generated
-    assert "$sscanf(__svtypes_enum_text_0, \"%d\"" in generated
-    assert "Invalid enum plusarg state=%s" in generated
+    assert 'enum_field_operations#(type(this.state),' in generated
+    assert '::apply(this.state, "state", 1\'b1, 1\'b1, 1\'b1, 1\'b1,' in generated

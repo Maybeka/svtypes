@@ -52,15 +52,21 @@ def test_nested_struct_field_initializer_uses_declared_defaults():
     codec = DefaultPacket()
     codec.header.tag.value = 99
     codec.count.value = 42
-    assert codec.sv_initializer() == "'{header: '{tag: 8'h7, flags: 'x}, count: 8'h9}"
+    assert codec.sv_initializer() == "DefaultPacket_packer::svtypes_default()"
+    packet_code = DefaultPacket.to_sv_obj()
+    header_code = DefaultHeader.to_sv_obj()
+    assert "if (action == 5) member = DefaultHeader_packer::svtypes_default();" in packet_code
+    assert "if (action == 5) member = 8'h9;" in packet_code
+    assert "if (action == 5) member = 8'h7;" in header_code
+    assert "if (action == 5) member = 'x;" in header_code
     assert sv_declaration(codec, "packet", include_initializer=True).endswith(
         " = " + codec.sv_initializer()
     )
 
 
 @pytest.mark.parametrize("shape, expected", [
-    (2, "'{default: '{tag: 8'h7, flags: 'x}}"),
-    ((2, 3), "'{default: '{default: '{tag: 8'h7, flags: 'x}}}"),
+    (2, "'{default: DefaultHeader_packer::svtypes_default()}"),
+    ((2, 3), "'{default: '{default: DefaultHeader_packer::svtypes_default()}}"),
 ])
 def test_fixed_array_uses_element_declared_defaults(shape, expected):
     codec = Array[DefaultHeader, shape]()

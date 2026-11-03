@@ -10,6 +10,7 @@ from svtypes import (
     Queue,
     String,
     SvObject,
+    UnpackContext,
     EncodingDescriptor,
     unified_type_name,
     checked_unpack,
@@ -131,7 +132,7 @@ def test_object_envelope_v2_rejects_fingerprint_before_target_mutation():
     target.data.value = 7
     target_id = target.svtypes_object_number
     with pytest.raises(ValueError, match="encoding fingerprint mismatch"):
-        target.from_bytes(bytes(encoded))
+        target.from_bytes(bytes(encoded), context=UnpackContext(diagnostics="strict"))
     assert target.data.value == 7
     assert target.svtypes_object_number == target_id
 

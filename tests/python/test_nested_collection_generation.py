@@ -24,7 +24,9 @@ def test_nested_collection_packer_uses_dependency_ordered_local_type(outer, inne
     assert alias in text
     assert text.index('typedef ') < text.index('function void pack(')
     assert text.count('typedef ') == 1
-    assert text.count(alias) >= 3
+    assert text.count('::apply(this.values, "values",') == 1
+    assert '__svtypes_transfer_fields(bytes, __svtypes_offset, 0);' in text
+    assert '__svtypes_transfer_fields(bytes, offset, 1);' in text
     assert cls.to_sv_obj() == text
 
 

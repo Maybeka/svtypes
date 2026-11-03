@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import functools
 import struct
+import weakref
 from contextvars import ContextVar
 from typing import Any, TypeVar, Callable, overload
 from collections.abc import Mapping
@@ -11,6 +12,38 @@ from .base import TypeBase, UserDefinedType
 from .enum import Enum
 from .errors import DeclarationError, EncodeError, RegistryError, ResourceLimitError, UnsupportedTypeError
 from .limits import DecodeLimits
+
+_prepared_codec_types: weakref.WeakSet = weakref.WeakSet()
+_encoding_type_dependents: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_encoding_registry_dependents: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _refresh_encoding_dependents(*, changed_type=None, registry=None, name=None) -> None:
+    """Refresh only snapshots whose descriptors observed the changed input."""
+    owners = set(_encoding_type_dependents.get(changed_type, ())) if changed_type else set()
+    if registry is not None:
+        owners.update(_encoding_registry_dependents.get(registry, {}).get(name, ()))
+    for owner in owners:
+        owner._prepare_encoding_metadata()
+
+
+def _index_encoding_dependencies(owner, types, registries) -> None:
+    # Weak references in both directions avoid keeping temporary class
+    # declarations or registries alive solely for metadata maintenance.
+    for reference in owner.__dict__.get("_svtypes_encoding_type_dependencies", ()):
+        dependency = reference()
+        if dependency is not None:
+            _encoding_type_dependents.get(dependency, weakref.WeakSet()).discard(owner)
+    for reference, name in owner.__dict__.get("_svtypes_encoding_registry_dependencies", ()):
+        registry = reference()
+        if registry is not None:
+            _encoding_registry_dependents.get(registry, {}).get(name, weakref.WeakSet()).discard(owner)
+    owner._svtypes_encoding_type_dependencies = tuple(weakref.ref(item) for item in types)
+    owner._svtypes_encoding_registry_dependencies = tuple((weakref.ref(item), name) for item, name in registries)
+    for dependency in types:
+        _encoding_type_dependents.setdefault(dependency, weakref.WeakSet()).add(owner)
+    for registry, name in registries:
+        _encoding_registry_dependents.setdefault(registry, {}).setdefault(name, weakref.WeakSet()).add(owner)
 
 
 _sv_collection_aliases: ContextVar[dict[int, str] | None] = ContextVar(
@@ -48,12 +81,19 @@ class ObjectRegistry:
         if namespace:
             normalized_namespace = namespace.replace("::", ".")
             cls._svtypes_unified_type_name = f"{normalized_namespace}.{reg_name}"
+        # Registration can resolve the identity of a forward handle used by
+        # another declaration. Rebuild static metadata during preparation,
+        # never while serializing values.
+        _refresh_encoding_dependents(changed_type=cls, registry=self, name=reg_name)
 
     def get(self, name: str) -> type[SvObject] | None:
         return self._types.get(name)
 
     def clear(self) -> None:
+        names = tuple(self._types)
         self._types.clear()
+        for name in names:
+            _refresh_encoding_dependents(registry=self, name=name)
 
     def list_types(self) -> list[str]:
         return list(self._types.keys())
@@ -136,7 +176,11 @@ class UnpackContext:
         session: CodecSession | None = None,
         *,
         limits: DecodeLimits | None = None,
+        diagnostics: str = "off",
     ) -> None:
+        if diagnostics not in ("off", "strict"):
+            raise ValueError("diagnostics must be 'off' or 'strict'")
+        self.diagnostics = diagnostics
         self.session = session or _default_session
         self.limits = limits or DecodeLimits()
         self.objects: dict[int, SvObject] = {}
@@ -483,7 +527,8 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 elif desc._cache_key in self.__dict__:
                     setattr(copied, name, copy.deepcopy(getattr(self, name), memo))
                 continue
-            source_value = getattr(self, name).value
+            member = getattr(self, name)
+            source_value = member if isinstance(desc, SvStruct) else member.value
             from .collection import AssocArray, CollectionBase
 
             # External collection views are live protocol objects, not values
@@ -492,7 +537,11 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 source_value = dict(source_value)
             elif isinstance(desc, CollectionBase):
                 source_value = list(source_value)
-            getattr(copied, name).value = copy.deepcopy(source_value, memo)
+            copied_value = copy.deepcopy(source_value, memo)
+            if isinstance(desc, SvStruct):
+                SvStruct.value.fset(getattr(copied, name), copied_value)
+            else:
+                getattr(copied, name).value = copied_value
         rand_modes = getattr(self, "_SvObject__svtypes_rand_modes", None)
         if rand_modes is not None:
             copied.__svtypes_rand_modes = dict(rand_modes)
@@ -797,8 +846,8 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         # Explicit record fields may legitimately be named ``value``.
         return self.pack(self)
 
-    def from_bytes(self, bytes_: bytes):
-        decoded, count = self.unpack(bytes_, _target=self)
+    def from_bytes(self, bytes_: bytes, *, context: UnpackContext | None = None):
+        decoded, count = self.unpack(bytes_, context, _target=self)
         if decoded is None:
             raise ValueError(f"Cannot unpack null into existing {self.__class__.__name__} object")
         self.__svtypes_object_number = decoded.svtypes_object_number
@@ -1194,6 +1243,9 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 object.__setattr__(instance, "_svtypes_coverage_construction_depth", depth)
 
         cls.__init__ = managed_init
+        if cls.__name__ not in ("SvStruct", "SvPackedStruct"):
+            cls._prepare_encoding_metadata()
+            _prepared_codec_types.add(cls)
 
     @classmethod
     def refresh_declarations(cls) -> None:
@@ -1212,6 +1264,9 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                     delattr(cls, "__init__")
             else:
                 cls.__init__ = initializer
+        # A by-value member's layout contributes to its owners' wire metadata.
+        # Refresh preparation snapshots before any subsequent value operation.
+        _refresh_encoding_dependents(changed_type=cls)
 
     @classmethod
     def specialize(cls: type[T], **kwargs) -> type[T]:
@@ -1390,6 +1445,19 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         return unified_type_name(cls)
 
     @classmethod
+    def _prepare_encoding_metadata(cls) -> None:
+        from .schema import _descriptors, _encoding_dependency_collector, _fingerprint
+
+        dependencies = (set(), set())
+        token = _encoding_dependency_collector.set(dependencies)
+        try:
+            _, encoding = _descriptors(cls, set(), allow_template=True)
+        finally:
+            _encoding_dependency_collector.reset(token)
+        cls.__svtypes_prepared_encoding_fingerprint = _fingerprint(encoding)
+        _index_encoding_dependencies(cls, *dependencies)
+
+    @classmethod
     def _encoding_fingerprint_hex(cls) -> str:
         if cls.__svtypes_is_template:
             # Templates share the parameter-independent encoding fingerprint
@@ -1508,7 +1576,6 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         from .collection import AssocArray, DynArray, Queue, Array
         from .enum import Enum
         from .int import Int, LongInt
-        from .logic import Logic
         from .real import Real, ShortReal
         from .remote_ref import RemoteRef
         from .string import String
@@ -1629,6 +1696,102 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         raise NotImplementedError(
             f"SV packer generation is not supported for {desc.__class__.__name__}"
         )
+
+    @staticmethod
+    def _sv_field_packer_expr(desc: TypeBase, expression: str) -> str:
+        """Derive codec parameters from the compiled field declaration."""
+        from .bit import Bit
+        from .logic import Logic
+        from .enum import Enum
+        from .collection import Array, AssocArray, DynArray, Queue
+        from .remote_ref import RemoteRef
+        from .string import String
+        from .parameter import TypeParameterField
+        from .symbolic import SymbolicArrayField, SymbolicCollectionField
+        from .symbolic import SymbolicPackedField
+
+        if isinstance(desc, RemoteRef):
+            target = desc.target_type_name.replace("\\", "\\\\").replace('"', '\\"')
+            return f'svtypes_pkg::bound_remote_ref_packer#("{target}")'
+        if isinstance(desc, AssocArray):
+            key = desc._key_template
+            key_type = SvObject._sv_type_expr(key)
+            index = '\"\"' if isinstance(key, String) else "0"
+            element = f"{expression}[{index}]"
+            value_desc = desc._val_template
+            named_value = isinstance(value_desc, (RemoteRef, ObjectDescriptor)) or (
+                isinstance(value_desc, SvObject) and not isinstance(value_desc, SvStruct)
+            )
+            value_type = SvObject._sv_type_expr(value_desc) if named_value else f"type({element})"
+            key_codec = SvObject._sv_packer_expr(key)
+            value_codec = SvObject._sv_field_packer_expr(value_desc, element)
+            return f"svtypes_pkg::assoc_array_packer#({key_type}, {value_type}, {key_codec}, {value_codec})"
+        if isinstance(desc, SymbolicCollectionField):
+            return SvObject._sv_field_packer_expr(desc._template(), expression)
+        if isinstance(desc, SymbolicArrayField):
+            dimensions = desc._render_dimensions()
+            element = expression + "[0]" * len(dimensions)
+            codec = SvObject._sv_field_packer_expr(desc._element(), element)
+            for depth in reversed(range(len(dimensions))):
+                parent = expression + "[0]" * depth
+                codec = f"svtypes_pkg::fixed_sequence_packer#(type({parent}), {codec})"
+            return codec
+        if isinstance(desc, (Array, DynArray, Queue)):
+            element = f"{expression}[0]"
+            codec = SvObject._sv_field_packer_expr(desc._elem_template, element)
+            if isinstance(desc, Array):
+                return f"svtypes_pkg::fixed_array_packer#(type({element}), $size({expression}), {codec})"
+            category = "queue_packer" if isinstance(desc, Queue) else "dyn_array_packer"
+            return f"svtypes_pkg::{category}#(type({element}), {codec})"
+        codec = SvObject._sv_packer_expr(desc)
+        if isinstance(desc, (Bit, Logic, Enum, SymbolicPackedField, TypeParameterField)) and "#(" in codec:
+            return codec[:codec.index("#(")] + f"#(type({expression}))"
+        return codec
+
+    @staticmethod
+    def _sv_assoc_formatter_parameters(desc, expression: str) -> str:
+        from .string import String
+
+        key, value = desc._key_template, desc._val_template
+        key_type = SvObject._sv_type_expr(key)
+        index = '\"\"' if isinstance(key, String) else "0"
+        key_formatter = SvObject._sv_value_formatter(key, "", key_type)
+        value_formatter = SvObject._sv_value_formatter(value, f"{expression}[{index}]")
+        return f"{key_type}, {key_formatter}, {value_formatter}"
+
+    @staticmethod
+    def _sv_value_formatter(desc, expression: str, explicit_type: str | None = None) -> str:
+        from .bit import Bit
+        from .collection import Array, AssocArray, DynArray, Queue
+        from .enum import Enum
+        from .real import Real
+        from .remote_ref import RemoteRef
+        from .string import String
+
+        named = isinstance(desc, (ObjectDescriptor, RemoteRef)) or (
+            isinstance(desc, SvObject) and not isinstance(desc, SvStruct)
+        )
+        item_type = explicit_type or (SvObject._sv_type_expr(desc) if named else f"type({expression})")
+        if isinstance(desc, (Array, DynArray, Queue)):
+            child = SvObject._sv_value_formatter(desc._elem_template, f"{expression}[0]")
+            return f"svtypes_pkg::sequence_value_formatter#({item_type}, {child})"
+        if isinstance(desc, AssocArray):
+            parameters = SvObject._sv_assoc_formatter_parameters(desc, expression)
+            return f"svtypes_pkg::assoc_value_formatter#({item_type}, {parameters})"
+        if isinstance(desc, ObjectDescriptor) or (isinstance(desc, SvObject) and not isinstance(desc, SvStruct)):
+            return f"svtypes_pkg::object_field_formatter#({item_type})"
+        if isinstance(desc, SvStruct):
+            return f"svtypes_pkg::struct_field_formatter#({item_type}, {desc.__class__.__name__}_packer)"
+        if isinstance(desc, RemoteRef):
+            return "svtypes_pkg::remote_ref_field_formatter"
+        if isinstance(desc, Enum):
+            return f'svtypes_pkg::enum_field_formatter#({item_type}, "{desc.__class__.__name__}")'
+        if isinstance(desc, String):
+            return "svtypes_pkg::string_field_formatter"
+        if isinstance(desc, Real):
+            return f"svtypes_pkg::real_field_formatter#({item_type})"
+        signed = "1'b1" if isinstance(desc, Bit) and desc.signed else "1'b0"
+        return f"svtypes_pkg::numeric_field_formatter#({item_type}, {signed})"
 
     @staticmethod
     def _sv_pack_lines(name: str, desc: TypeBase, indent: str) -> list[str]:
@@ -1780,6 +1943,41 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 "classes — use the template with parameters (Tpl#(.W(4))) in the target language"
             )
         ind_str = cls.IND * level
+        from .bit import Bit
+        from .enum import Enum
+        from .int import Int, LongInt
+        from .logic import Logic
+        from .real import Real, RealTime, ShortReal
+        from .remote_ref import RemoteRef
+        from .string import String
+        from .collection import Array, AssocArray, DynArray, Queue
+        from .parameter import TypeParameterField
+        from .symbolic import SymbolicArrayField, SymbolicCollectionField, SymbolicPackedField
+        from .codegen_artifacts import sv_support_lines
+
+        # Scalar fields and supported one-dimensional containers share an
+        # ordered list while retaining their distinct wire codecs.
+        numeric_types = (Bit, Logic, Int, LongInt)
+        scalar_types = (*numeric_types, String, Real, ShortReal, RealTime, RemoteRef)
+        collection_types = (Array, DynArray, Queue)
+        symbolic_types = (TypeParameterField, SymbolicPackedField, SymbolicArrayField, SymbolicCollectionField)
+
+        def is_object_handle(desc):
+            return isinstance(desc, ObjectDescriptor) or (
+                isinstance(desc, SvObject) and not isinstance(desc, SvStruct)
+            )
+
+        def supports_shared_field_operations(desc):
+            return (isinstance(desc, SvStruct) and desc.__class__._supports_shared_field_operations()) or is_object_handle(desc) or isinstance(desc, (Enum, *symbolic_types)) or type(desc) in scalar_types or (
+                type(desc) in collection_types and supports_shared_field_operations(desc._elem_template)
+            ) or (
+                type(desc) is AssocArray and (type(desc._key_template) in scalar_types or isinstance(desc._key_template, Enum))
+                and supports_shared_field_operations(desc._val_template)
+            )
+
+        shared_field_operations = bool(cls.__svtypes_members) and all(
+            supports_shared_field_operations(desc) for _, desc in cls.__svtypes_members
+        )
         header = f"{ind_str}class {cls.__name__}"
         specialized_base = cls._sv_specialized_base_expr()
         if cls.__svtypes_params:
@@ -1834,6 +2032,11 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             lines.extend(render_constraint_blocks(cls, ind_str, cls.IND))
             lines.extend(render_layered_randomize(cls, ind_str, cls.IND))
 
+        # Keep executable design declarations ahead of runtime plumbing.
+        # Sections are assembled from renderer-owned lists, never by parsing
+        # generated text (which would be unsafe for user declarations).
+        design_lines = lines
+        lines = [f"{ind_str}{cls.IND}// SvTypes support: descriptors, plusargs, display, and wire codecs."]
         lines.append("")
         lines.append(f"{ind_str}{cls.IND}static function svtypes_pkg::encoding_descriptor svtypes_encoding_descriptor();")
         lines.append(f"{ind_str}{cls.IND}{cls.IND}svtypes_pkg::encoding_descriptor descriptor;")
@@ -1848,6 +2051,73 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         lines.append(f"{ind_str}{cls.IND}{cls.IND}return svtypes_pkg::get_runtime_capabilities();")
         lines.append(f"{ind_str}{cls.IND}endfunction")
 
+        if shared_field_operations:
+            lines.append("")
+            lines.append(f"{ind_str}{cls.IND}// One ordered field list for wire operations, display and plusargs.")
+            lines.append(f"{ind_str}{cls.IND}function int __svtypes_apply_fields(input int action, ref byte unsigned bytes[$], ref int offset, ref string result, input string prefix = \"\");")
+            lines.append(f"{ind_str}{cls.IND * 2}int count = 0;")
+            for field_name, desc in cls.__svtypes_members:
+                expression = f"this.{field_name}"
+                codec = cls._sv_field_packer_expr(desc, expression)
+                is_collection = type(desc) in collection_types
+                is_handle = is_object_handle(desc)
+                is_assoc = type(desc) is AssocArray
+                member_desc = desc._elem_template if is_collection else desc
+                if is_assoc:
+                    helper_name = "svtypes_pkg::assoc_field_operations"
+                elif is_collection:
+                    if isinstance(member_desc, (Array, DynArray, Queue, AssocArray)):
+                        helper_name = "svtypes_pkg::container_field_operations"
+                    elif is_object_handle(member_desc):
+                        helper_name = "svtypes_pkg::object_array_field_operations"
+                    elif isinstance(member_desc, SvStruct):
+                        helper_name = "svtypes_pkg::struct_array_field_operations"
+                    elif isinstance(member_desc, RemoteRef):
+                        helper_name = "svtypes_pkg::remote_ref_array_field_operations"
+                    elif isinstance(member_desc, Enum):
+                        helper_name = "svtypes_pkg::enum_array_field_operations"
+                    elif isinstance(member_desc, String):
+                        helper_name = "svtypes_pkg::string_array_field_operations"
+                    elif isinstance(member_desc, Real):
+                        helper_name = "svtypes_pkg::real_array_field_operations"
+                    else:
+                        helper_name = "svtypes_pkg::numeric_array_field_operations"
+                elif isinstance(desc, String):
+                    helper_name = "svtypes_pkg::string_field_operations"
+                elif isinstance(desc, Real):
+                    helper_name = "svtypes_pkg::real_field_operations"
+                elif isinstance(desc, Enum):
+                    helper_name = "svtypes_pkg::enum_field_operations"
+                elif isinstance(desc, SvStruct):
+                    helper_name = "svtypes_pkg::struct_field_operations"
+                elif isinstance(desc, RemoteRef):
+                    helper_name = "svtypes_pkg::remote_ref_field_operations"
+                elif isinstance(desc, symbolic_types):
+                    helper_name = "svtypes_pkg::opaque_field_operations"
+                elif is_handle:
+                    helper_name = "svtypes_pkg::object_field_operations"
+                else:
+                    helper_name = "svtypes_pkg::bit_field_operations"
+                flags = ", ".join("1'b1" if flag else "1'b0" for flag in (
+                    member_desc.signed if isinstance(member_desc, (Bit, Enum)) else False,
+                    desc.pack_bytes if isinstance(desc, TypeBase) else True,
+                    desc.dump if isinstance(desc, TypeBase) else True,
+                    desc.plusarg if not is_collection and not is_handle and not is_assoc and not isinstance(desc, symbolic_types) else is_handle
+                ))
+                field_type = cls._sv_type_expr(desc) if is_handle or isinstance(desc, RemoteRef) else f"type({expression})"
+                parameters = f"{field_type}, {codec}"
+                if isinstance(member_desc, Enum):
+                    parameters += f', "{member_desc.__class__.__name__}"'
+                if is_collection and isinstance(member_desc, SvStruct):
+                    parameters += f", {member_desc.__class__.__name__}_packer"
+                if is_collection and isinstance(member_desc, (Array, DynArray, Queue, AssocArray)):
+                    parameters += ", " + cls._sv_value_formatter(desc, expression)
+                if is_assoc:
+                    parameters += ", " + cls._sv_assoc_formatter_parameters(desc, expression)
+                lines.append(f'{ind_str}{cls.IND * 2}{helper_name}#({parameters})::apply({expression}, "{field_name}", {flags}, action, bytes, offset, count, result, prefix);')
+            lines.append(f"{ind_str}{cls.IND * 2}return count;")
+            lines.append(f"{ind_str}{cls.IND}endfunction")
+
         lines.append("")
         lines.append(f'{ind_str}{cls.IND}virtual function void apply_plusargs(string prefix = "");')
         from .bit import Bit
@@ -1859,6 +2129,12 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             f"{ind_str}{cls.IND}{cls.IND}string __svtypes_key;",
             f"{ind_str}{cls.IND}{cls.IND}bit __svtypes_repeated;",
         ]
+        if shared_field_operations:
+            plusarg_declarations.extend([
+                f"{ind_str}{cls.IND * 2}byte unsigned __svtypes_bytes[$];",
+                f"{ind_str}{cls.IND * 2}int __svtypes_offset = 0;",
+                f'{ind_str}{cls.IND * 2}string __svtypes_result = "";',
+            ])
         plusarg_body = [
             f"{ind_str}{cls.IND * 2}__svtypes_repeated = svtypes_pkg::begin_plusarg_object(__svtypes_object_number);",
             f"{ind_str}{cls.IND * 2}if (__svtypes_repeated) begin",
@@ -1936,7 +2212,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 f'$fatal(2, "Malformed plusarg {external_path}");'
             )
 
-        for name, desc in cls.__svtypes_members:
+        for name, desc in ([] if shared_field_operations else cls.__svtypes_members):
             if isinstance(desc, ObjectDescriptor) or (
                 isinstance(desc, SvObject) and not isinstance(desc, SvStruct)
             ):
@@ -1948,6 +2224,8 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 )
             elif isinstance(desc, TypeBase) and desc.plusarg:
                 emit_plusarg(desc, name, name)
+        if shared_field_operations:
+            plusarg_body.append(f"{ind_str}{cls.IND * 2}__svtypes_apply_fields(4, __svtypes_bytes, __svtypes_offset, __svtypes_result, prefix);")
         lines.extend(plusarg_declarations)
         lines.extend(plusarg_body)
         lines.append(f"{ind_str}{cls.IND}{cls.IND}svtypes_pkg::end_plusarg_object();")
@@ -2046,7 +2324,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             dump_body.append(f'{indent}result = {{result, $sformatf("%p", {expression})}};')
 
         dump_index = 0
-        for name, desc in cls.__svtypes_members:
+        for name, desc in ([] if shared_field_operations else cls.__svtypes_members):
             if isinstance(desc, TypeBase) and not desc.dump:
                 continue
             separator = "" if dump_index == 0 else ", "
@@ -2060,6 +2338,10 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         lines.append(f"{ind_str}{cls.IND}virtual function string svtypes_sprint();")
         lines.append(f"{ind_str}{cls.IND}{cls.IND}string result;")
         lines.append(f"{ind_str}{cls.IND}{cls.IND}bit repeated;")
+        if shared_field_operations:
+            lines.append(f"{ind_str}{cls.IND * 2}byte unsigned __svtypes_bytes[$];")
+            lines.append(f"{ind_str}{cls.IND * 2}int __svtypes_offset = 0;")
+            lines.append(f'{ind_str}{cls.IND * 2}string __svtypes_result = "";')
         lines.extend(dump_declarations)
         lines.append(f"{ind_str}{cls.IND}{cls.IND}repeated = svtypes_pkg::begin_dump_object(__svtypes_object_number);")
         lines.append(f"{ind_str}{cls.IND}{cls.IND}if (repeated) begin")
@@ -2069,6 +2351,9 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         lines.append(f"{ind_str}{cls.IND}{cls.IND}end")
         lines.append(f'{ind_str}{cls.IND}{cls.IND}result = $sformatf("{cls.__name__}#%0d{{", __svtypes_object_number);')
         lines.extend(dump_body)
+        if shared_field_operations:
+            lines.append(f"{ind_str}{cls.IND * 2}__svtypes_apply_fields(3, __svtypes_bytes, __svtypes_offset, __svtypes_result);")
+            lines.append(f"{ind_str}{cls.IND * 2}result = {{result, __svtypes_result}};")
         lines.append(f'{ind_str}{cls.IND}{cls.IND}result = {{result, "}}"}};')
         lines.append(f"{ind_str}{cls.IND}{cls.IND}svtypes_pkg::end_dump_object();")
         lines.append(f"{ind_str}{cls.IND}{cls.IND}return result;")
@@ -2079,7 +2364,31 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         lines.append(f"{ind_str}{cls.IND}endfunction")
 
         lines.append("")
-        field_count = len(cls.__svtypes_fields)
+        field_count = "__svtypes_wire_field_count()"
+
+        lines.append(f"{ind_str}{cls.IND}// Ordered wire fields shared by pack and unpack.")
+        lines.append(f"{ind_str}{cls.IND}function int __svtypes_transfer_fields(ref byte unsigned bytes[$], ref int offset, input bit decode, input bit count_only = 0);")
+        lines.append(f"{ind_str}{cls.IND * 2}int count = 0;")
+        if shared_field_operations:
+            lines.append(f'{ind_str}{cls.IND * 2}string __svtypes_result = "";')
+            lines.append(f"{ind_str}{cls.IND * 2}count = __svtypes_apply_fields(count_only ? 0 : (decode ? 2 : 1), bytes, offset, __svtypes_result);")
+        for name, desc in ([] if shared_field_operations else cls.__svtypes_fields):
+            if desc.pack_bytes:
+                expression = f"this.{name}"
+                codec = cls._sv_field_packer_expr(desc, expression)
+                field_type = (cls._sv_type_expr(desc)
+                              if isinstance(desc, ObjectDescriptor) or (isinstance(desc, SvObject) and not isinstance(desc, SvStruct))
+                              else f"type({expression})")
+                lines.append(f"{ind_str}{cls.IND * 2}count++; if (!count_only) svtypes_pkg::field_codec#({field_type}, {codec})::apply({expression}, bytes, offset, decode);")
+        lines.append(f"{ind_str}{cls.IND * 2}return count;")
+        lines.append(f"{ind_str}{cls.IND}endfunction")
+        lines.append("")
+        lines.append(f"{ind_str}{cls.IND}function int __svtypes_wire_field_count();")
+        lines.append(f"{ind_str}{cls.IND * 2}byte unsigned unused_bytes[$];")
+        lines.append(f"{ind_str}{cls.IND * 2}int unused_offset = 0;")
+        lines.append(f"{ind_str}{cls.IND * 2}return __svtypes_transfer_fields(unused_bytes, unused_offset, 0, 1);")
+        lines.append(f"{ind_str}{cls.IND}endfunction")
+        lines.append("")
 
         # Pack
         lines.append(f"{ind_str}{cls.IND}virtual function void pack(ref byte unsigned bytes[$]);")
@@ -2090,17 +2399,15 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
         lines.append("")
         lines.append(f"{ind_str}{cls.IND}virtual function void pack_body(ref byte unsigned bytes[$]);")
+        lines.append(f"{ind_str}{cls.IND * 2}int __svtypes_offset = 0;")
+        lines.append(f"{ind_str}{cls.IND * 2}int __svtypes_header_start = bytes.size();")
+        lines.append(f"{ind_str}{cls.IND * 2}int __svtypes_count;")
         lines.append(f"{ind_str}{cls.IND}{cls.IND}ensure_svtypes_object_number();")
         lines.append(f"{ind_str}{cls.IND}{cls.IND}svtypes_pkg::register_object(this);")
-        lines.append(f'{ind_str}{cls.IND}{cls.IND}svtypes_pkg::pack_object_header({cls._sv_encoding_type_expr()}, "{cls._encoding_fingerprint_hex()}", {field_count}, __svtypes_object_number, bytes);')
-        for name, desc in cls.__svtypes_fields:
-            if desc.pack_bytes:
-                expression = f'this.{name}' if hasattr(cls, '_svtypes_record_field_names') else name
-                from .collection import CollectionBase
-                if isinstance(desc, CollectionBase):
-                    lines.extend(desc.sv_pack_loop(expression, level + 2, ind_str + cls.IND + cls.IND))
-                else:
-                    lines.extend(cls._sv_pack_lines(expression, desc, ind_str + cls.IND + cls.IND))
+        lines.append(f'{ind_str}{cls.IND}{cls.IND}svtypes_pkg::pack_object_header({cls._sv_encoding_type_expr()}, "{cls._encoding_fingerprint_hex()}", 0, __svtypes_object_number, bytes);')
+        lines.append(f"{ind_str}{cls.IND * 2}__svtypes_count = __svtypes_transfer_fields(bytes, __svtypes_offset, 0);")
+        lines.append(f"{ind_str}{cls.IND * 2}bytes[__svtypes_header_start + 6] = __svtypes_count[7:0];")
+        lines.append(f"{ind_str}{cls.IND * 2}bytes[__svtypes_header_start + 7] = __svtypes_count[15:8];")
         lines.append(f"{ind_str}{cls.IND}endfunction")
 
         lines.append("")
@@ -2122,21 +2429,18 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         lines.append("")
         lines.append(f"{ind_str}{cls.IND}virtual function void unpack_body(ref byte unsigned bytes[$], ref int offset);")
         lines.append(f"{ind_str}{cls.IND}{cls.IND}longint unsigned incoming_svtypes_object_number;")
-        lines.append(f'{ind_str}{cls.IND}{cls.IND}svtypes_pkg::unpack_object_header({cls._sv_encoding_type_expr()}, "{cls._encoding_fingerprint_hex()}", {field_count}, incoming_svtypes_object_number, bytes, offset);')
+        lines.append(f'{ind_str}{cls.IND}{cls.IND}svtypes_pkg::unpack_object_header({cls._sv_encoding_type_expr()}, "{cls._encoding_fingerprint_hex()}", svtypes_pkg::strict_decode_diagnostics() ? {field_count} : 0, incoming_svtypes_object_number, bytes, offset);')
         lines.append(f"{ind_str}{cls.IND}{cls.IND}__svtypes_object_number = incoming_svtypes_object_number;")
         lines.append(f"{ind_str}{cls.IND}{cls.IND}svtypes_pkg::register_object(this);")
-        for name, desc in cls.__svtypes_fields:
-            if desc.pack_bytes:
-                expression = f'this.{name}' if hasattr(cls, '_svtypes_record_field_names') else name
-                from .collection import CollectionBase
-                if isinstance(desc, CollectionBase):
-                    lines.extend(desc.sv_unpack_loop(expression, level + 2, ind_str + cls.IND + cls.IND))
-                else:
-                    lines.extend(cls._sv_unpack_lines(expression, desc, ind_str + cls.IND + cls.IND))
+        lines.append(f"{ind_str}{cls.IND * 2}__svtypes_transfer_fields(bytes, offset, 1);")
         lines.append(f"{ind_str}{cls.IND}endfunction")
 
         from .coverage.sv import render_type_coverage
+        support_lines = lines
+        lines = design_lines
         lines.extend(render_type_coverage(cls, ind_str, cls.IND))
+        lines.append("")
+        lines.extend(sv_support_lines(cls, support_lines, ind_str + cls.IND))
 
         lines.append(f"{ind_str}endclass")
         return "\n".join(lines)
@@ -2189,6 +2493,9 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         for name, desc in local_members:
              lines.append(f"{ind_str}{cls.IND}{desc.cpp_decl(name)};")
 
+        design_lines = lines
+        lines = []
+        lines.append(f"{ind_str}{cls.IND}// SvTypes support: descriptors, display, and wire codecs.")
         lines.append("")
         lines.append(f"{ind_str}{cls.IND}static svtypes::EncodingDescriptor svtypes_encoding_descriptor() {{")
         lines.append(
@@ -2208,21 +2515,17 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         lines.append(f'{ind_str}{cls.IND * 3}return "<ref#" + std::to_string(__svtypes_object_number) + ">";')
         lines.append(f"{ind_str}{cls.IND * 2}}}")
         lines.append(f'{ind_str}{cls.IND * 2}std::string result = "{cls.__name__}#" + std::to_string(__svtypes_object_number) + "{{";')
-        dump_index = 0
-        for name, desc in cls.__svtypes_members:
-            if isinstance(desc, TypeBase) and not desc.dump:
-                continue
-            separator = "" if dump_index == 0 else ", "
-            if isinstance(desc, SvStruct):
-                dump_expression = f"dump_value({name})"
-            elif isinstance(desc, SvObject):
-                dump_expression = f"svtypes::dump_value(&{name})"
-            else:
-                dump_expression = f"svtypes::dump_value({name})"
-            lines.append(
-                f'{ind_str}{cls.IND * 2}result += "{separator}{name}=" + {dump_expression};'
-            )
-            dump_index += 1
+        lines.append(f"{ind_str}{cls.IND * 2}bool first = true;")
+        lines.append(f"{ind_str}{cls.IND * 2}__svtypes_visit_fields(*this, [&](const char* name, const auto& value, auto, auto display, auto object_value) {{")
+        lines.append(f"{ind_str}{cls.IND * 3}if constexpr (decltype(display)::value) {{")
+        lines.append(f'{ind_str}{cls.IND * 4}if (!first) result += ", ";')
+        lines.append(f"{ind_str}{cls.IND * 4}first = false;")
+        lines.append(f"{ind_str}{cls.IND * 4}using svtypes::dump_value;")
+        lines.append(f'{ind_str}{cls.IND * 4}result += std::string(name) + "=";')
+        lines.append(f"{ind_str}{cls.IND * 4}if constexpr (decltype(object_value)::value) result += dump_value(&value);")
+        lines.append(f"{ind_str}{cls.IND * 4}else result += dump_value(value);")
+        lines.append(f"{ind_str}{cls.IND * 3}}}")
+        lines.append(f"{ind_str}{cls.IND * 2}}});")
         lines.append(f'{ind_str}{cls.IND * 2}result += "}}";')
         lines.append(f"{ind_str}{cls.IND * 2}svtypes::end_dump_object();")
         lines.append(f"{ind_str}{cls.IND * 2}return result;")
@@ -2240,13 +2543,30 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         lines.append(f"{ind_str}{cls.IND}}}")
 
         lines.append("")
+        lines.append(f"{ind_str}{cls.IND}// Ordered wire fields: edit this list when adding or removing fields.")
+        lines.append(f"{ind_str}{cls.IND}template<class Self, class Operation>")
+        lines.append(f"{ind_str}{cls.IND}static SVTYPES_INLINE_FIELD_VISITOR void __svtypes_visit_fields(Self& self, Operation&& operation) {{")
+        for name, desc in cls.__svtypes_members:
+            wire = "true" if desc.pack_bytes else "false"
+            display = "false" if isinstance(desc, TypeBase) and not desc.dump else "true"
+            object_value = "true" if isinstance(desc, SvObject) and not isinstance(desc, SvStruct) else "false"
+            lines.append(f'{ind_str}{cls.IND * 2}operation("{name}", self.{name}, std::bool_constant<{wire}>{{}}, std::bool_constant<{display}>{{}}, std::bool_constant<{object_value}>{{}});')
+        lines.append(f"{ind_str}{cls.IND}}}")
+        lines.append("")
+        lines.append(f"{ind_str}{cls.IND}size_t __svtypes_wire_field_count() const {{")
+        lines.append(f"{ind_str}{cls.IND * 2}size_t count = 0;")
+        lines.append(f"{ind_str}{cls.IND * 2}__svtypes_visit_fields(*this, [&](const char*, const auto&, auto wire, auto, auto) {{ count += decltype(wire)::value; }});")
+        lines.append(f"{ind_str}{cls.IND * 2}return count;")
+        lines.append(f"{ind_str}{cls.IND}}}")
+        lines.append("")
         lines.append(f"{ind_str}{cls.IND}void pack_body(std::vector<uint8_t>& bytes) const override {{")
+        lines.append(f'{ind_str}{cls.IND}{cls.IND}static constexpr auto __svtypes_fingerprint = svtypes::fingerprint_literal("{cls._encoding_fingerprint_hex()}");')
         lines.append(f"{ind_str}{cls.IND}{cls.IND}svtypes::register_object(const_cast<{cls.__name__}*>(this));")
-        lines.append(f'{ind_str}{cls.IND}{cls.IND}svtypes::pack_object_header({cls._cpp_encoding_type_expr()}, "{cls._encoding_fingerprint_hex()}", {len(cls.__svtypes_fields)}, __svtypes_object_number, bytes);')
-        for name, desc in cls.__svtypes_fields:
-            if desc.pack_bytes:
-                namespace = "" if isinstance(desc, SvStruct) else "svtypes::"
-                lines.append(f"{ind_str}{cls.IND}{cls.IND}{namespace}pack({name}, bytes);")
+        lines.append(f'{ind_str}{cls.IND}{cls.IND}svtypes::pack_object_header({cls._cpp_encoding_type_expr()}, __svtypes_fingerprint, __svtypes_wire_field_count(), __svtypes_object_number, bytes);')
+        lines.append(f"{ind_str}{cls.IND * 2}__svtypes_visit_fields(*this, [&](const char*, const auto& value, auto wire, auto, auto) SVTYPES_INLINE_FIELD_OPERATION {{")
+        lines.append(f"{ind_str}{cls.IND * 3}if constexpr (decltype(wire)::value) {{ using svtypes::pack;")
+        lines.append(f"{ind_str}{cls.IND * 3}pack(value, bytes); }}")
+        lines.append(f"{ind_str}{cls.IND * 2}}});")
         lines.append(f"{ind_str}{cls.IND}}}")
 
         lines.append("")
@@ -2261,16 +2581,21 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
         lines.append("")
         lines.append(f"{ind_str}{cls.IND}void unpack_body(const std::vector<uint8_t>& bytes, size_t& offset) override {{")
+        lines.append(f'{ind_str}{cls.IND}{cls.IND}static constexpr auto __svtypes_fingerprint = svtypes::fingerprint_literal("{cls._encoding_fingerprint_hex()}");')
         lines.append(f"{ind_str}{cls.IND}{cls.IND}uint64_t incoming_svtypes_object_number;")
-        lines.append(f'{ind_str}{cls.IND}{cls.IND}svtypes::unpack_object_header({cls._cpp_encoding_type_expr()}, "{cls._encoding_fingerprint_hex()}", {len(cls.__svtypes_fields)}, incoming_svtypes_object_number, bytes, offset);')
+        lines.append(f'{ind_str}{cls.IND}{cls.IND}svtypes::unpack_object_header({cls._cpp_encoding_type_expr()}, __svtypes_fingerprint, svtypes::strict_decode_diagnostics() ? __svtypes_wire_field_count() : 0, incoming_svtypes_object_number, bytes, offset);')
         lines.append(f"{ind_str}{cls.IND}{cls.IND}__svtypes_object_number = incoming_svtypes_object_number;")
         lines.append(f"{ind_str}{cls.IND}{cls.IND}svtypes::register_object(this);")
-        for name, desc in cls.__svtypes_fields:
-            if desc.pack_bytes:
-                namespace = "" if isinstance(desc, SvStruct) else "svtypes::"
-                lines.append(f"{ind_str}{cls.IND}{cls.IND}{namespace}unpack({name}, bytes, offset);")
+        lines.append(f"{ind_str}{cls.IND * 2}__svtypes_visit_fields(*this, [&](const char*, auto& value, auto wire, auto, auto) SVTYPES_INLINE_FIELD_OPERATION {{")
+        lines.append(f"{ind_str}{cls.IND * 3}if constexpr (decltype(wire)::value) {{ using svtypes::unpack;")
+        lines.append(f"{ind_str}{cls.IND * 3}unpack(value, bytes, offset); }}")
+        lines.append(f"{ind_str}{cls.IND * 2}}});")
         lines.append(f"{ind_str}{cls.IND}}}")
 
+        from .codegen_artifacts import cpp_support_lines
+        support_lines = lines
+        lines = design_lines
+        lines.extend(cpp_support_lines(cls, support_lines, ind_str + cls.IND))
         lines.append(f"{ind_str}}};")
         return "\n".join(lines)
 
@@ -2479,7 +2804,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
         b = b'\x01' + self._pack_object_header(
             self.__class__._encoding_type_name(),
-            bytes.fromhex(self.__class__._encoding_fingerprint_hex()),
+            self.__class__.__svtypes_prepared_encoding_fingerprint,
             len(self.__svtypes_fields),
             value.svtypes_object_number,
         )
@@ -2545,8 +2870,8 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             bytes_,
             offset,
             self.__class__._encoding_type_name(),
-            bytes.fromhex(self.__class__._encoding_fingerprint_hex()),
-            len(self.__svtypes_fields),
+            bytes.fromhex(self.__class__._encoding_fingerprint_hex()) if ctx.diagnostics == "strict" else None,
+            len(self.__svtypes_fields) if ctx.diagnostics == "strict" else None,
         )
         ctx._record_inline_object(object_number)
         existing = ctx.objects.get(object_number) or ctx.session.get(object_number)
@@ -2605,8 +2930,8 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         bytes_: bytes,
         offset: int,
         expected_type_name: str,
-        expected_encoding_fingerprint: bytes,
-        expected_field_count: int,
+        expected_encoding_fingerprint: bytes | None,
+        expected_field_count: int | None,
     ) -> tuple[int, int]:
         if len(bytes_) < offset + 20:
             raise ValueError("Not enough bytes to unpack object header")
@@ -2629,18 +2954,17 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             raise ValueError(
                 f"SvTypes object type mismatch: expected {expected_type_name}, got {type_name}"
             )
-        if field_count != expected_field_count:
+        if expected_field_count is not None and field_count != expected_field_count:
             raise ValueError(
                 f"SvTypes object field-count mismatch for {expected_type_name}: "
                 f"expected {expected_field_count}, got {field_count}"
             )
         if len(bytes_) < offset + 32:
             raise ValueError("Not enough bytes to unpack object encoding fingerprint")
-        encoding_fingerprint = bytes_[offset:offset + 32]
-        if encoding_fingerprint != expected_encoding_fingerprint:
+        if expected_encoding_fingerprint is not None and bytes_[offset:offset + 32] != expected_encoding_fingerprint:
             raise ValueError(
                 f"SvTypes object encoding fingerprint mismatch for {expected_type_name}: "
-                f"expected {expected_encoding_fingerprint.hex()}, got {encoding_fingerprint.hex()}"
+                f"expected {expected_encoding_fingerprint.hex()}, got {bytes_[offset:offset + 32].hex()}"
             )
         return offset + 32, object_number
 
@@ -2690,7 +3014,7 @@ class SvStruct(SvObject):
                 continue
             target = getattr(self, name)
             if isinstance(desc, SvStruct):
-                target.value = source
+                SvStruct.value.fset(target, source)
             else:
                 target.value = self._copy_struct_member_value(desc, source.value)
 
@@ -2711,7 +3035,7 @@ class SvStruct(SvObject):
             return value
         if isinstance(desc, SvStruct):
             copied = type(value).codec_template()
-            copied.value = value
+            SvStruct.value.fset(copied, value)
             return copied
         if isinstance(desc, (Array, DynArray, Queue)):
             return [SvStruct._copy_struct_member_value(desc._elem_template, item) for item in value]
@@ -2723,7 +3047,7 @@ class SvStruct(SvObject):
     def __copy__(self):
         copied = type(self).codec_template()
         copied._field_options = self._field_options
-        copied.value = self
+        SvStruct.value.fset(copied, self)
         return copied
 
     def pack(self, value: "SvStruct", ctx: PackContext | None = None) -> bytes:
@@ -2773,10 +3097,38 @@ class SvStruct(SvObject):
 
         return any(contains(desc) for _, desc in cls._SvObject__svtypes_fields)
 
-    def from_bytes(self, bytes_: bytes) -> int:
-        decoded, count = self.unpack(bytes_)
-        self.value = decoded
+    def from_bytes(self, bytes_: bytes, *, context: UnpackContext | None = None) -> int:
+        decoded, count = self.unpack(bytes_, context)
+        SvStruct.value.fset(self, decoded)
         return count
+
+    @classmethod
+    def _supports_shared_field_operations(cls) -> bool:
+        from .bit import Bit
+        from .collection import Array, AssocArray, DynArray, Queue
+        from .enum import Enum
+        from .int import Int, LongInt
+        from .logic import Logic
+        from .real import Real, RealTime, ShortReal
+        from .remote_ref import RemoteRef
+        from .string import String
+
+        scalars = (Bit, Logic, Int, LongInt, String, Real, ShortReal, RealTime, RemoteRef)
+        def handle(desc):
+            return isinstance(desc, ObjectDescriptor) or (isinstance(desc, SvObject) and not isinstance(desc, SvStruct))
+
+        def supported(desc):
+            return type(desc) in scalars or isinstance(desc, Enum) or handle(desc) or (
+                isinstance(desc, SvStruct) and desc.__class__._supports_shared_field_operations()
+            ) or (
+                type(desc) in (Array, DynArray, Queue) and supported(desc._elem_template)
+            ) or (
+                type(desc) is AssocArray
+                and (type(desc._key_template) in scalars or isinstance(desc._key_template, Enum))
+                and supported(desc._val_template)
+            )
+
+        return all(supported(desc) for _, desc in cls._SvObject__svtypes_members)
 
     @classmethod
     def to_sv_obj(cls, level=0):
@@ -2793,37 +3145,161 @@ class SvStruct(SvObject):
             lines.append(f"{ind_str}{cls.IND}{declaration};")
         lines.append(f"{ind_str}}} {cls.__name__}_t;")
         lines.append("")
+        declaration_lines = lines
+        lines = []
         lines.append(f"{ind_str}class {cls.__name__}_packer;")
+        shared_fields = cls._supports_shared_field_operations()
+        if shared_fields:
+            from .bit import Bit
+            from .collection import Array, AssocArray, DynArray, Queue
+            from .enum import Enum
+            from .logic import Logic
+            from .real import Real
+            from .remote_ref import RemoteRef
+            from .string import String
+
+            lines.append(f"{ind_str}{cls.IND}// Ordered fields shared by wire operations, display and plusargs.")
+            lines.append(f'{ind_str}{cls.IND}static function int __svtypes_apply_fields(input int action, ref {cls.__name__}_t value, ref byte unsigned bytes[$], ref int offset, ref string result, input string prefix = "");')
+            lines.append(f"{ind_str}{cls.IND * 2}int count = 0;")
+            for name, desc in cls._SvObject__svtypes_members:
+                expression = f"value.{name}"
+                codec = cls._sv_field_packer_expr(desc, expression)
+                is_collection = type(desc) in (Array, DynArray, Queue)
+                is_assoc = type(desc) is AssocArray
+                is_handle = isinstance(desc, ObjectDescriptor) or (isinstance(desc, SvObject) and not isinstance(desc, SvStruct))
+                member_desc = desc._elem_template if is_collection else desc
+                element_is_handle = isinstance(member_desc, ObjectDescriptor) or (isinstance(member_desc, SvObject) and not isinstance(member_desc, SvStruct))
+                if is_assoc:
+                    helper = "svtypes_pkg::assoc_field_operations"
+                elif is_collection and isinstance(member_desc, (Array, DynArray, Queue, AssocArray)):
+                    helper = "svtypes_pkg::container_field_operations"
+                elif is_collection and element_is_handle:
+                    helper = "svtypes_pkg::object_array_field_operations"
+                elif is_collection and isinstance(member_desc, SvStruct):
+                    helper = "svtypes_pkg::struct_array_field_operations"
+                elif is_collection and isinstance(member_desc, RemoteRef):
+                    helper = "svtypes_pkg::remote_ref_array_field_operations"
+                elif is_collection and isinstance(member_desc, Enum):
+                    helper = "svtypes_pkg::enum_array_field_operations"
+                elif is_collection and isinstance(member_desc, String):
+                    helper = "svtypes_pkg::string_array_field_operations"
+                elif is_collection and isinstance(member_desc, Real):
+                    helper = "svtypes_pkg::real_array_field_operations"
+                elif is_collection:
+                    helper = "svtypes_pkg::numeric_array_field_operations"
+                elif is_handle:
+                    helper = "svtypes_pkg::object_field_operations"
+                elif isinstance(desc, String):
+                    helper = "svtypes_pkg::string_field_operations"
+                elif isinstance(desc, Real):
+                    helper = "svtypes_pkg::real_field_operations"
+                elif isinstance(desc, Enum):
+                    helper = "svtypes_pkg::enum_field_operations"
+                elif isinstance(desc, SvStruct):
+                    helper = "svtypes_pkg::struct_field_operations"
+                elif isinstance(desc, RemoteRef):
+                    helper = "svtypes_pkg::remote_ref_field_operations"
+                else:
+                    helper = "svtypes_pkg::bit_field_operations"
+                flags = ", ".join("1'b1" if flag else "1'b0" for flag in (
+                    member_desc.signed if isinstance(member_desc, (Bit, Enum)) else False,
+                    desc.pack_bytes if isinstance(desc, TypeBase) else True, True,
+                    desc.plusarg if isinstance(desc, TypeBase) and not is_collection and not is_handle and not is_assoc else False,
+                ))
+                field_type = cls._sv_type_expr(desc) if is_handle or isinstance(desc, RemoteRef) else f"type({expression})"
+                parameters = f"{field_type}, {codec}"
+                if isinstance(member_desc, Enum):
+                    parameters += f', "{member_desc.__class__.__name__}"'
+                if is_collection and isinstance(member_desc, SvStruct):
+                    parameters += f", {member_desc.__class__.__name__}_packer"
+                if is_collection and isinstance(member_desc, (Array, DynArray, Queue, AssocArray)):
+                    parameters += ", " + cls._sv_value_formatter(desc, expression)
+                if is_assoc:
+                    parameters += ", " + cls._sv_assoc_formatter_parameters(desc, expression)
+                target = "member" if cls._svtypes_packed else expression
+                if cls._svtypes_packed:
+                    lines.append(f"{ind_str}{cls.IND * 2}begin")
+                    lines.append(f"{ind_str}{cls.IND * 3}type({expression}) member;")
+                    lines.append(f"{ind_str}{cls.IND * 3}member = {expression};")
+                inner = cls.IND * (3 if cls._svtypes_packed else 2)
+                lines.append(f'{ind_str}{inner}{helper}#({parameters})::apply({target}, "{name}", {flags}, action, bytes, offset, count, result, prefix);')
+                if cls._svtypes_packed:
+                    if isinstance(desc, SvStruct):
+                        default = f"{desc.__class__.__name__}_packer::svtypes_default()"
+                    else:
+                        default = desc.sv_initializer()
+                        if default is None:
+                            default = "'x" if isinstance(desc, Logic) else "'0"
+                            if isinstance(desc, Enum):
+                                default = f"{desc.__class__.__name__}'({default})"
+                    lines.append(f"{ind_str}{cls.IND * 3}if (action == 5) member = {default};")
+                    lines.append(f"{ind_str}{cls.IND * 3}if (action == 2 || action == 4 || action == 5) {expression} = member;")
+                    lines.append(f"{ind_str}{cls.IND * 2}end")
+            lines.append(f"{ind_str}{cls.IND * 2}return count;")
+            lines.append(f"{ind_str}{cls.IND}endfunction")
+            lines.append("")
+            if cls._svtypes_packed:
+                lines.append(f"{ind_str}{cls.IND}static function {cls.__name__}_t svtypes_default();")
+                lines.append(f"{ind_str}{cls.IND * 2}{cls.__name__}_t value = '0;")
+                lines.append(f"{ind_str}{cls.IND * 2}byte unsigned bytes[$];")
+                lines.append(f"{ind_str}{cls.IND * 2}int offset = 0;")
+                lines.append(f'{ind_str}{cls.IND * 2}string result = "";')
+                lines.append(f"{ind_str}{cls.IND * 2}__svtypes_apply_fields(5, value, bytes, offset, result);")
+                lines.append(f"{ind_str}{cls.IND * 2}return value;")
+                lines.append(f"{ind_str}{cls.IND}endfunction")
+                lines.append("")
+            lines.append(f"{ind_str}{cls.IND}static function string svtypes_format(input {cls.__name__}_t value);")
+            lines.append(f"{ind_str}{cls.IND * 2}byte unsigned bytes[$];")
+            lines.append(f"{ind_str}{cls.IND * 2}int offset = 0;")
+            lines.append(f'{ind_str}{cls.IND * 2}string result = "";')
+            lines.append(f"{ind_str}{cls.IND * 2}__svtypes_apply_fields(3, value, bytes, offset, result);")
+            lines.append(f'{ind_str}{cls.IND * 2}return {{"{cls.__name__}{{", result, "}}"}};')
+            lines.append(f"{ind_str}{cls.IND}endfunction")
+            lines.append("")
+            lines.append(f'{ind_str}{cls.IND}static function void svtypes_apply_plusargs(ref {cls.__name__}_t value, input string prefix = "");')
+            lines.append(f"{ind_str}{cls.IND * 2}byte unsigned bytes[$];")
+            lines.append(f"{ind_str}{cls.IND * 2}int offset = 0;")
+            lines.append(f'{ind_str}{cls.IND * 2}string result = "";')
+            lines.append(f"{ind_str}{cls.IND * 2}__svtypes_apply_fields(4, value, bytes, offset, result, prefix);")
+            lines.append(f"{ind_str}{cls.IND}endfunction")
+            lines.append("")
+        else:
+            lines.append(f"{ind_str}{cls.IND}// Ordered wire fields shared by pack and unpack.")
+        lines.append(f"{ind_str}{cls.IND}static function void transfer_fields(ref {cls.__name__}_t value, ref byte unsigned bytes[$], ref int offset, input bit decode);")
+        if shared_fields:
+            lines.append(f'{ind_str}{cls.IND * 2}string result = "";')
+            lines.append(f"{ind_str}{cls.IND * 2}__svtypes_apply_fields(decode ? 2 : 1, value, bytes, offset, result);")
+        for name, desc in ([] if shared_fields else cls._SvObject__svtypes_fields):
+            expression = f"value.{name}"
+            codec = cls._sv_field_packer_expr(desc, expression)
+            if not cls._svtypes_packed:
+                lines.append(f"{ind_str}{cls.IND * 2}svtypes_pkg::field_codec#(type({expression}), {codec})::apply({expression}, bytes, offset, decode);")
+                continue
+            lines.append(f"{ind_str}{cls.IND * 2}begin")
+            lines.append(f"{ind_str}{cls.IND * 3}type({expression}) member;")
+            lines.append(f"{ind_str}{cls.IND * 3}if (!decode) member = {expression};")
+            lines.append(f"{ind_str}{cls.IND * 3}svtypes_pkg::field_codec#(type({expression}), {codec})::apply(member, bytes, offset, decode);")
+            lines.append(f"{ind_str}{cls.IND * 3}if (decode) {expression} = member;")
+            lines.append(f"{ind_str}{cls.IND * 2}end")
+        lines.append(f"{ind_str}{cls.IND}endfunction")
+        lines.append("")
         lines.append(f"{ind_str}{cls.IND}static function void pack(input {cls.__name__}_t value, ref byte unsigned bytes[$]);")
+        lines.append(f"{ind_str}{cls.IND * 2}int offset = 0;")
         if cls._contains_object_handles():
             lines.append(f"{ind_str}{cls.IND * 2}bit __svtypes_implicit_context;")
             lines.append(f"{ind_str}{cls.IND * 2}__svtypes_implicit_context = svtypes_pkg::svtypes_pack_context_stack.size() == 0;")
             lines.append(f"{ind_str}{cls.IND * 2}if (__svtypes_implicit_context) svtypes_pkg::begin_pack_graph();")
-        for name, desc in cls._SvObject__svtypes_fields:
-            from .collection import CollectionBase
-            if isinstance(desc, CollectionBase):
-                lines.extend(desc.sv_pack_loop(f"value.{name}", level + 2, ind_str + cls.IND * 2))
-            else:
-                lines.extend(cls._sv_pack_lines(f"value.{name}", desc, ind_str + cls.IND * 2))
+        lines.append(f"{ind_str}{cls.IND * 2}transfer_fields(value, bytes, offset, 0);")
         if cls._contains_object_handles():
             lines.append(f"{ind_str}{cls.IND * 2}if (__svtypes_implicit_context) svtypes_pkg::end_pack_graph();")
         lines.append(f"{ind_str}{cls.IND}endfunction")
         lines.append("")
         lines.append(f"{ind_str}{cls.IND}static function void unpack(ref {cls.__name__}_t value, ref byte unsigned bytes[$], ref int offset);")
-        for name, desc in cls._SvObject__svtypes_fields:
-            declaration = desc.sv_decl(f'__svtypes_{name}')
-            declaration = declaration.removeprefix("rand ").removeprefix("randc ")
-            lines.append(f"{ind_str}{cls.IND * 2}{declaration};")
-        for name, desc in cls._SvObject__svtypes_fields:
-            from .collection import CollectionBase
-            temporary = f"__svtypes_{name}"
-            if isinstance(desc, CollectionBase):
-                lines.extend(desc.sv_unpack_loop(temporary, level + 2, ind_str + cls.IND * 2))
-            else:
-                lines.extend(cls._sv_unpack_lines(temporary, desc, ind_str + cls.IND * 2))
-            lines.append(f"{ind_str}{cls.IND * 2}value.{name} = {temporary};")
+        lines.append(f"{ind_str}{cls.IND * 2}transfer_fields(value, bytes, offset, 1);")
         lines.append(f"{ind_str}{cls.IND}endfunction")
         lines.append(f"{ind_str}endclass")
+        from .codegen_artifacts import sv_support_lines
+        lines = declaration_lines + sv_support_lines(cls, lines, ind_str, "codec")
         return "\n".join(lines)
 
     def sv_decl(self, name: str):
@@ -2831,8 +3307,18 @@ class SvStruct(SvObject):
 
     @classmethod
     def _sv_declared_default(cls) -> tuple[str, bool]:
+        from .bit import Bit
         from .enum import Enum
         from .logic import Logic
+
+        # A uniform zero initializer need not name each member.  Besides being
+        # shorter, this keeps a containing declaration valid if a member is
+        # removed from the generated packed struct.
+        members = cls._SvObject__svtypes_members
+        if members and all(isinstance(desc, Bit) and desc._init_value in (None, 0)
+                           for _, desc in members):
+            explicit = any(desc._init_value is not None for _, desc in members)
+            return "'{default: '0}", explicit
 
         members = []
         explicit = False
@@ -2857,6 +3343,8 @@ class SvStruct(SvObject):
             # defaults, which require a containing-field assignment pattern.
             return None
         value, explicit = self._sv_declared_default()
+        if explicit and value != "'{default: '0}" and self.__class__._supports_shared_field_operations():
+            return f"{self.__class__.__name__}_packer::svtypes_default()"
         return value if explicit else None
 
     def to_sv_code(self, level=0, name: str | None = None):
@@ -2873,33 +3361,50 @@ class SvStruct(SvObject):
         lines = [f"{ind_str}struct {cls.__name__} {{"]
         for name, desc in cls._SvObject__svtypes_members:
             lines.append(f"{ind_str}{cls.IND}{desc.cpp_decl(name)};")
+        declaration_lines = lines
+        lines = []
+        lines.append("")
+        lines.append(f"{ind_str}{cls.IND}// Ordered wire fields: edit this list when adding or removing fields.")
+        lines.append(f"{ind_str}{cls.IND}template<class Self, class Operation>")
+        lines.append(f"{ind_str}{cls.IND}static SVTYPES_INLINE_FIELD_VISITOR void __svtypes_visit_fields(Self& self, Operation&& operation) {{")
+        for name, desc in cls._SvObject__svtypes_members:
+            wire = "true" if desc.pack_bytes else "false"
+            lines.append(f'{ind_str}{cls.IND * 2}operation("{name}", self.{name}, std::bool_constant<{wire}>{{}});')
+        lines.append(f"{ind_str}{cls.IND}}}")
+        from .codegen_artifacts import cpp_support_lines
+        lines = declaration_lines + cpp_support_lines(cls, lines, ind_str + cls.IND, "fields")
         lines.append(f"{ind_str}}};")
         lines.append("")
+        declaration_lines = lines
+        lines = []
         lines.append(f"{ind_str}inline void pack(const {cls.__name__}& value, std::vector<uint8_t>& bytes) {{")
         if cls._contains_object_handles():
             lines.append(f"{ind_str}{cls.IND}svtypes::PackOperationGuard __svtypes_pack_operation(svtypes::svtypes_pack_context_stack.empty());")
-        for name, desc in cls._SvObject__svtypes_fields:
-            namespace = "" if isinstance(desc, SvStruct) else "svtypes::"
-            lines.append(f"{ind_str}{cls.IND}{namespace}pack(value.{name}, bytes);")
+        lines.append(f"{ind_str}{cls.IND}{cls.__name__}::__svtypes_visit_fields(value, [&](const char*, const auto& member, auto wire) SVTYPES_INLINE_FIELD_OPERATION {{")
+        lines.append(f"{ind_str}{cls.IND * 2}if constexpr (decltype(wire)::value) {{ using svtypes::pack;")
+        lines.append(f"{ind_str}{cls.IND * 2}pack(member, bytes); }}")
+        lines.append(f"{ind_str}{cls.IND}}});")
         lines.append(f"{ind_str}}}")
         lines.append("")
         lines.append(f"{ind_str}inline void unpack({cls.__name__}& value, const std::vector<uint8_t>& bytes, size_t& offset) {{")
-        for name, desc in cls._SvObject__svtypes_fields:
-            namespace = "" if isinstance(desc, SvStruct) else "svtypes::"
-            lines.append(f"{ind_str}{cls.IND}{namespace}unpack(value.{name}, bytes, offset);")
+        lines.append(f"{ind_str}{cls.IND}{cls.__name__}::__svtypes_visit_fields(value, [&](const char*, auto& member, auto wire) SVTYPES_INLINE_FIELD_OPERATION {{")
+        lines.append(f"{ind_str}{cls.IND * 2}if constexpr (decltype(wire)::value) {{ using svtypes::unpack;")
+        lines.append(f"{ind_str}{cls.IND * 2}unpack(member, bytes, offset); }}")
+        lines.append(f"{ind_str}{cls.IND}}});")
         lines.append(f"{ind_str}}}")
         lines.append("")
         lines.append(f"{ind_str}inline std::string dump_value(const {cls.__name__}& value) {{")
         lines.append(f'{ind_str}{cls.IND}std::string result = "{cls.__name__}{{";')
-        for index, (name, desc) in enumerate(cls._SvObject__svtypes_members):
-            separator = "" if index == 0 else ", "
-            namespace = "" if isinstance(desc, SvStruct) else "svtypes::"
-            lines.append(
-                f'{ind_str}{cls.IND}result += "{separator}{name}=" + '
-                f'{namespace}dump_value(value.{name});'
-            )
+        lines.append(f"{ind_str}{cls.IND}bool first = true;")
+        lines.append(f"{ind_str}{cls.IND}{cls.__name__}::__svtypes_visit_fields(value, [&](const char* name, const auto& member, auto) {{")
+        lines.append(f"{ind_str}{cls.IND * 2}using svtypes::dump_value;")
+        lines.append(f'{ind_str}{cls.IND * 2}if (!first) result += ", ";')
+        lines.append(f"{ind_str}{cls.IND * 2}first = false;")
+        lines.append(f'{ind_str}{cls.IND * 2}result += std::string(name) + "=" + dump_value(member);')
+        lines.append(f"{ind_str}{cls.IND}}});")
         lines.append(f'{ind_str}{cls.IND}return result + "}}";')
         lines.append(f"{ind_str}}}")
+        lines = declaration_lines + cpp_support_lines(cls, lines, ind_str, "codec")
         return "\n".join(lines)
 
 

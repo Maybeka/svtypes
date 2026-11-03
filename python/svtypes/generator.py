@@ -8,11 +8,12 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import tempfile
 from typing import Any, Iterable
 
 from .errors import DeclarationError
-from .schema import SCHEMA_FORMAT_VERSION, schema_descriptor
+from .schema import SCHEMA_FORMAT_VERSION, schema_descriptor, unified_type_name
 
 
 GENERATOR_VERSION = 1
@@ -63,7 +64,16 @@ def _json_bytes(value: Any) -> bytes:
     return (json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
-def _render_outputs(registry_or_schema: Any, targets: set[str], layout: str) -> tuple[str, dict[str, bytes], list[dict[str, Any]]]:
+def _render_outputs(registry_or_schema: Any, targets: set[str], layout: str) -> tuple[str, dict[str, bytes], list[dict[str, Any]], list[str]]:
+    from .codegen_artifacts import collect_support_artifacts
+
+    with collect_support_artifacts() as support:
+        package, outputs, schemas, templates = _render_outputs_inline(registry_or_schema, targets, layout)
+    outputs.update(support)
+    return package, outputs, schemas, templates
+
+
+def _render_outputs_inline(registry_or_schema: Any, targets: set[str], layout: str) -> tuple[str, dict[str, bytes], list[dict[str, Any]], list[str]]:
     if layout != "package":
         raise DeclarationError("SvTypes 1.0 generator currently supports only layout='package'")
     unknown = targets - {"sv", "cpp", "schema"}
@@ -71,7 +81,12 @@ def _render_outputs(registry_or_schema: Any, targets: set[str], layout: str) -> 
         raise DeclarationError(f"unknown generation targets: {sorted(unknown)}")
     package_name, types = _registered_types(registry_or_schema)
     stem = _safe_stem(package_name)
-    schemas = [schema_descriptor(value).to_dict() for value in types]
+    # A template can be rendered, but it has no concrete source schema until
+    # its parameters are bound. Keep its identity separate from descriptors.
+    templates = sorted(unified_type_name(value) for value in types
+                       if getattr(value, "_SvObject__svtypes_is_template", False))
+    schemas = [schema_descriptor(value).to_dict() for value in types
+               if not getattr(value, "_SvObject__svtypes_is_template", False)]
     outputs: dict[str, bytes] = {}
 
     if "sv" in targets:
@@ -93,22 +108,37 @@ def _render_outputs(registry_or_schema: Any, targets: set[str], layout: str) -> 
         text = '#pragma once\n#include "svtypes.hpp"\n\n' + body.rstrip() + "\n"
         outputs[f"{stem}.hpp"] = text.encode("utf-8")
     if "schema" in targets:
-        outputs[f"{stem}.schema.json"] = _json_bytes(
-            {
+        schema_document = {
                 "package": package_name,
                 "schema_format_version": SCHEMA_FORMAT_VERSION,
                 "types": schemas,
             }
-        )
-    return package_name, outputs, schemas
+        if templates:
+            schema_document["unbound_templates"] = templates
+        outputs[f"{stem}.schema.json"] = _json_bytes(schema_document)
+    return package_name, outputs, schemas, templates
 
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _validate_artifact_path(output_dir: Path, relative: Any) -> None:
+    """Keep snapshot paths inside the output tree, including through symlinks."""
+    if (not isinstance(relative, str) or not relative or "\\" in relative
+            or any(part in ("", ".", "..") for part in relative.split("/"))
+            or ":" in relative.split("/")[0]):
+        raise DeclarationError(f"invalid generated artifact path: {relative!r}")
+    path = output_dir
+    for part in relative.split("/"):
+        path = path / part
+        if path.is_symlink():
+            raise DeclarationError(f"generated artifact path traverses a symbolic link: {relative!r}")
+
+
 def _read_manifest(output_dir: Path) -> dict[str, Any] | None:
     path = output_dir / MANIFEST_NAME
+    _validate_artifact_path(output_dir, MANIFEST_NAME)
     if not path.exists():
         return None
     try:
@@ -120,21 +150,31 @@ def _read_manifest(output_dir: Path) -> dict[str, Any] | None:
     return value
 
 
-def _manifest(package_name: str, outputs: dict[str, bytes], schemas: list[dict[str, Any]]) -> dict[str, Any]:
+def _manifest(package_name: str, outputs: dict[str, bytes], schemas: list[dict[str, Any]], templates: list[str]) -> dict[str, Any]:
     schema_fingerprints = sorted(item["schema_fingerprint"] for item in schemas)
     encoding_fingerprints = sorted(item["encoding_fingerprint"] for item in schemas)
-    return {
+    manifest = {
         "artifacts": [
             {"path": path, "sha256": _sha256(data)}
             for path, data in sorted(outputs.items())
         ],
         "generator": "svtypes",
         "generator_version": GENERATOR_VERSION,
+        "required_runtime_capabilities": [
+            "svtypes.generated-field-visitors.v1",
+            "svtypes.optional-codec-diagnostics.v1",
+            "svtypes.generated-wire-helpers.v1",
+        ] + (["svtypes.generated-field-operations.v1"]
+             if any(path.endswith(".sv") for path in outputs) else [])
+        if any(path.endswith((".sv", ".hpp")) for path in outputs) else [],
         "package": package_name,
         "schema_fingerprints": schema_fingerprints,
         "schema_format_version": SCHEMA_FORMAT_VERSION,
         "encoding_fingerprints": encoding_fingerprints,
     }
+    if templates:
+        manifest["unbound_templates"] = templates
+    return manifest
 
 
 def generate(
@@ -144,22 +184,37 @@ def generate(
     targets: set[str] | frozenset[str] = frozenset({"sv", "cpp", "schema"}),
     layout: str = "package",
     mode: str = "write",
+    overwrite_modified: bool = False,
 ) -> GenerationResult:
-    """Generate or check a deterministic package artifact set."""
+    """Generate or check a deterministic package artifact set.
+
+    Write mode preserves locally modified or unmanaged conflicting artifacts
+    and returns their paths in ``failed`` without publishing any files.
+    ``overwrite_modified=True`` explicitly authorizes replacing those files.
+    Check mode remains read-only and reports differences regardless of this flag.
+    """
     if mode not in {"write", "check"}:
         raise DeclarationError("generation mode must be 'write' or 'check'")
     target_set = set(targets)
-    package_name, outputs, schemas = _render_outputs(registry_or_schema, target_set, layout)
-    manifest_value = _manifest(package_name, outputs, schemas)
+    package_name, outputs, schemas, templates = _render_outputs(registry_or_schema, target_set, layout)
+    manifest_value = _manifest(package_name, outputs, schemas, templates)
     manifest_bytes = _json_bytes(manifest_value)
     managed_outputs = {**outputs, MANIFEST_NAME: manifest_bytes}
 
     destination = Path(output_dir)
     old_manifest = _read_manifest(destination) if destination.exists() else None
+    entries = (old_manifest or {}).get("artifacts", [])
+    if not isinstance(entries, list):
+        raise DeclarationError("existing SvTypes manifest artifacts must be a list")
+    for entry in entries:
+        if not isinstance(entry, dict) or "path" not in entry or "sha256" not in entry:
+            raise DeclarationError("invalid artifact in existing SvTypes manifest")
+        _validate_artifact_path(destination, entry["path"])
+    for relative in managed_outputs:
+        _validate_artifact_path(destination, relative)
     old_artifacts = {
         entry["path"]: entry["sha256"]
-        for entry in (old_manifest or {}).get("artifacts", [])
-        if isinstance(entry, dict) and "path" in entry and "sha256" in entry
+        for entry in entries
     }
     stale_paths = sorted(set(old_artifacts) - set(outputs))
     changed: list[str] = []
@@ -191,7 +246,25 @@ def generate(
             stale=tuple(sorted(removable_stale + protected_stale)),
         )
 
+    # Check the complete publication set before writing anything. The manifest
+    # remains the last successful generation snapshot when local edits conflict.
+    protected = [
+        relative for relative in changed
+        if relative != MANIFEST_NAME
+        and (destination / relative).is_file()
+        and (relative not in old_artifacts
+             or _sha256((destination / relative).read_bytes()) != old_artifacts[relative])
+    ]
+    if protected and not overwrite_modified:
+        return GenerationResult(
+            destination, mode, unchanged=tuple(unchanged),
+            stale=tuple(sorted(removable_stale + protected_stale)),
+            failed=tuple(protected),
+        )
+
     destination.mkdir(parents=True, exist_ok=True)
+    for relative in changed:
+        (destination / relative).parent.mkdir(parents=True, exist_ok=True)
     staged: dict[str, Path] = {}
     previous: dict[str, bytes | None] = {
         relative: (destination / relative).read_bytes()
@@ -206,6 +279,10 @@ def generate(
             if (destination / relative).is_file()
         }
     )
+    previous_modes = {
+        relative: stat.S_IMODE((destination / relative).stat().st_mode)
+        for relative, data in previous.items() if data is not None
+    }
     published: list[str] = []
     failed: list[str] = []
     current_relative = "artifact publication"
@@ -218,6 +295,8 @@ def generate(
                 stream.write(managed_outputs[relative])
                 stream.flush()
                 os.fsync(stream.fileno())
+            if relative in previous_modes:
+                os.chmod(temporary, previous_modes[relative])
         # Publish data artifacts first and the manifest last. A published
         # manifest therefore never describes files that were not staged.
         for relative in sorted(changed, key=lambda item: item == MANIFEST_NAME):
@@ -245,6 +324,7 @@ def generate(
                         stream.write(old_data)
                         stream.flush()
                         os.fsync(stream.fileno())
+                    os.chmod(temporary, previous_modes[relative])
                     os.replace(temporary, path)
                 finally:
                     Path(temporary).unlink(missing_ok=True)
@@ -258,6 +338,19 @@ def generate(
     finally:
         for temporary in staged.values():
             temporary.unlink(missing_ok=True)
+
+    if not failed:
+        parents = {
+            parent
+            for relative in removable_stale
+            for parent in (destination / relative).parents
+            if parent != destination and destination in parent.parents
+        }
+        for parent in sorted(parents, key=lambda path: len(path.parts), reverse=True):
+            try:
+                parent.rmdir()  # Only empty directories; never recurse into user files.
+            except OSError:
+                pass
 
     return GenerationResult(
         destination,

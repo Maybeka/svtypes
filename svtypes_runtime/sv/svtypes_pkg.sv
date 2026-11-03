@@ -4,6 +4,36 @@ package svtypes_pkg;
 
   parameter int unsigned SVTYPES_MAX_DYNAMIC_LENGTH = 1_000_000;
 
+  typedef enum bit { DIAGNOSTICS_OFF, DIAGNOSTICS_STRICT } diagnostic_policy;
+  class decode_context;
+    diagnostic_policy diagnostics;
+    function new(diagnostic_policy policy = DIAGNOSTICS_OFF);
+      diagnostics = policy;
+    endfunction
+  endclass
+  decode_context active_decode_contexts[process];
+
+  function automatic decode_context begin_decode_context(decode_context decode_state);
+    process owner = process::self();
+    decode_context previous;
+    if (active_decode_contexts.exists(owner)) previous = active_decode_contexts[owner];
+    if (decode_state == null) active_decode_contexts.delete(owner);
+    else active_decode_contexts[owner] = decode_state;
+    return previous;
+  endfunction
+
+  function automatic void end_decode_context(decode_context previous);
+    process owner = process::self();
+    if (previous == null) active_decode_contexts.delete(owner);
+    else active_decode_contexts[owner] = previous;
+  endfunction
+
+  function automatic bit strict_decode_diagnostics();
+    process owner = process::self();
+    if (!active_decode_contexts.exists(owner)) return 0;
+    return active_decode_contexts[owner].diagnostics == DIAGNOSTICS_STRICT;
+  endfunction
+
   class encoding_descriptor;
     string unified_type_name;
     string encoding_fingerprint;
@@ -69,7 +99,11 @@ package svtypes_pkg;
         "svtypes.external-field-storage.v1",
         "svtypes.record-schema.v1",
         "svtypes.remote-reference.v1",
-        "svtypes.struct-kinds.v1"
+        "svtypes.struct-kinds.v1",
+        "svtypes.optional-codec-diagnostics.v1",
+        "svtypes.generated-field-visitors.v1",
+        "svtypes.generated-field-operations.v1",
+        "svtypes.generated-wire-helpers.v1"
       };
     endfunction
 
@@ -346,6 +380,19 @@ package svtypes_pkg;
     endfunction
   endclass
 
+  // Containers unpack into initially null temporaries.  Bind their declared
+  // target before decoding the identity, without adding bytes to the wire.
+  class bound_remote_ref_packer #(string TARGET_TYPE = "");
+    static function void pack(remote_ref value, ref byte unsigned bytes[$]);
+      remote_ref_packer::pack(value, bytes);
+    endfunction
+
+    static function void unpack(ref remote_ref value, ref byte unsigned bytes[$], ref int offset);
+      if (value == null) value = new(TARGET_TYPE);
+      remote_ref_packer::unpack(value, bytes, offset);
+    endfunction
+  endclass
+
   function automatic void begin_pack_graph();
     svtypes_pack_context pack_ctx = new();
     svtypes_pack_context_stack.push_back(pack_ctx);
@@ -487,6 +534,7 @@ package svtypes_pkg;
     byte unsigned version;
     int unsigned field_count;
     string type_name;
+    bit strict = strict_decode_diagnostics();
     require_available(bytes, offset, 16, "object header");
     if (bytes[offset] != "S" || bytes[offset + 1] != "V" ||
         bytes[offset + 2] != "X" || bytes[offset + 3] != "O") begin
@@ -509,15 +557,15 @@ package svtypes_pkg;
     if (type_name != expected_type_name) begin
       $fatal(2, "SvTypes object type mismatch: expected %s got %s", expected_type_name, type_name);
     end
-    if (field_count != expected_field_count) begin
+    if (strict && field_count != expected_field_count) begin
       $fatal(2, "SvTypes object field-count mismatch for %s: expected %0d got %0d",
              expected_type_name, expected_field_count, field_count);
     end
-    if (expected_encoding_fingerprint.len() != 64) begin
+    if (strict && expected_encoding_fingerprint.len() != 64) begin
       $fatal(2, "SvTypes expected encoding fingerprint must contain 64 hexadecimal digits");
     end
     require_available(bytes, offset, 32, "object encoding fingerprint");
-    for (int i = 0; i < 32; i++) begin
+    if (strict) for (int i = 0; i < 32; i++) begin
       byte unsigned expected_byte;
       expected_byte = byte'((hex_nibble(expected_encoding_fingerprint[i * 2]) << 4) |
                             hex_nibble(expected_encoding_fingerprint[i * 2 + 1]));
@@ -662,6 +710,18 @@ package svtypes_pkg;
       foreach (value[i]) begin
         ELEM_PACKER::unpack(value[i], bytes, offset);
       end
+    endfunction
+  endclass
+
+  // A fixed unpacked array can be traversed from its actual type without
+  // making its size a separate constant type parameter.
+  class fixed_sequence_packer #(type T = int, type ELEM_PACKER = bit_packer#(int));
+    static function void pack(ref T value, ref byte unsigned bytes[$]);
+      foreach (value[index]) ELEM_PACKER::pack(value[index], bytes);
+    endfunction
+
+    static function void unpack(ref T value, ref byte unsigned bytes[$], ref int offset);
+      foreach (value[index]) ELEM_PACKER::unpack(value[index], bytes, offset);
     endfunction
   endclass
 
@@ -929,5 +989,535 @@ package svtypes_pkg;
   function automatic void unpack_object(sv_object value, ref byte unsigned bytes[$], ref int offset);
     value.unpack(bytes, offset);
   endfunction
+
+  // Shared field operation used by generated ordered wire-field lists.
+  // T comes from the actual field declaration; CODEC selects its wire category.
+  class field_codec #(type T = bit, type CODEC = bit_packer#(T));
+    static function void apply(
+      ref T value,
+      ref byte unsigned bytes[$],
+      ref int offset,
+      input bit decode
+    );
+      if (decode) CODEC::unpack(value, bytes, offset);
+      else CODEC::pack(value, bytes);
+    endfunction
+  endclass
+
+  // Shared operations for native packed bit fields. The generated field list
+  // supplies the actual type, codec, name and field policies in one place.
+  class bit_field_operations #(type T = bit, type CODEC = bit_packer#(T));
+    static function void apply(ref T value, input string name, input bit is_signed,
+                               input bit wire_enabled, input bit dump_enabled,
+                               input bit plusarg_enabled, input int action,
+                               ref byte unsigned bytes[$], ref int offset,
+                               ref int count, ref string result, input string prefix);
+      string key, qualified_name;
+      case (action)
+        0: if (wire_enabled) count++;
+        1: if (wire_enabled) begin count++; CODEC::pack(value, bytes); end
+        2: if (wire_enabled) CODEC::unpack(value, bytes, offset);
+        3: if (dump_enabled) begin
+          if (result != "") result = {result, ", "};
+          if (is_signed) result = {result, name, "=", $sformatf("%0d", value)};
+          else result = {result, name, "=", $sformatf("%0h", value)};
+        end
+        4: if (plusarg_enabled) begin
+          qualified_name = (prefix == "") ? name : {prefix, ".", name};
+          key = {qualified_name, is_signed ? "=%d" : "=%h"};
+          if ($test$plusargs(qualified_name) && !$value$plusargs(key, value))
+            $fatal(2, "Malformed plusarg %s", name);
+        end
+      endcase
+    endfunction
+  endclass
+
+  // Symbolic fields retain the same generic display used by their previous
+  // generated code; their codec is specialized from the actual field type.
+  class opaque_field_operations #(type T = int, type CODEC = int);
+    static function void apply(ref T value, input string name, input bit is_signed,
+                               input bit wire_enabled, input bit dump_enabled,
+                               input bit plusarg_enabled, input int action,
+                               ref byte unsigned bytes[$], ref int offset,
+                               ref int count, ref string result, input string prefix);
+      case (action)
+        0: if (wire_enabled) count++;
+        1: if (wire_enabled) begin count++; CODEC::pack(value, bytes); end
+        2: if (wire_enabled) CODEC::unpack(value, bytes, offset);
+        3: if (dump_enabled) begin
+          if (result != "") result = {result, ", "};
+          result = {result, name, "=", $sformatf("%p", value)};
+        end
+      endcase
+    endfunction
+  endclass
+
+  class string_field_operations #(type T = string, type CODEC = string_packer);
+    static function void apply(ref T value, input string name, input bit is_signed,
+                               input bit wire_enabled, input bit dump_enabled,
+                               input bit plusarg_enabled, input int action,
+                               ref byte unsigned bytes[$], ref int offset,
+                               ref int count, ref string result, input string prefix);
+      string key, qualified_name;
+      case (action)
+        0: if (wire_enabled) count++;
+        1: if (wire_enabled) begin count++; CODEC::pack(value, bytes); end
+        2: if (wire_enabled) CODEC::unpack(value, bytes, offset);
+        3: if (dump_enabled) begin
+          if (result != "") result = {result, ", "};
+          result = {result, name, "=", escape_dump_string(value)};
+        end
+        4: if (plusarg_enabled) begin
+          qualified_name = (prefix == "") ? name : {prefix, ".", name};
+          key = {qualified_name, "=%s"};
+          if ($test$plusargs(qualified_name) && !$value$plusargs(key, value))
+            $fatal(2, "Malformed plusarg %s", name);
+        end
+      endcase
+    endfunction
+  endclass
+
+  class enum_field_operations #(type T = int, type CODEC = int, string ENUM_NAME = "");
+    static function void apply(ref T value, input string name, input bit is_signed,
+                               input bit wire_enabled, input bit dump_enabled,
+                               input bit plusarg_enabled, input int action,
+                               ref byte unsigned bytes[$], ref int offset,
+                               ref int count, ref string result, input string prefix);
+      string key, qualified_name, raw;
+      longint signed numeric;
+      T candidate;
+      bit matched, parsed;
+      case (action)
+        0: if (wire_enabled) count++;
+        1: if (wire_enabled) begin count++; CODEC::pack(value, bytes); end
+        2: if (wire_enabled) CODEC::unpack(value, bytes, offset);
+        3: if (dump_enabled) begin
+          if (result != "") result = {result, ", "};
+          result = {result, name, "=", ENUM_NAME, ".", value.name()};
+        end
+        4: if (plusarg_enabled) begin
+          qualified_name = (prefix == "") ? name : {prefix, ".", name};
+          key = {qualified_name, "=%s"};
+          if ($value$plusargs(key, raw)) begin
+            matched = 0;
+            parsed = ($sscanf(raw, "%d", numeric) == 1);
+            candidate = value.first();
+            repeat (value.num()) begin
+              if (!matched && (raw == candidate.name() ||
+                  (parsed && (is_signed ? longint'($signed(candidate)) == numeric :
+                                          longint'($unsigned(candidate)) == numeric)))) begin
+                value = candidate;
+                matched = 1;
+              end
+              candidate = candidate.next();
+            end
+            if (!matched) begin
+              if (!parsed) $fatal(2, "Malformed enum plusarg %s=%s", name, raw);
+              else $fatal(2, "Invalid enum plusarg %s=%s", name, raw);
+            end
+          end
+        end
+      endcase
+    endfunction
+  endclass
+
+  class object_field_operations #(type T = sv_object, type CODEC = object_packer#(T));
+    static function void apply(ref T value, input string name, input bit is_signed,
+                               input bit wire_enabled, input bit dump_enabled,
+                               input bit plusarg_enabled, input int action,
+                               ref byte unsigned bytes[$], ref int offset,
+                               ref int count, ref string result, input string prefix);
+      string qualified_name;
+      case (action)
+        0: if (wire_enabled) count++;
+        1: if (wire_enabled) begin count++; CODEC::pack(value, bytes); end
+        2: if (wire_enabled) CODEC::unpack(value, bytes, offset);
+        3: if (dump_enabled) begin
+          if (result != "") result = {result, ", "};
+          result = {result, name, "=", value == null ? "null" : value.svtypes_sprint()};
+        end
+        4: if (plusarg_enabled && value != null) begin
+          qualified_name = (prefix == "") ? name : {prefix, ".", name};
+          value.apply_plusargs(qualified_name);
+        end
+      endcase
+    endfunction
+  endclass
+
+  class struct_field_operations #(type T = int, type CODEC = int);
+    static function void apply(ref T value, input string name, input bit is_signed,
+                               input bit wire_enabled, input bit dump_enabled,
+                               input bit plusarg_enabled, input int action,
+                               ref byte unsigned bytes[$], ref int offset,
+                               ref int count, ref string result, input string prefix);
+      string qualified_name;
+      case (action)
+        0: if (wire_enabled) count++;
+        1: if (wire_enabled) begin count++; CODEC::pack(value, bytes); end
+        2: if (wire_enabled) CODEC::unpack(value, bytes, offset);
+        3: if (dump_enabled) begin
+          if (result != "") result = {result, ", "};
+          result = {result, name, "=", CODEC::svtypes_format(value)};
+        end
+        4: if (plusarg_enabled) begin
+          qualified_name = (prefix == "") ? name : {prefix, ".", name};
+          CODEC::svtypes_apply_plusargs(value, qualified_name);
+        end
+      endcase
+    endfunction
+  endclass
+
+  class remote_ref_field_operations #(type T = remote_ref, type CODEC = remote_ref_packer);
+    static function void apply(ref T value, input string name, input bit is_signed,
+                               input bit wire_enabled, input bit dump_enabled,
+                               input bit plusarg_enabled, input int action,
+                               ref byte unsigned bytes[$], ref int offset,
+                               ref int count, ref string result, input string prefix);
+      case (action)
+        0: if (wire_enabled) count++;
+        1: if (wire_enabled) begin count++; CODEC::pack(value, bytes); end
+        2: if (wire_enabled) CODEC::unpack(value, bytes, offset);
+        3: if (dump_enabled) begin
+          if (result != "") result = {result, ", "};
+          if (value == null || value.object_number == 0) result = {result, name, "=null"};
+          else result = {result, name, "=", $sformatf("RemoteRef(%s,%0d)", value.target_type_name, value.object_number)};
+        end
+      endcase
+    endfunction
+  endclass
+
+  class real_field_operations #(type T = real, type CODEC = real_packer);
+    static function void apply(ref T value, input string name, input bit is_signed,
+                               input bit wire_enabled, input bit dump_enabled,
+                               input bit plusarg_enabled, input int action,
+                               ref byte unsigned bytes[$], ref int offset,
+                               ref int count, ref string result, input string prefix);
+      string key, qualified_name;
+      case (action)
+        0: if (wire_enabled) count++;
+        1: if (wire_enabled) begin count++; CODEC::pack(value, bytes); end
+        2: if (wire_enabled) CODEC::unpack(value, bytes, offset);
+        3: if (dump_enabled) begin
+          if (result != "") result = {result, ", "};
+          result = {result, name, "=", $sformatf("%0g", value)};
+        end
+        4: if (plusarg_enabled) begin
+          qualified_name = (prefix == "") ? name : {prefix, ".", name};
+          key = {qualified_name, "=%f"};
+          if ($test$plusargs(qualified_name) && !$value$plusargs(key, value))
+            $fatal(2, "Malformed plusarg %s", name);
+        end
+      endcase
+    endfunction
+  endclass
+
+  class numeric_array_field_operations #(type T = bit, type CODEC = bit_packer#(T));
+    static function void apply(ref T value, input string name, input bit is_signed,
+                               input bit wire_enabled, input bit dump_enabled,
+                               input bit plusarg_enabled, input int action,
+                               ref byte unsigned bytes[$], ref int offset,
+                               ref int count, ref string result, input string prefix);
+      bit first;
+      case (action)
+        0: if (wire_enabled) count++;
+        1: if (wire_enabled) begin count++; CODEC::pack(value, bytes); end
+        2: if (wire_enabled) CODEC::unpack(value, bytes, offset);
+        3: if (dump_enabled) begin
+          if (result != "") result = {result, ", "};
+          result = {result, name, "=["};
+          first = 1;
+          foreach (value[index]) begin
+            if (!first) result = {result, ", "};
+            first = 0;
+            if (is_signed) result = {result, $sformatf("%0d", value[index])};
+            else result = {result, $sformatf("%0h", value[index])};
+          end
+          result = {result, "]"};
+        end
+      endcase
+    endfunction
+  endclass
+
+  class string_array_field_operations #(type T = string, type CODEC = string_packer);
+    static function void apply(ref T value, input string name, input bit is_signed,
+                               input bit wire_enabled, input bit dump_enabled,
+                               input bit plusarg_enabled, input int action,
+                               ref byte unsigned bytes[$], ref int offset,
+                               ref int count, ref string result, input string prefix);
+      bit first;
+      case (action)
+        0: if (wire_enabled) count++;
+        1: if (wire_enabled) begin count++; CODEC::pack(value, bytes); end
+        2: if (wire_enabled) CODEC::unpack(value, bytes, offset);
+        3: if (dump_enabled) begin
+          if (result != "") result = {result, ", "};
+          result = {result, name, "=["};
+          first = 1;
+          foreach (value[index]) begin
+            if (!first) result = {result, ", "};
+            first = 0;
+            result = {result, escape_dump_string(value[index])};
+          end
+          result = {result, "]"};
+        end
+      endcase
+    endfunction
+  endclass
+
+  class object_array_field_operations #(type T = sv_object, type CODEC = object_packer#(T));
+    static function void apply(ref T value, input string name, input bit is_signed,
+                               input bit wire_enabled, input bit dump_enabled,
+                               input bit plusarg_enabled, input int action,
+                               ref byte unsigned bytes[$], ref int offset,
+                               ref int count, ref string result, input string prefix);
+      bit first;
+      case (action)
+        0: if (wire_enabled) count++;
+        1: if (wire_enabled) begin count++; CODEC::pack(value, bytes); end
+        2: if (wire_enabled) CODEC::unpack(value, bytes, offset);
+        3: if (dump_enabled) begin
+          if (result != "") result = {result, ", "};
+          result = {result, name, "=["};
+          first = 1;
+          foreach (value[index]) begin
+            if (!first) result = {result, ", "};
+            first = 0;
+            result = {result, value[index] == null ? "null" : value[index].svtypes_sprint()};
+          end
+          result = {result, "]"};
+        end
+      endcase
+    endfunction
+  endclass
+
+  class enum_array_field_operations #(type T = int, type CODEC = int, string ENUM_NAME = "");
+    static function void apply(ref T value, input string name, input bit is_signed,
+                               input bit wire_enabled, input bit dump_enabled,
+                               input bit plusarg_enabled, input int action,
+                               ref byte unsigned bytes[$], ref int offset,
+                               ref int count, ref string result, input string prefix);
+      bit first;
+      case (action)
+        0: if (wire_enabled) count++;
+        1: if (wire_enabled) begin count++; CODEC::pack(value, bytes); end
+        2: if (wire_enabled) CODEC::unpack(value, bytes, offset);
+        3: if (dump_enabled) begin
+          if (result != "") result = {result, ", "};
+          result = {result, name, "=["};
+          first = 1;
+          foreach (value[index]) begin
+            if (!first) result = {result, ", "};
+            first = 0;
+            result = {result, ENUM_NAME, ".", value[index].name()};
+          end
+          result = {result, "]"};
+        end
+      endcase
+    endfunction
+  endclass
+
+  class struct_array_field_operations #(type T = int, type CODEC = int, type ELEMENT_CODEC = int);
+    static function void apply(ref T value, input string name, input bit is_signed,
+                               input bit wire_enabled, input bit dump_enabled,
+                               input bit plusarg_enabled, input int action,
+                               ref byte unsigned bytes[$], ref int offset,
+                               ref int count, ref string result, input string prefix);
+      bit first;
+      case (action)
+        0: if (wire_enabled) count++;
+        1: if (wire_enabled) begin count++; CODEC::pack(value, bytes); end
+        2: if (wire_enabled) CODEC::unpack(value, bytes, offset);
+        3: if (dump_enabled) begin
+          if (result != "") result = {result, ", "};
+          result = {result, name, "=["};
+          first = 1;
+          foreach (value[index]) begin
+            if (!first) result = {result, ", "};
+            first = 0;
+            result = {result, ELEMENT_CODEC::svtypes_format(value[index])};
+          end
+          result = {result, "]"};
+        end
+      endcase
+    endfunction
+  endclass
+
+  class remote_ref_array_field_operations #(type T = int, type CODEC = int);
+    static function void apply(ref T value, input string name, input bit is_signed,
+                               input bit wire_enabled, input bit dump_enabled,
+                               input bit plusarg_enabled, input int action,
+                               ref byte unsigned bytes[$], ref int offset,
+                               ref int count, ref string result, input string prefix);
+      bit first;
+      case (action)
+        0: if (wire_enabled) count++;
+        1: if (wire_enabled) begin count++; CODEC::pack(value, bytes); end
+        2: if (wire_enabled) CODEC::unpack(value, bytes, offset);
+        3: if (dump_enabled) begin
+          if (result != "") result = {result, ", "};
+          result = {result, name, "=["};
+          first = 1;
+          foreach (value[index]) begin
+            if (!first) result = {result, ", "};
+            first = 0;
+            if (value[index] == null || value[index].object_number == 0) result = {result, "null"};
+            else result = {result, $sformatf("RemoteRef(%s,%0d)", value[index].target_type_name, value[index].object_number)};
+          end
+          result = {result, "]"};
+        end
+      endcase
+    endfunction
+  endclass
+
+  class real_array_field_operations #(type T = real, type CODEC = real_packer);
+    static function void apply(ref T value, input string name, input bit is_signed,
+                               input bit wire_enabled, input bit dump_enabled,
+                               input bit plusarg_enabled, input int action,
+                               ref byte unsigned bytes[$], ref int offset,
+                               ref int count, ref string result, input string prefix);
+      bit first;
+      case (action)
+        0: if (wire_enabled) count++;
+        1: if (wire_enabled) begin count++; CODEC::pack(value, bytes); end
+        2: if (wire_enabled) CODEC::unpack(value, bytes, offset);
+        3: if (dump_enabled) begin
+          if (result != "") result = {result, ", "};
+          result = {result, name, "=["};
+          first = 1;
+          foreach (value[index]) begin
+            if (!first) result = {result, ", "};
+            first = 0;
+            result = {result, $sformatf("%0g", value[index])};
+          end
+          result = {result, "]"};
+        end
+      endcase
+    endfunction
+  endclass
+
+  class numeric_field_formatter #(type T = int, bit IS_SIGNED = 0);
+    static function string format(input T value);
+      if (IS_SIGNED) return $sformatf("%0d", value);
+      return $sformatf("%0h", value);
+    endfunction
+  endclass
+
+  class string_field_formatter;
+    static function string format(input string value);
+      return escape_dump_string(value);
+    endfunction
+  endclass
+
+  class real_field_formatter #(type T = real);
+    static function string format(input T value);
+      return $sformatf("%0g", value);
+    endfunction
+  endclass
+
+  class object_field_formatter #(type T = sv_object);
+    static function string format(input T value);
+      return value == null ? "null" : value.svtypes_sprint();
+    endfunction
+  endclass
+
+  class remote_ref_field_formatter;
+    static function string format(input remote_ref value);
+      if (value == null || value.object_number == 0) return "null";
+      return $sformatf("RemoteRef(%s,%0d)", value.target_type_name, value.object_number);
+    endfunction
+  endclass
+
+  class struct_field_formatter #(type T = int, type CODEC = int);
+    static function string format(input T value);
+      return CODEC::svtypes_format(value);
+    endfunction
+  endclass
+
+  class enum_field_formatter #(type T = int, string ENUM_NAME = "");
+    static function string format(input T value);
+      return {ENUM_NAME, ".", value.name()};
+    endfunction
+  endclass
+
+  class sequence_value_formatter #(type T = int, type ELEMENT_FORMATTER = int);
+    static function string format(input T value);
+      string result = "[";
+      bit first = 1;
+      foreach (value[index]) begin
+        if (!first) result = {result, ", "};
+        first = 0;
+        result = {result, ELEMENT_FORMATTER::format(value[index])};
+      end
+      return {result, "]"};
+    endfunction
+  endclass
+
+  class assoc_value_formatter #(type T = int, type K = int, type KEY_FORMATTER = int, type VALUE_FORMATTER = int);
+    static function string format(input T value);
+      string result = "{";
+      K key;
+      bit valid, first;
+      first = 1;
+      valid = value.first(key);
+      while (valid) begin
+        if (!first) result = {result, ", "};
+        first = 0;
+        result = {result, KEY_FORMATTER::format(key), ": ", VALUE_FORMATTER::format(value[key])};
+        valid = value.next(key);
+      end
+      return {result, "}"};
+    endfunction
+  endclass
+
+  class container_field_operations #(type T = int, type CODEC = int, type FORMATTER = int);
+    static function void apply(ref T value, input string name, input bit is_signed,
+                               input bit wire_enabled, input bit dump_enabled,
+                               input bit plusarg_enabled, input int action,
+                               ref byte unsigned bytes[$], ref int offset,
+                               ref int count, ref string result, input string prefix);
+      case (action)
+        0: if (wire_enabled) count++;
+        1: if (wire_enabled) begin count++; CODEC::pack(value, bytes); end
+        2: if (wire_enabled) CODEC::unpack(value, bytes, offset);
+        3: if (dump_enabled) begin
+          if (result != "") result = {result, ", "};
+          result = {result, name, "=", FORMATTER::format(value)};
+        end
+      endcase
+    endfunction
+  endclass
+
+  class assoc_field_operations #(
+    type T = int, type CODEC = int, type K = int,
+    type KEY_FORMATTER = numeric_field_formatter#(K),
+    type VALUE_FORMATTER = numeric_field_formatter#(int)
+  );
+    static function void apply(ref T value, input string name, input bit is_signed,
+                               input bit wire_enabled, input bit dump_enabled,
+                               input bit plusarg_enabled, input int action,
+                               ref byte unsigned bytes[$], ref int offset,
+                               ref int count, ref string result, input string prefix);
+      K key;
+      bit valid, first;
+      case (action)
+        0: if (wire_enabled) count++;
+        1: if (wire_enabled) begin count++; CODEC::pack(value, bytes); end
+        2: if (wire_enabled) CODEC::unpack(value, bytes, offset);
+        3: if (dump_enabled) begin
+          if (result != "") result = {result, ", "};
+          result = {result, name, "={"};
+          first = 1;
+          valid = value.first(key);
+          while (valid) begin
+            if (!first) result = {result, ", "};
+            first = 0;
+            result = {result, KEY_FORMATTER::format(key), ": ", VALUE_FORMATTER::format(value[key])};
+            valid = value.next(key);
+          end
+          result = {result, "}"};
+        end
+      endcase
+    endfunction
+  endclass
 
 endpackage

@@ -88,8 +88,8 @@ def test_parameter_codegen():
 
     holder_sv_code = ConfigHolder.to_sv_obj()
     assert "ConfigurableData#(.ID(32'd5)) child;" in holder_sv_code
-    assert "object_packer#(ConfigurableData#(.ID(32'd5)))::pack(child, bytes);" in holder_sv_code
-    assert "object_packer#(ConfigurableData#(.ID(32'd5)))::unpack(child, bytes, offset);" in holder_sv_code
+    assert "object_packer#(ConfigurableData#(.ID(32'd5)))" in holder_sv_code
+    assert '::apply(this.child, "child",' in holder_sv_code
     assert "ConfigurableData_ID_5 child;" not in holder_sv_code
 
     with pytest.raises(DeclarationError, match="Python-side binding"):

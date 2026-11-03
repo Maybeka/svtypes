@@ -48,12 +48,14 @@ def test_cross_serialization():
     # 3. Verify Codegen inheritance
     sv_derived = Derived.to_sv_obj()
     assert "extends Base" in sv_derived
-    assert f'pack_object_header("{Derived._encoding_type_name()}", "{Derived._encoding_fingerprint_hex()}", 4, __svtypes_object_number, bytes);' in sv_derived
-    assert f'unpack_object_header("{Derived._encoding_type_name()}", "{Derived._encoding_fingerprint_hex()}", 4, incoming_svtypes_object_number, bytes, offset);' in sv_derived
+    assert f'pack_object_header("{Derived._encoding_type_name()}", "{Derived._encoding_fingerprint_hex()}", 0, __svtypes_object_number, bytes);' in sv_derived
+    assert "bytes[__svtypes_header_start + 6] = __svtypes_count[7:0];" in sv_derived
+    assert f'unpack_object_header("{Derived._encoding_type_name()}", "{Derived._encoding_fingerprint_hex()}", svtypes_pkg::strict_decode_diagnostics() ? __svtypes_wire_field_count() : 0, incoming_svtypes_object_number, bytes, offset);' in sv_derived
 
     cpp_derived = Derived.to_cpp_obj()
     assert ": public Base" in cpp_derived
-    assert f'pack_object_header("{Derived._encoding_type_name()}", "{Derived._encoding_fingerprint_hex()}", 4, __svtypes_object_number, bytes);' in cpp_derived
+    assert f'svtypes::fingerprint_literal("{Derived._encoding_fingerprint_hex()}")' in cpp_derived
+    assert f'pack_object_header("{Derived._encoding_type_name()}", __svtypes_fingerprint, __svtypes_wire_field_count(), __svtypes_object_number, bytes);' in cpp_derived
 
     print("\nCross-language serialization test passed!")
 

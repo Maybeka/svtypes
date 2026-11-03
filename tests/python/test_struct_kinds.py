@@ -31,6 +31,55 @@ class Payload(SvStruct):
     data = Queue[Bit[8]]()
 
 
+def test_struct_copy_allows_member_named_value_including_nested_struct():
+    class NamedValue(SvStruct):
+        value = Bit[8]()
+
+    class Nested(SvStruct):
+        item = NamedValue()
+
+    source = NamedValue()
+    source.value.value = 7
+    cloned = copy.copy(source)
+    cloned.value.value = 9
+    assert source.value.value == 7
+    assert cloned.value.value == 9
+    nested = Nested()
+    nested.item.value.value = 11
+    nested_copy = copy.copy(nested)
+    nested_copy.item.value.value = 12
+    assert nested.item.value.value == 11
+    assert nested_copy.item.value.value == 12
+    deep_copy = copy.deepcopy(nested)
+    deep_copy.item.value.value = 13
+    assert nested.item.value.value == 11
+    assert deep_copy.item.value.value == 13
+
+
+def test_struct_member_named_value_survives_all_container_value_copies():
+    class NamedValue(SvStruct):
+        value = Bit[8]()
+
+    source = NamedValue()
+    source.value.value = 7
+    for container, values, key in (
+        (Array[NamedValue, 1](), [source], 0),
+        (DynArray[NamedValue](), [source], 0),
+        (Queue[NamedValue](), [source], 0),
+        (AssocArray[Int, NamedValue](), {1: source}, 1),
+    ):
+        container.value = values
+        assert isinstance(container.value[key], NamedValue)
+        container[key].value.value = 9
+        assert source.value.value == 7
+        assert container.value[key].value.value == 9
+    queue = Queue[NamedValue]()
+    queue.push_back(source)
+    popped = queue.pop_front()
+    assert isinstance(popped, NamedValue)
+    assert popped.value.value == 7
+
+
 _struct_registry = ObjectRegistry()
 
 
@@ -133,8 +182,22 @@ def test_unpacked_pack_bytes_policy_is_shared_by_all_renderers():
     assert count == 1 and decoded.encoded.value == 42 and decoded.transient_value.value == 7
     sv = PartialPayload.to_sv_obj().split("class PartialPayload_packer;", 1)[1]
     cpp = PartialPayload.to_cpp_obj().split("inline void pack", 1)[1]
-    assert "value.transient_value" not in sv
+    assert '::apply(value.transient_value, "transient_value", 1\'b0, 1\'b0,' in sv
     assert "pack(value.transient_value" not in cpp
+
+
+def test_packed_uniform_zero_default_does_not_name_members():
+    class UniformZero(SvPackedStruct):
+        first = Bit[8]()
+        second = Int()
+
+    class ExplicitNonzero(SvPackedStruct):
+        first = Bit[8](3)
+        second = Int()
+
+    assert UniformZero().sv_initializer() == "'{default: '0}"
+    assert ExplicitNonzero().sv_initializer() == "ExplicitNonzero_packer::svtypes_default()"
+    assert "if (action == 5) member = 8'h3;" in ExplicitNonzero.to_sv_obj()
 
 
 def test_generated_cpp_unpacked_nested_dynamic_and_partial_codecs(tmp_path):
@@ -740,11 +803,16 @@ class EnumPackedHost(SvObject):
         self.header == 1
 
 
-def test_packed_enum_member_uses_integral_domain_without_relaxing_standalone_enum():
+def test_packed_enum_randomization_uses_named_values_but_codec_preserves_integral_domain():
     from svtypes import DecodeError
 
     obj = EnumPackedHost()
-    assert obj.randomize()
+    assert not obj.randomize()
+    obj.choose.constraint_mode(0)
+    for _ in range(64):
+        assert obj.randomize()
+        assert obj.header.flag.value in (0, 3)
+    obj.header.flag.value = 1
     assert obj.header.flag.value == 1 and obj.header.flag.name() == ""
     assert obj.header.to_bytes() == b"\x01"
     restored, used = EnumPacked().unpack(b"\x01")
@@ -871,4 +939,4 @@ def test_struct_request_response_codecs_preserve_value_fields_and_opaque_referen
     assert restored.current.payload.data.value == [3]
     assert restored.result.owner.value.object_number == 42
     assert [item.object_number for item in restored.result.references.value] == [42, 0, 42]
-    assert "Data_packer::pack(this.value, bytes)" in request.to_sv_obj()
+    assert 'struct_field_operations#(type(this.value), Data_packer)::apply(this.value, "value",' in request.to_sv_obj()

@@ -9,12 +9,12 @@
     {
       "english": "svtypes_binary_format.md",
       "chinese": "svtypes_binary_format_ZH.md",
-      "source_sha256": "96dfbc605a7e39a53ff1a2e506b7971c6b83c626b0827a6683c198ab70edca4f"
+      "source_sha256": "77c97c43348802b531bef37cd716c2a0d9466b413f593404af8410ea1cb6f66c"
     },
     {
       "english": "reference.md",
       "chinese": "reference_ZH.md",
-      "source_sha256": "2fddc31d14f78bc21aebbbcdc38b05f8c61a4ee1dcc59abb1802e9c9840b35f2"
+      "source_sha256": "7e52cab941870fe0d2a4f8cf1c249d2b551d87ea891453c2f78df0fcbef88884"
     }
   ]
 }

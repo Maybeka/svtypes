@@ -1411,8 +1411,6 @@ def _leaf_var_decl(path: str, desc: Any, declared_rand: bool) -> VarDecl:
     if isinstance(desc, Logic):
         return VarDecl(path, declared_rand, desc.width, bool(desc.signed), "logic", None, desc)
     if isinstance(desc, Enum):
-        if getattr(desc, "_svtypes_packed_member", False):
-            return VarDecl(path, declared_rand, desc.width, bool(desc.signed), None, None, desc)
         ty = enum_ty(desc.__class__)
         return VarDecl(path, declared_rand, ty.width, ty.signed, None, unified_type_name(desc.__class__), desc)
     width = int(getattr(desc, "width", 1))

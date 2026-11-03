@@ -346,3 +346,33 @@ SV 使用相同的遍历与叶值 bin；宽整数 bin 边界在生成 SV 中保�
 
 仅能使用显式 frozen declaration binding 调用 `CoverageDatabase.import_ucis()`。UCIS 是具有 documented loss report 的 interchange
 projection，不是 SvTypes coverage database 的替代。
+
+## 可选解码诊断与手改生成代码
+
+普通对象解码默认使用 `UnpackContext(diagnostics="off")`，不比较预期字段数或 encoding fingerprint，
+也不构造预期摘要；格式版本、输入边界、类型身份与引用解析仍检查。显式严格解码可使用
+`codec.unpack(data, UnpackContext(diagnostics="strict"))`，或
+`target.from_bytes(data, context=UnpackContext(diagnostics="strict"))`。
+`checked_unpack()` 始终是严格入口，并向嵌套对象传播严格策略，完成或异常后恢复传入上下文。
+独立上下文可以并发使用不同策略，不支持并发复用同一个可变上下文。
+
+C++ 使用 `DecodeContext` 的 `DiagnosticPolicy::off/strict` 和 `DecodeContextGuard`，
+在 RAII 作用域内向嵌套 unpack 传播，线程间隔离。SV 使用 `decode_context` 的
+`DIAGNOSTICS_OFF/DIAGNOSTICS_STRICT`，通过 `begin_decode_context(context)` 保存前一上下文，
+再以 `end_decode_context(previous)` 恢复；策略按仿真进程隔离，显式作用域需成对恢复。
+
+默认不要求生成文件摘要与源码一致才能运行。生成时 `generate()` 会保护被手改的受管文件和
+同名非受管文件：冲突路径返回在 `failed` 中，不发布任何新文件。
+`overwrite_modified=True` 显式允许覆盖；`mode="check"` 始终只读报告差异。
+完整实现状态与尚未完成的产物分层及性能验收见
+[实施记录](SVTYPES_GENERATED_CODE_EDITABILITY_IMPLEMENTATION.md)。
+
+`generate()` 可将未绑定参数的类输出为目标语言模板。此时尚无具体的源 schema，其名称记录在
+schema 文档和生成清单的 `unbound_templates` 中，不加入 `types` 或具体指纹列表。需要具体
+`schema_descriptor()` 时应先绑定参数。
+
+单文本 `to_sv_obj()` 和 `to_cpp_obj()` 不生成 manifest。需要显式检查其运行时兼容性的
+集成方可要求 `svtypes.generated-field-visitors.v1`、`svtypes.optional-codec-diagnostics.v1`
+和 `svtypes.generated-wire-helpers.v1`；SV 输出还要求
+`svtypes.generated-field-operations.v1`。将这些名称传给相应运行时的
+`require_runtime_compatible` 接口即可。普通编译和执行不会自动进行这项检查。

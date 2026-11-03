@@ -1,5 +1,8 @@
 # SvTypes Documentation
 
+- [SVTYPES_GENERATED_CODE_EDITABILITY.md](SVTYPES_GENERATED_CODE_EDITABILITY.md):
+  生成代码便于紧急手工修改的架构方案：主体/辅助代码分离、声明派生编解码、默认关闭附加诊断及分阶段验收（尚未实施）。
+
 - [SVTYPES_STRUCT_CONTRACT.md](SVTYPES_STRUCT_CONTRACT.md):
   默认 unpacked `SvStruct` 与显式 `SvPackedStruct` 的导出/运行数据契约、capability 与迁移规则；随机目标能力门单独记录。
 

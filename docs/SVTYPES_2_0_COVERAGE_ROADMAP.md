@@ -7,10 +7,8 @@
 `SVTYPES_1_8_COVERAGE_IMPLEMENTATION_REVIEW.md` §18；性能及当前版本回归见
 `SVTYPES_RANDOMIZATION_BENCHMARKS.md`。
 
-结构体扩展另受[结构体契约](SVTYPES_STRUCT_CONTRACT.md)中的
-`packed_enum_integral_random_domain` 目标能力门约束：LRM 允许随机 packed struct 的
-enum 成员取完整 integral 域，但配置目标尚未通过这一场景。Python 不缩减合法值域，
-该场景不得宣称随机化 target parity 已完成；由明确采样值验证的 coverage 能力与此门分开验收。
+结构体扩展的 packed enum 随机化按[结构体契约](SVTYPES_STRUCT_CONTRACT.md)采用有意兼容策略：
+仅产生枚举项，与配置目标一致。这偏离 LRM 对 packed enum 完整位域的要求，不改变显式采样的覆盖率语义。
 
 **路线图的解读优先级：**本文首先规定方向性原则、公开可观测语义、身份/merge 边界和里程碑
 门槛；§5 中的声明片段说明这些契约应如何落到 DSL，但不是私有 parser、运行时对象布局或

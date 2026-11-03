@@ -53,9 +53,9 @@ def test_rand_generation_and_supported_default_matrix():
     assert "rand int fixed [2] = '{default: 32'd0};" in code
     assert "\n  string text;" in code
     assert 'virtual function void apply_plusargs(string prefix = "");' in code
-    assert '"scalar=%d"' in code
-    assert '"packed=%h"' in code
-    assert '"text=%s"' in code
+    assert '::apply(this.scalar, "scalar", 1\'b1, 1\'b1, 1\'b1, 1\'b1,' in code
+    assert '::apply(this.packed, "packed", 1\'b0, 1\'b1, 1\'b1, 1\'b1,' in code
+    assert '::apply(this.text, "text", 1\'b0, 1\'b1, 1\'b1, 1\'b1,' in code
 
 
 def test_explicit_unsupported_rand_is_rejected():
@@ -82,8 +82,8 @@ def test_pack_bytes_controls_encoding_fields_and_generated_pack_body():
     assert len(descriptor.encoding_schema["fields"]) == 1
     assert "name" not in descriptor.encoding_schema["fields"][0]
     code = Payload.to_sv_obj()
-    assert "int_packer::pack(sent, bytes);" in code
-    assert "int_packer::pack(local, bytes);" not in code
+    assert 'bit_field_operations#(type(this.sent), svtypes_pkg::int_packer)::apply(this.sent, "sent", 1\'b1, 1\'b1,' in code
+    assert 'bit_field_operations#(type(this.local), svtypes_pkg::int_packer)::apply(this.local, "local", 1\'b1, 1\'b0,' in code
 
 
 def test_deferred_intelli_is_retained_without_affecting_generation_or_descriptors():
@@ -222,7 +222,8 @@ def test_struct_field_owns_plusarg_policy_and_nested_objects_are_cycle_guarded()
         header = Header(plusarg=True)
 
     generated = Payload.to_sv_obj()
-    assert '"header.code=%d"' in generated
+    assert 'struct_field_operations#(type(this.header), Header_packer)::apply(this.header, "header",' in generated
+    assert '::apply(value.code, "code", 1\'b1, 1\'b1, 1\'b1, 1\'b1,' in Header.to_sv_obj()
     assert "begin_plusarg_object(__svtypes_object_number)" in generated
     assert "end_plusarg_object()" in generated
 
@@ -263,5 +264,5 @@ def test_python_dump_is_ordered_selective_and_cycle_safe():
 
     cpp = Node.to_cpp_obj()
     assert "std::string svtypes_sprint() const override" in cpp
-    assert "visible=" in cpp
-    assert "hidden=" not in cpp
+    assert 'operation("visible", self.visible, std::bool_constant<true>{}, std::bool_constant<true>{}' in cpp
+    assert 'operation("hidden", self.hidden, std::bool_constant<true>{}, std::bool_constant<false>{}' in cpp

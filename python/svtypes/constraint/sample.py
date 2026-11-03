@@ -75,7 +75,7 @@ class BitStream:
 def sample_unconstrained(desc: Any, stream: BitStream) -> Any:
     from ..bit import Bit
 
-    if isinstance(desc, Enum) and not getattr(desc, "_svtypes_packed_member", False):
+    if isinstance(desc, Enum):
         members = [int(item) for item in desc.__class__._enum_items]
         return desc._normalize(stream.draw_enum(members))
     bits = stream.draw_bits(desc.width)

@@ -160,3 +160,13 @@ Each non-null object envelope carries a reserved `__svtypes_object_number`.
 - Weak-reference registries are optional backend capabilities. The configured target
   testing showed no usable `weak_reference` support, so weak references cannot
   be required for legacy SV flows.
+
+## Optional object-header consistency diagnostics
+
+Envelope version 2 retains all fields, ordering, and the 32-byte fingerprint position. Ordinary decoding
+defaults to off: expected field-count and fingerprint comparisons are skipped, while the complete header
+is consumed and required format, type, reference identity, and bounds checks remain. Strict contexts and
+explicit checked entry points retain additional comparisons. Older receivers may still enforce them;
+a new sender cannot change an older receiver's policy. A static fingerprint describes the prepared/generated
+layout snapshot; matching old fingerprints do not prove that manually edited layouts match.
+Bare structs gain no object envelope. Coverage database definition identities and merge checks are unaffected.

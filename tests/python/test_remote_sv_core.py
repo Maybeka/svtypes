@@ -649,16 +649,8 @@ endmodule
 """
 
 
-def _host_or_skip() -> str:
-    host = os.environ["SVTYPES_REMOTE_SV_HOST"]
-    reachable = subprocess.run(
-        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host, "true"],
-        capture_output=True,
-        text=True,
-    )
-    if reachable.returncode != 0:
-        pytest.skip(f"remote target host {host} is not reachable")
-    return host
+def _configured_host() -> str:
+    return os.environ["SVTYPES_REMOTE_SV_HOST"]
 
 
 def _ssh(host: str, command: str) -> subprocess.CompletedProcess[str]:
@@ -680,7 +672,7 @@ def test_remote_nested_struct_declared_defaults():
         header = DefaultHeader()
         count = Bit[8](9)
 
-    host = _host_or_skip()
+    host = _configured_host()
     out = REPO_ROOT / ".tmp" / "target_struct_defaults"
     out.mkdir(parents=True, exist_ok=True)
     codec = DefaultPacket()
@@ -807,7 +799,7 @@ def test_target_core_generated_sv_contains_feature_markers():
 
 @pytest.fixture(scope="module")
 def target_core_sim():
-    host = _host_or_skip()
+    host = _configured_host()
     out = REPO_ROOT / ".tmp" / WORKDIR_NAME
     if out.exists():
         shutil.rmtree(out)

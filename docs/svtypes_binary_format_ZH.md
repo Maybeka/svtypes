@@ -138,3 +138,11 @@ reference record 后没有 field byte。prototype version-1 object stream 不能
 - prototype 缺省 origin id：Python `0x0001`、SystemVerilog `0x0002`、C++ `0x0003`。
 - 缺省 lifecycle model 是显式 session/shadow ownership；registry 必须提供 cleanup/reset operation。
 - weak-reference registry 是可选 backend capability；当前 target 无可用 `weak_reference` 支持，故 legacy SV flow 不能要求它。
+
+## 可选对象头一致性诊断
+
+对象 envelope version 2 的字段、顺序和 32-byte 指纹位置保持不变。普通解码默认 off，
+跳过预期字段数及指纹比较，但仍读取完整头部并验证必要格式、类型、引用身份和输入边界。
+strict 上下文与显式 checked 入口保留附加比较。旧接收端可能仍强制比较，新发送端不能单方面
+改变旧接收端策略。静态指纹表示准备/生成时的布局快照，相同旧指纹不能证明手改后的布局一致。
+裸 struct 不增加对象头；coverage 数据库的定义身份和合并检查不受此策略控制。

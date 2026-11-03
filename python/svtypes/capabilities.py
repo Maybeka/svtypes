@@ -23,6 +23,10 @@ STABLE_CAPABILITIES = (
     "svtypes.record-schema.v1",
     "svtypes.remote-reference.v1",
     "svtypes.struct-kinds.v1",
+    "svtypes.optional-codec-diagnostics.v1",
+    "svtypes.generated-field-visitors.v1",
+    "svtypes.generated-field-operations.v1",
+    "svtypes.generated-wire-helpers.v1",
 )
 
 

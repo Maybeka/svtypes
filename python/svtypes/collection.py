@@ -25,6 +25,21 @@ K = TypeVar("K", bound=TypeBase)
 V = TypeVar("V", bound=TypeBase)
 
 
+def _element_value(element: Any) -> Any:
+    from .object import SvStruct
+
+    return element if isinstance(element, SvStruct) else element.value
+
+
+def _assign_element_value(element: Any, value: Any) -> None:
+    from .object import SvStruct
+
+    if isinstance(element, SvStruct):
+        SvStruct.value.fset(element, value)
+    else:
+        element.value = value
+
+
 def _validate_element_template(codec: TypeBase, location: str) -> None:
     if not isinstance(codec, TypeBase):
         return
@@ -147,7 +162,7 @@ class Array(CollectionBase, Generic[T], metaclass=_ArrayMeta):
         from .object import ObjectDescriptor
         if _container_elem_is_object_handle(self._elem_template):
             return list(self._elements)
-        return [e.value for e in self._elements]
+        return [_element_value(e) for e in self._elements]
 
     @value.setter
     def value(self, vals: list[Any]):
@@ -164,7 +179,7 @@ class Array(CollectionBase, Generic[T], metaclass=_ArrayMeta):
             if _container_elem_is_object_handle(self._elem_template):
                 self._elements[i] = v
             else:
-                self._elements[i].value = v
+                _assign_element_value(self._elements[i], v)
 
     def __getitem__(self, i: int) -> T:
         from .external_storage import _set_external_binding, external_binding
@@ -298,7 +313,7 @@ class DynArray(CollectionBase, Generic[T]):
         from .object import ObjectDescriptor
         if _container_elem_is_object_handle(self._elem_template):
             return list(self._elements)
-        return [e.value for e in self._elements]
+        return [_element_value(e) for e in self._elements]
 
     @value.setter
     def value(self, vals: list[Any]):
@@ -321,7 +336,7 @@ class DynArray(CollectionBase, Generic[T]):
                 self._elements.append(v)
             else:
                 new_elem = copy.deepcopy(self._elem_template)
-                new_elem.value = v
+                _assign_element_value(new_elem, v)
                 self._elements.append(new_elem)
         self._bind_mode_elements()
 
@@ -463,7 +478,7 @@ class Queue(DynArray):
             self._elements.append(val)
         else:
             new_elem = copy.deepcopy(self._elem_template)
-            new_elem.value = val
+            _assign_element_value(new_elem, val)
             self._elements.append(new_elem)
         self._bind_mode_elements()
 
@@ -488,7 +503,7 @@ class Queue(DynArray):
         from .object import ObjectDescriptor
         if _container_elem_is_object_handle(self._elem_template):
             return elem
-        return elem.value
+        return _element_value(elem)
 
     def sv_pack_loop(self, name: str, level: int, indent: str) -> list[str]:
         from .object import SvObject
@@ -567,7 +582,7 @@ class AssocArray(CollectionBase, Generic[K, V]):
         from .object import ObjectDescriptor
         if _container_elem_is_object_handle(self._val_template):
             return dict(self._elements)
-        return {k: e.value for k, e in self._elements.items()}
+        return {k: _element_value(e) for k, e in self._elements.items()}
 
     @value.setter
     def value(self, vals: dict[Any, Any]):
@@ -591,7 +606,7 @@ class AssocArray(CollectionBase, Generic[K, V]):
                 self._elements[k] = v
             else:
                 new_val_elem = copy.deepcopy(self._val_template)
-                new_val_elem.value = v
+                _assign_element_value(new_val_elem, v)
                 self._elements[k] = new_val_elem
 
     def __getitem__(self, key: Any) -> V:

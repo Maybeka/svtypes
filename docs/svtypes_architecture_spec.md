@@ -43,6 +43,13 @@ And gets, for free:
 
 ### 1.3 Design Principles
 
+The planned generated-code editability work is specified in
+[Generated Code Editability](SVTYPES_GENERATED_CODE_EDITABILITY.md).
+It separates readable design code, shared codec adaptation, and opt-in diagnostics,
+and reduces duplicated layout facts so emergency edits do not require manual
+fingerprint maintenance. This is a design target, not a claim that the current
+runtime has disabled its compatibility checks.
+
 | Principle | Meaning |
 |---|---|
 | **Define Once, Generate Many** | One Python definition → SV, C++, and one binary protocol |

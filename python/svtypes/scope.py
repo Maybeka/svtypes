@@ -111,6 +111,12 @@ class Scope(ObjectRegistry):
 
         registered = set(self._types.values())
 
+        def registered_definition(cls):
+            # Python specializations are not emitted as independent target
+            # definitions: generated references require the template itself.
+            template = getattr(cls, "_SvObject__svtypes_specialized_from", None)
+            return template if template in registered else cls
+
         def member_dependencies(desc):
             if isinstance(desc, CollectionBase):
                 dependencies = []
@@ -132,10 +138,14 @@ class Scope(ObjectRegistry):
             required = set()
             if issubclass(cls, SvObject):
                 base = cls.__bases__[0] if cls.__bases__ else None
+                base = registered_definition(base) if base is not None else None
                 if base in registered and base not in (SvObject, SvStruct):
-                    required.add(base)
+                    if base is not cls:
+                        required.add(base)
                 for _, member in cls._SvObject__svtypes_members:
-                    required.update(dep for dep in member_dependencies(member) if dep in registered and dep is not cls)
+                    required.update(definition for dep in member_dependencies(member)
+                                    if (definition := registered_definition(dep)) in registered
+                                    and definition is not cls)
             dependencies[cls] = required
 
         ordered = []

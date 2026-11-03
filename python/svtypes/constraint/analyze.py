@@ -672,8 +672,6 @@ class _Analyzer:
         if isinstance(desc, Bit):
             return bv(desc.width, desc.signed), None, None
         if isinstance(desc, Enum):
-            if getattr(desc, "_svtypes_packed_member", False):
-                return bv(desc.width, desc.signed), None, None
             return enum_ty(desc.__class__), None, unified_type_name(desc.__class__)
         raise ConstraintTypeError(
             f"{loc.format()}: type {type(desc).__name__} is not allowed in the solver domain"

@@ -195,6 +195,8 @@ module tb;
       $fatal(1, "struct shared/cyclic/null graph did not roundtrip");
     enum_host = new();
     enum_domain_supported = enum_host.randomize() && enum_host.header == 1;
+    if (enum_domain_supported)
+      $fatal(1, "target enum randomization differs from the selected compatibility policy");
     $display("SVTYPES_TARGET_PACKED_ENUM_INTEGRAL_DOMAIN=%0d", enum_domain_supported);
     expr_host = new();
     expr_cov = new();
