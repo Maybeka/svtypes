@@ -55,12 +55,23 @@ _sv_render_aliases: ContextVar[dict[str, str] | None] = ContextVar(
 _sv_explicit_types: ContextVar[dict[str, str] | None] = ContextVar(
     'svtypes_sv_explicit_types', default=None
 )
+_sv_derive_shapes: ContextVar[bool] = ContextVar('svtypes_sv_derive_shapes', default=True)
 
 
 def _sv_reference_type(desc, expression):
     aliases = _sv_explicit_types.get()
     if aliases is None:
         return f"type({expression})"
+    from .bit import Bit
+    from .logic import Logic
+    from .symbolic import SymbolicPackedField
+
+    if _sv_derive_shapes.get() and (type(desc) in (Bit, Logic) or isinstance(desc, SymbolicPackedField)):
+        kind = ('bit' if (isinstance(desc, Bit) or
+                          isinstance(desc, SymbolicPackedField) and desc.factory.__name__ == 'Bit')
+                else 'logic')
+        signed = ' signed' if desc.signed else ''
+        return f'{kind}{signed} [$bits({expression})-1:0]'
     return aliases[expression]
 
 
@@ -74,6 +85,33 @@ def _sv_explicit_type_declarations(members, prefix, indent, reserved=(), owner='
     declarations = []
     counter = 0
     names = set(reserved)
+
+    def derived_declaration(desc, expression, name):
+        from .bit import Bit
+        from .logic import Logic
+        from .symbolic import SymbolicPackedField
+
+        if not _sv_derive_shapes.get():
+            return desc.sv_decl(name).removeprefix('randc ').removeprefix('rand ')
+        if isinstance(desc, SymbolicCollectionField):
+            return derived_declaration(desc._template(), expression, name)
+        if isinstance(desc, SymbolicArrayField):
+            dimensions = desc._render_dimensions()
+            suffix = ''.join(f' [$size({expression}{"[0]" * index})]' for index in range(len(dimensions)))
+            return derived_declaration(desc._element(), expression + '[0]' * len(dimensions), name + suffix)
+        if isinstance(desc, AssocArray):
+            key = SvObject._sv_type_expr(desc._key_template)
+            index = '""' if isinstance(desc._key_template, String) else '0'
+            return derived_declaration(desc._val_template, f'{expression}[{index}]', f'{name} [{key}]')
+        if isinstance(desc, (Array, DynArray, Queue)):
+            dim = f'$size({expression})' if isinstance(desc, Array) else ('$' if isinstance(desc, Queue) else '')
+            return derived_declaration(desc._elem_template, expression + '[0]', f'{name} [{dim}]')
+        if type(desc) in (Bit, Logic) or isinstance(desc, SymbolicPackedField):
+            kind = ('bit' if isinstance(desc, Bit) or
+                    isinstance(desc, SymbolicPackedField) and desc.factory.__name__ == 'Bit' else 'logic')
+            signed = ' signed' if desc.signed else ''
+            return f'{kind}{signed} [$bits({expression})-1:0] {name}'
+        return desc.sv_decl(name).removeprefix('randc ').removeprefix('rand ')
 
     def add(expression, declaration):
         nonlocal counter
@@ -93,13 +131,14 @@ def _sv_explicit_type_declarations(members, prefix, indent, reserved=(), owner='
             dimensions = desc._render_dimensions()
             element = desc._element()
             for depth in range(len(dimensions)):
-                suffix = ''.join(f' [({dim})]' for dim in dimensions[depth:])
+                suffix = (''.join(f' [$size({expression}{"[0]" * index})]' for index in range(depth, len(dimensions)))
+                          if _sv_derive_shapes.get() else ''.join(f' [({dim})]' for dim in dimensions[depth:]))
                 add(expression + '[0]' * depth,
-                    lambda name, suffix=suffix: element.sv_decl(name + suffix))
+                    lambda name, suffix=suffix: derived_declaration(element, expression + '[0]' * len(dimensions), name + suffix))
             visit(element, expression + '[0]' * len(dimensions))
             return
         if isinstance(desc, (Array, AssocArray, DynArray, Queue)):
-            add(expression, lambda name: desc.sv_decl(name).removeprefix('randc ').removeprefix('rand '))
+            add(expression, lambda name: derived_declaration(desc, expression, name))
         else:
             aliases[expression] = SvObject._sv_type_expr(desc)
         if isinstance(desc, AssocArray):
@@ -108,9 +147,42 @@ def _sv_explicit_type_declarations(members, prefix, indent, reserved=(), owner='
         elif isinstance(desc, (Array, DynArray, Queue)):
             visit(desc._elem_template, f'{expression}[0]')
 
+    groups = {}
     for name, desc in members:
+        start = len(declarations)
         visit(desc, f'{prefix}.{name}')
-    return aliases, declarations
+        groups[name] = declarations[start:]
+    return aliases, groups
+
+
+def _sv_static_shape_guards(desc, expression):
+    """Reject edited shapes when the target cannot derive parameterized types."""
+    from .bit import Bit
+    from .logic import Logic
+    from .enum import Enum
+    from .collection import Array, AssocArray, DynArray, Queue
+    from .string import String
+    from .parameter import TypeParameterField
+    from .symbolic import SymbolicArrayField, SymbolicCollectionField, SymbolicPackedField
+
+    if isinstance(desc, SymbolicCollectionField):
+        return _sv_static_shape_guards(desc._template(), expression)
+    if isinstance(desc, SymbolicArrayField):
+        dimensions = desc._render_dimensions()
+        checks = [f'$size({expression}, {index + 1}) != ({dimension})'
+                  for index, dimension in enumerate(dimensions)]
+        return checks + _sv_static_shape_guards(desc._element(), expression + '[0]' * len(dimensions))
+    if isinstance(desc, Array):
+        return ([f'$size({expression}) != ({desc._size})'] +
+                _sv_static_shape_guards(desc._elem_template, expression + '[0]'))
+    if isinstance(desc, (DynArray, Queue)):
+        return _sv_static_shape_guards(desc._elem_template, expression + '[0]')
+    if isinstance(desc, AssocArray):
+        index = '""' if isinstance(desc._key_template, String) else '0'
+        return _sv_static_shape_guards(desc._val_template, f'{expression}[{index}]')
+    if isinstance(desc, (Bit, Logic, Enum, TypeParameterField, SymbolicPackedField)):
+        return [f'$bits({expression}) != $bits({SvObject._sv_type_expr(desc)})']
+    return []
 
 
 class ObjectRegistry:
@@ -1987,19 +2059,23 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
         for name, descriptor in cls.__svtypes_members:
             visit(descriptor, name)
-        explicit, explicit_declarations = _sv_explicit_type_declarations(
-            cls.__svtypes_members, 'this', cls.IND * (level + 1), names, cls.__name__
-        ) if not use_type_reference else (None, [])
-        token = _sv_collection_aliases.set(aliases)
-        type_token = _sv_explicit_types.set(explicit)
+        shape_token = _sv_derive_shapes.set(not bool(cls.__svtypes_params))
         try:
-            return cls._to_sv_obj_with_aliases(level, declarations + explicit_declarations)
+            explicit, explicit_declarations = _sv_explicit_type_declarations(
+                cls.__svtypes_members, 'this', cls.IND * (level + 2), names, cls.__name__
+            ) if not use_type_reference else (None, {})
+            token = _sv_collection_aliases.set(aliases)
+            type_token = _sv_explicit_types.set(explicit)
+            try:
+                return cls._to_sv_obj_with_aliases(level, declarations, explicit_declarations)
+            finally:
+                _sv_explicit_types.reset(type_token)
+                _sv_collection_aliases.reset(token)
         finally:
-            _sv_explicit_types.reset(type_token)
-            _sv_collection_aliases.reset(token)
+            _sv_derive_shapes.reset(shape_token)
 
     @classmethod
-    def _to_sv_obj_with_aliases(cls, level, collection_declarations):
+    def _to_sv_obj_with_aliases(cls, level, collection_declarations, explicit_declarations):
         if "_SvObject__svtypes_emit_specialization_class" in cls.__dict__:
             raise DeclarationError(
                 f"{cls.__name__} is a Python-side binding of "
@@ -2122,6 +2198,14 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             lines.append(f"{ind_str}{cls.IND * 2}int count = 0;")
             for field_name, desc in cls.__svtypes_members:
                 expression = f"this.{field_name}"
+                field_declarations = explicit_declarations.get(field_name, [])
+                if field_declarations:
+                    lines.append(f"{ind_str}{cls.IND * 2}begin")
+                    lines.extend(cls.IND + declaration for declaration in field_declarations)
+                field_indent = cls.IND * (3 if field_declarations else 2)
+                if _sv_explicit_types.get() is not None and not _sv_derive_shapes.get():
+                    for condition in _sv_static_shape_guards(desc, expression):
+                        lines.append(f'{ind_str}{field_indent}if ({condition}) $fatal(2, "SvTypes field shape changed: {field_name}");')
                 codec = cls._sv_field_packer_expr(desc, expression)
                 is_collection = type(desc) in collection_types
                 is_handle = is_object_handle(desc)
@@ -2178,7 +2262,9 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                     parameters += ", " + cls._sv_value_formatter(desc, expression)
                 if is_assoc:
                     parameters += ", " + cls._sv_assoc_formatter_parameters(desc, expression)
-                lines.append(f'{ind_str}{cls.IND * 2}{helper_name}#({parameters})::apply({expression}, "{field_name}", {flags}, action, bytes, offset, count, result, prefix);')
+                lines.append(f'{ind_str}{field_indent}{helper_name}#({parameters})::apply({expression}, "{field_name}", {flags}, action, bytes, offset, count, result, prefix);')
+                if field_declarations:
+                    lines.append(f"{ind_str}{cls.IND * 2}end")
             lines.append(f"{ind_str}{cls.IND * 2}return count;")
             lines.append(f"{ind_str}{cls.IND}endfunction")
 
@@ -2439,11 +2525,21 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         for name, desc in ([] if shared_field_operations else cls.__svtypes_fields):
             if desc.pack_bytes:
                 expression = f"this.{name}"
+                field_declarations = explicit_declarations.get(name, [])
+                if field_declarations:
+                    lines.append(f"{ind_str}{cls.IND * 2}begin")
+                    lines.extend(cls.IND + declaration for declaration in field_declarations)
+                field_indent = cls.IND * (3 if field_declarations else 2)
+                if _sv_explicit_types.get() is not None and not _sv_derive_shapes.get():
+                    for condition in _sv_static_shape_guards(desc, expression):
+                        lines.append(f'{ind_str}{field_indent}if ({condition}) $fatal(2, "SvTypes field shape changed: {name}");')
                 codec = cls._sv_field_packer_expr(desc, expression)
                 field_type = (cls._sv_type_expr(desc)
                               if isinstance(desc, ObjectDescriptor) or (isinstance(desc, SvObject) and not isinstance(desc, SvStruct))
                               else _sv_reference_type(desc, expression))
-                lines.append(f"{ind_str}{cls.IND * 2}count++; if (!count_only) svtypes_pkg::field_codec#({field_type}, {codec})::apply({expression}, bytes, offset, decode);")
+                lines.append(f"{ind_str}{field_indent}count++; if (!count_only) svtypes_pkg::field_codec#({field_type}, {codec})::apply({expression}, bytes, offset, decode);")
+                if field_declarations:
+                    lines.append(f"{ind_str}{cls.IND * 2}end")
         lines.append(f"{ind_str}{cls.IND * 2}return count;")
         lines.append(f"{ind_str}{cls.IND}endfunction")
         lines.append("")
@@ -3197,8 +3293,8 @@ class SvStruct(SvObject):
     @classmethod
     def to_sv_obj(cls, level=0, *, use_type_reference=False):
         explicit, declarations = _sv_explicit_type_declarations(
-            cls._SvObject__svtypes_members, 'value', cls.IND * (level + 1), cls.__dict__, cls.__name__
-        ) if not use_type_reference else (None, [])
+            cls._SvObject__svtypes_members, 'value', cls.IND * (level + 2), cls.__dict__, cls.__name__
+        ) if not use_type_reference else (None, {})
         token = _sv_explicit_types.set(explicit)
         try:
             return cls._to_sv_struct_with_types(level, declarations)
@@ -3223,7 +3319,6 @@ class SvStruct(SvObject):
         declaration_lines = lines
         lines = []
         lines.append(f"{ind_str}class {cls.__name__}_packer;")
-        lines.extend(type_declarations)
         shared_fields = cls._supports_shared_field_operations()
         if shared_fields:
             from .bit import Bit
@@ -3239,6 +3334,7 @@ class SvStruct(SvObject):
             lines.append(f"{ind_str}{cls.IND * 2}int count = 0;")
             for name, desc in cls._SvObject__svtypes_members:
                 expression = f"value.{name}"
+                field_declarations = type_declarations.get(name, [])
                 codec = cls._sv_field_packer_expr(desc, expression)
                 is_collection = type(desc) in (Array, DynArray, Queue)
                 is_assoc = type(desc) is AssocArray
@@ -3293,11 +3389,13 @@ class SvStruct(SvObject):
                 if is_assoc:
                     parameters += ", " + cls._sv_assoc_formatter_parameters(desc, expression)
                 target = "member" if cls._svtypes_packed else expression
-                if cls._svtypes_packed:
+                if cls._svtypes_packed or field_declarations:
                     lines.append(f"{ind_str}{cls.IND * 2}begin")
+                    lines.extend(cls.IND + declaration for declaration in field_declarations)
+                if cls._svtypes_packed:
                     lines.append(f"{ind_str}{cls.IND * 3}{_sv_reference_type(desc, expression)} member;")
                     lines.append(f"{ind_str}{cls.IND * 3}member = {expression};")
-                inner = cls.IND * (3 if cls._svtypes_packed else 2)
+                inner = cls.IND * (3 if cls._svtypes_packed or field_declarations else 2)
                 lines.append(f'{ind_str}{inner}{helper}#({parameters})::apply({target}, "{name}", {flags}, action, bytes, offset, count, result, prefix);')
                 if cls._svtypes_packed:
                     if isinstance(desc, SvStruct):
@@ -3310,6 +3408,7 @@ class SvStruct(SvObject):
                                 default = f"{desc.__class__.__name__}'({default})"
                     lines.append(f"{ind_str}{cls.IND * 3}if (action == 5) member = {default};")
                     lines.append(f"{ind_str}{cls.IND * 3}if (action == 2 || action == 4 || action == 5) {expression} = member;")
+                if cls._svtypes_packed or field_declarations:
                     lines.append(f"{ind_str}{cls.IND * 2}end")
             lines.append(f"{ind_str}{cls.IND * 2}return count;")
             lines.append(f"{ind_str}{cls.IND}endfunction")
@@ -3348,10 +3447,18 @@ class SvStruct(SvObject):
         for name, desc in ([] if shared_fields else cls._SvObject__svtypes_fields):
             expression = f"value.{name}"
             codec = cls._sv_field_packer_expr(desc, expression)
+            field_declarations = type_declarations.get(name, [])
             if not cls._svtypes_packed:
-                lines.append(f"{ind_str}{cls.IND * 2}svtypes_pkg::field_codec#({_sv_reference_type(desc, expression)}, {codec})::apply({expression}, bytes, offset, decode);")
+                if field_declarations:
+                    lines.append(f"{ind_str}{cls.IND * 2}begin")
+                    lines.extend(cls.IND + declaration for declaration in field_declarations)
+                inner = cls.IND * (3 if field_declarations else 2)
+                lines.append(f"{ind_str}{inner}svtypes_pkg::field_codec#({_sv_reference_type(desc, expression)}, {codec})::apply({expression}, bytes, offset, decode);")
+                if field_declarations:
+                    lines.append(f"{ind_str}{cls.IND * 2}end")
                 continue
             lines.append(f"{ind_str}{cls.IND * 2}begin")
+            lines.extend(cls.IND + declaration for declaration in field_declarations)
             lines.append(f"{ind_str}{cls.IND * 3}{_sv_reference_type(desc, expression)} member;")
             lines.append(f"{ind_str}{cls.IND * 3}if (!decode) member = {expression};")
             lines.append(f"{ind_str}{cls.IND * 3}svtypes_pkg::field_codec#({_sv_reference_type(desc, expression)}, {codec})::apply(member, bytes, offset, decode);")

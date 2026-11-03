@@ -367,11 +367,12 @@ C++ 使用 `DecodeContext` 的 `DiagnosticPolicy::off/strict` 和 `DecodeContext
 实施与验证详情见
 [实施记录](SVTYPES_GENERATED_CODE_EDITABILITY_IMPLEMENTATION.md)。
 
-SV 生成默认使用显式声明类型；容器类型需要时会生成命名 `typedef`。通过
-`to_sv_obj(use_type_reference=True)`、`to_sv_pkg(use_type_reference=True)` 或
-`generate(..., use_type_reference=True)` 可让辅助代码使用 SystemVerilog `type(expression)`。
-后者可跟随手工字段类型修改；默认模式侧重工具兼容，手工修改字段类型时还需同步修改对应的
-辅助类型或 `typedef`。
+SV 生成默认使用显式辅助类型，并通过 `$bits` 和 `$size` 从实际字段声明派生支持的 bit/logic
+位宽和数组尺寸；手改这些字段的位宽或固定长度不需要 `type(expression)`。编码类别和有符号
+属性仍属于生成的字段契约，修改字段类别时需要同步调整相关设置。对于目标无法将成员形状作为
+类型常量的参数化类，保留显式类型，并在形状不匹配时拒绝操作，避免静默截断。
+通过 `to_sv_obj(use_type_reference=True)`、`to_sv_pkg(use_type_reference=True)` 或
+`generate(..., use_type_reference=True)` 可选择让辅助代码使用 SystemVerilog `type(expression)`。
 
 `generate()` 可将未绑定参数的类输出为目标语言模板。此时尚无具体的源 schema，其名称记录在
 schema 文档和生成清单的 `unbound_templates` 中，不加入 `types` 或具体指纹列表。需要具体

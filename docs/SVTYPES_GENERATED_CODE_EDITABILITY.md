@@ -2,8 +2,9 @@
 
 状态：架构方案。本文定义生成器与运行时的目标行为；实际实施和验收进度以[实施记录](SVTYPES_GENERATED_CODE_EDITABILITY_IMPLEMENTATION.md)为准。
 
-SV 生成默认使用显式类型，以扩大工具兼容性。本文关于辅助代码跟随手工类型修改的描述适用于
-`use_type_reference=True` 模式；默认模式下，字段类型变化时还需同步修改辅助类型或 `typedef`。
+SV 生成默认使用显式类型，并在支持的场景下通过 `$bits` 和 `$size` 从字段声明派生形状。
+参数化类可能因目标的常量表达式支持而使用显式形状及不匹配检查；需要 `type(expression)` 时
+可显式选择 `use_type_reference=True`。编码类别等不能仅从宽度派生，修改时须同步调整。
 
 ## 1. 目的与原则
 

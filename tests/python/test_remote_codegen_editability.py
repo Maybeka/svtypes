@@ -2214,16 +2214,17 @@ endmodule
 
 @pytest.mark.remote_sv
 @pytest.mark.parametrize("multifile", [False, True])
-def test_remote_generated_object_declaration_edits_follow_actual_types(multifile):
+@pytest.mark.parametrize("use_type_reference", [False, True])
+def test_remote_generated_object_declaration_edits_follow_actual_types(multifile, use_type_reference):
     class EditableOwner(SvObject):
         opcode = Bit[13](rand=False, cov=False)
         data = Array[Bit[16], 3](rand=False, cov=False)
 
-    generated = EditableOwner.to_sv_obj(use_type_reference=True)
-    target_name = "codegen-editability-edited-object" + ("-multifile" if multifile else "")
+    generated = EditableOwner.to_sv_obj(use_type_reference=use_type_reference)
+    target_name = "codegen-editability-edited-object" + ("-multifile" if multifile else "") + ("-type-ref" if use_type_reference else "-derived")
     if multifile:
         output = Path(__file__).resolve().parents[2] / ".tmp" / target_name
-        result = generate(EditableOwner, output, targets={"sv"}, use_type_reference=True)
+        result = generate(EditableOwner, output, targets={"sv"}, use_type_reference=use_type_reference)
         assert not result.failed
         generated = (output / "EditableOwner.sv").read_text()
     assert "bit [12:0] opcode;" in generated and "data [3];" in generated
@@ -2560,3 +2561,368 @@ endmodule
 '''
     _run_target('type-mode-' + ('inferred' if use_type_reference else 'explicit'),
                 source + bench, 'SVTYPES_TYPE_MODE_PASS')
+
+
+@pytest.mark.remote_sv
+def test_remote_explicit_types_follow_edited_scalar_and_fixed_array_declarations():
+    class DerivedValue(SvObject):
+        tag = Bit[8](rand=False, cov=False)
+        signed_value = BitSigned[8](rand=False, cov=False)
+        flags = Logic[4](rand=False, cov=False)
+        data = Array[Bit[8], 2](rand=False, cov=False)
+
+    source = DerivedValue.to_sv_obj()
+    assert 'type(this.' not in source
+    for before, after in (
+        ('bit [7:0] tag;', 'bit [15:0] tag;'),
+        ('bit signed [7:0] signed_value;', 'bit signed [13:0] signed_value;'),
+        ('logic [3:0] flags;', 'logic [7:0] flags;'),
+        ('bit [7:0] data [2];', 'bit [15:0] data [3];'),
+    ):
+        assert source.count(before) == 1
+        source = source.replace(before, after)
+    bench = r'''
+module tb;
+  initial begin
+    DerivedValue sent, received;
+    byte unsigned bytes[$], again[$];
+    int offset = 0;
+    sent = new(); received = new();
+    sent.tag = 16'hbeef; sent.signed_value = -14'sd321;
+    sent.flags = 8'b10xz01zx;
+    sent.data[0] = 16'h1234; sent.data[1] = 16'habcd; sent.data[2] = 16'hfedc;
+    sent.pack_body(bytes); received.unpack_body(bytes, offset); received.pack_body(again);
+    if (offset != bytes.size() || bytes != again || received.tag !== sent.tag ||
+        received.signed_value !== sent.signed_value || received.flags !== sent.flags ||
+        received.data !== sent.data) $fatal(1, "edited fields did not roundtrip");
+    $display("SVTYPES_EDITED_DERIVED_FIELDS_PASS");
+    $finish;
+  end
+endmodule
+'''
+    _run_target('codegen-explicit-derived-fields', source + bench, 'SVTYPES_EDITED_DERIVED_FIELDS_PASS')
+
+
+@pytest.mark.remote_sv
+def test_remote_explicit_types_follow_edited_packed_struct_members():
+    class DerivedPacked(SvPackedStruct):
+        tag = Bit[8]()
+        flags = Logic[4]()
+
+    source = DerivedPacked.to_sv_obj()
+    assert 'type(value.' not in source
+    for before, after in (('bit [7:0] tag;', 'bit [15:0] tag;'),
+                          ('logic [3:0] flags;', 'logic [7:0] flags;')):
+        assert source.count(before) == 1
+        source = source.replace(before, after)
+    class MatchingPacked(SvPackedStruct):
+        tag = Bit[16]()
+        flags = Logic[8]()
+
+    matching = MatchingPacked()
+    matching.tag.value = 0xbeef
+    matching.flags.value = '1xz010zx'
+    expected = matching.pack(matching)
+    expected_sv = ', '.join(f"8'h{byte:02x}" for byte in expected)
+    bench = r'''
+module tb;
+  initial begin
+    DerivedPacked_t sent, received;
+    byte unsigned bytes[$];
+    byte unsigned expected[$] = '{EXPECTED_BYTES};
+    int offset = 0;
+    sent.tag = 16'hbeef; sent.flags = 8'b1xz010zx;
+    DerivedPacked_packer::pack(sent, bytes);
+    DerivedPacked_packer::unpack(received, bytes, offset);
+    if (offset != bytes.size() || sent !== received || bytes != expected)
+      $fatal(1, "edited packed fields did not match Python");
+    $display("SVTYPES_EDITED_DERIVED_PACKED_PASS");
+    $finish;
+  end
+endmodule
+'''
+    _run_target('codegen-explicit-derived-packed', source + bench.replace('EXPECTED_BYTES', expected_sv),
+                'SVTYPES_EDITED_DERIVED_PACKED_PASS')
+
+
+@pytest.mark.remote_sv
+def test_remote_explicit_types_follow_edited_nested_fixed_array_declaration():
+    class DerivedMatrix(SvObject):
+        values = Array[Array[Bit[8], 2], 2](rand=False, cov=False)
+
+    source = DerivedMatrix.to_sv_obj()
+    before = 'bit [7:0] values [2] [2];'
+    assert source.count(before) == 1
+    source = source.replace(before, 'bit [15:0] values [3] [4];')
+    assert 'type(this.' not in source
+    bench = r'''
+module tb;
+  initial begin
+    DerivedMatrix sent, received;
+    byte unsigned bytes[$];
+    int offset = 0;
+    sent = new(); received = new();
+    foreach (sent.values[i,j]) sent.values[i][j] = 16'h8000 + i * 4 + j;
+    sent.pack_body(bytes); received.unpack_body(bytes, offset);
+    foreach (sent.values[i,j]) if (sent.values[i][j] !== received.values[i][j])
+      $fatal(1, "edited matrix element mismatch");
+    if (offset != bytes.size() || bytes.size() < 24) $fatal(1, "edited matrix size mismatch");
+    $display("SVTYPES_EDITED_DERIVED_MATRIX_PASS");
+    $finish;
+  end
+endmodule
+'''
+    _run_target('codegen-explicit-derived-matrix', source + bench, 'SVTYPES_EDITED_DERIVED_MATRIX_PASS')
+
+
+@pytest.mark.remote_sv
+def test_remote_explicit_types_follow_edited_unpacked_struct_array():
+    class DerivedRecord(SvStruct):
+        values = Array[Bit[8], 2](rand=False, cov=False)
+
+    source = DerivedRecord.to_sv_obj()
+    before = 'bit [7:0] values [2];'
+    assert source.count(before) == 1
+    source = source.replace(before, 'bit [15:0] values [3];')
+    assert 'type(value.' not in source
+    bench = r'''
+module tb;
+  initial begin
+    DerivedRecord_t sent, received;
+    byte unsigned bytes[$];
+    int offset = 0;
+    sent.values[0] = 16'hbeef; sent.values[1] = 16'hcafe; sent.values[2] = 16'h1234;
+    DerivedRecord_packer::pack(sent, bytes);
+    DerivedRecord_packer::unpack(received, bytes, offset);
+    foreach (sent.values[i]) if (sent.values[i] !== received.values[i])
+      $fatal(1, "edited struct array mismatch");
+    if (offset != bytes.size()) $fatal(1, "edited struct offset");
+    $display("SVTYPES_EDITED_DERIVED_STRUCT_ARRAY_PASS");
+    $finish;
+  end
+endmodule
+'''
+    _run_target('codegen-explicit-derived-struct-array', source + bench,
+                'SVTYPES_EDITED_DERIVED_STRUCT_ARRAY_PASS')
+
+
+@pytest.mark.remote_sv
+def test_remote_explicit_types_follow_edited_dynamic_and_queue_elements():
+    class DerivedSequences(SvObject):
+        dynamic = DynArray[Bit[8]](rand=False, cov=False)
+        queue = Queue[Bit[8]](rand=False, cov=False)
+
+    source = DerivedSequences.to_sv_obj()
+    for before, after in (('bit [7:0] dynamic [];', 'bit [15:0] dynamic [];'),
+                          ('bit [7:0] queue [$];', 'bit [15:0] queue [$];')):
+        assert source.count(before) == 1
+        source = source.replace(before, after)
+    assert 'type(this.' not in source
+    bench = r'''
+module tb;
+  initial begin
+    DerivedSequences sent, received;
+    byte unsigned bytes[$];
+    int offset = 0;
+    sent = new(); received = new();
+    sent.dynamic = new[2]; sent.dynamic[0] = 16'hbeef; sent.dynamic[1] = 16'habcd;
+    sent.queue.push_back(16'hcafe); sent.queue.push_back(16'h1234);
+    sent.pack_body(bytes); received.unpack_body(bytes, offset);
+    if (offset != bytes.size() || received.dynamic.size() != 2 || received.queue.size() != 2 ||
+        received.dynamic[0] !== 16'hbeef || received.dynamic[1] !== 16'habcd ||
+        received.queue[0] !== 16'hcafe || received.queue[1] !== 16'h1234)
+      $fatal(1, "edited sequences did not roundtrip");
+    $display("SVTYPES_EDITED_DERIVED_SEQUENCES_PASS");
+    $finish;
+  end
+endmodule
+'''
+    _run_target('codegen-explicit-derived-sequences', source + bench, 'SVTYPES_EDITED_DERIVED_SEQUENCES_PASS')
+
+
+@pytest.mark.remote_sv
+def test_remote_explicit_types_follow_edited_associative_values():
+    class DerivedMap(SvObject):
+        values = AssocArray[String, Bit[8]](cov=False)
+
+    source = DerivedMap.to_sv_obj()
+    before = 'bit [7:0] values [string];'
+    assert source.count(before) == 1
+    source = source.replace(before, 'bit [15:0] values [string];')
+    assert 'type(this.' not in source
+    bench = r'''
+module tb;
+  initial begin
+    DerivedMap sent, received;
+    byte unsigned bytes[$];
+    int offset = 0;
+    sent = new(); received = new();
+    sent.values["first"] = 16'hbeef; sent.values["second"] = 16'hcafe;
+    sent.pack_body(bytes); received.unpack_body(bytes, offset);
+    if (offset != bytes.size() || received.values.num() != 2 ||
+        received.values["first"] !== 16'hbeef || received.values["second"] !== 16'hcafe)
+      $fatal(1, "edited associative values did not roundtrip");
+    $display("SVTYPES_EDITED_DERIVED_MAP_PASS");
+    $finish;
+  end
+endmodule
+'''
+    _run_target('codegen-explicit-derived-map', source + bench, 'SVTYPES_EDITED_DERIVED_MAP_PASS')
+
+
+@pytest.mark.remote_sv
+def test_remote_parameterized_explicit_types_reject_edited_unsupported_shape():
+    class GuardedParameter(SvObject):
+        WIDTH = Parameter[Int]()
+        value = Bit[WIDTH](rand=False, cov=False)
+
+    source = GuardedParameter.to_sv_obj()
+    assert 'SvTypes field shape changed: value' in source
+    before = 'bit [(WIDTH) - 1:0] value;'
+    assert source.count(before) == 1
+    source = source.replace(before, 'bit [15:0] value;')
+    source += r'''
+module tb;
+  initial begin
+    GuardedParameter#(.WIDTH(8)) instance;
+    byte unsigned bytes[$];
+    instance = new(); instance.value = 16'hbeef;
+    instance.pack_body(bytes);
+    $display("UNEXPECTED_ACCEPTANCE");
+    $finish;
+  end
+endmodule
+'''
+    output = Path(__file__).resolve().parents[2] / '.tmp' / 'codegen-explicit-parameter-rejection'
+    output.mkdir(parents=True, exist_ok=True)
+    (output / 'tb.sv').write_text(source)
+    host = os.environ['SVTYPES_REMOTE_SV_HOST']
+    remote = os.environ['SVTYPES_REMOTE_SV_ROOT'].rstrip('/') + '/.tmp/codegen-explicit-parameter-rejection'
+    runner = shlex.join(shlex.split(os.environ['SVTYPES_REMOTE_SV_RUNNER']))
+    command = f'cd {shlex.quote(remote)} && {runner} compile tb.sv'
+    compiled = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host,
+                               'bash -ilc ' + shlex.quote(command)], capture_output=True, text=True)
+    (output / 'target-compile.log').write_text(compiled.stdout + compiled.stderr)
+    if compiled.returncode:
+        assert 'ref port' in (compiled.stdout + compiled.stderr).lower()
+    else:
+        command = f'cd {shlex.quote(remote)} && {runner} run'
+        run = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host,
+                              'bash -ilc ' + shlex.quote(command)], capture_output=True, text=True)
+        (output / 'target-run.log').write_text(run.stdout + run.stderr)
+        assert 'SvTypes field shape changed: value' in run.stdout + run.stderr
+        assert 'UNEXPECTED_ACCEPTANCE' not in run.stdout + run.stderr
+
+
+@pytest.mark.remote_sv
+def test_remote_explicit_edited_record_embeds_in_existing_package():
+    class EmbeddedRecord(SvPackedStruct):
+        tag = Bit[8]()
+        flags = Logic[4]()
+
+    name = 'codegen-explicit-derived-embedded-package'
+    output = Path(__file__).resolve().parents[2] / '.tmp' / name
+    result = generate([EmbeddedRecord], output, targets={'sv'}, overwrite_modified=True)
+    assert not result.failed
+    source_file = output / 'schema.sv'
+    source = source_file.read_text()
+    assert list((output / 'support').glob('*.svh'))
+    assert source.count('bit [7:0] tag;') == 1
+    assert source.count('logic [3:0] flags;') == 1
+    source_file.write_text(source.replace('bit [7:0] tag;', 'bit [15:0] tag;')
+                           .replace('logic [3:0] flags;', 'logic [7:0] flags;'))
+    bench = r'''
+package existing_owner;
+  import svtypes_pkg::*;
+  `include "schema.sv"
+endpackage
+module tb;
+  import existing_owner::*;
+  initial begin
+    EmbeddedRecord_t sent, received;
+    byte unsigned bytes[$];
+    int offset = 0;
+    sent.tag = 16'hbeef; sent.flags = 8'b1xz010zx;
+    EmbeddedRecord_packer::pack(sent, bytes);
+    EmbeddedRecord_packer::unpack(received, bytes, offset);
+    if (offset != bytes.size() || sent !== received) $fatal(1, "embedded record mismatch");
+    $display("SVTYPES_EDITED_EMBEDDED_PASS");
+    $finish;
+  end
+endmodule
+'''
+    _run_target(name, bench, 'SVTYPES_EDITED_EMBEDDED_PASS')
+
+
+@pytest.mark.remote_sv
+def test_remote_explicit_edited_record_embeds_in_existing_class_scope():
+    class EmbeddedOwnerRecord(SvPackedStruct):
+        tag = Bit[8]()
+
+    name = 'codegen-explicit-derived-embedded-owner'
+    output = Path(__file__).resolve().parents[2] / '.tmp' / name
+    result = generate([EmbeddedOwnerRecord], output, targets={'sv'}, overwrite_modified=True)
+    assert not result.failed
+    source_file = output / 'schema.sv'
+    source = source_file.read_text()
+    assert list((output / 'support').glob('*.svh'))
+    assert source.count('bit [7:0] tag;') == 1
+    source_file.write_text(source.replace('bit [7:0] tag;', 'bit [15:0] tag;'))
+    bench = r'''
+class existing_owner;
+  `include "schema.sv"
+endclass
+module tb;
+  initial begin
+    existing_owner::EmbeddedOwnerRecord_t sent, received;
+    byte unsigned bytes[$];
+    int offset = 0;
+    sent.tag = 16'hbeef;
+    existing_owner::EmbeddedOwnerRecord_packer::pack(sent, bytes);
+    existing_owner::EmbeddedOwnerRecord_packer::unpack(received, bytes, offset);
+    if (offset != bytes.size() || sent !== received) $fatal(1, "embedded owner record mismatch");
+    $display("SVTYPES_EDITED_OWNER_PASS");
+    $finish;
+  end
+endmodule
+'''
+    _run_target(name, bench, 'SVTYPES_EDITED_OWNER_PASS')
+
+
+@pytest.mark.remote_sv
+def test_remote_explicit_array_field_block_can_be_copied_and_reordered():
+    class EditableArrayFields(SvObject):
+        first = Array[Bit[8], 2](rand=False, cov=False)
+        last = Bit[8](rand=False, cov=False)
+
+    source = EditableArrayFields.to_sv_obj()
+    declaration = '  bit [7:0] first [2];'
+    assert source.count(declaration) == 1
+    source = source.replace(declaration, declaration + '\n  bit [15:0] added [3];')
+    function_start = source.index('function int __svtypes_apply_fields(')
+    block_start = source.index('    begin\n', function_start)
+    block_end = source.index('    end\n', block_start) + len('    end\n')
+    first_block = source[block_start:block_end]
+    assert '::apply(this.first, "first",' in first_block
+    added_block = first_block.replace('this.first', 'this.added').replace('"first"', '"added"')
+    assert added_block != first_block
+    source = source[:block_start] + added_block + first_block + source[block_end:]
+    bench = r'''
+module tb;
+  initial begin
+    EditableArrayFields sent, received;
+    byte unsigned bytes[$];
+    int offset = 0;
+    sent = new(); received = new();
+    sent.first[0] = 8'h12; sent.first[1] = 8'h34; sent.last = 8'h56;
+    sent.added[0] = 16'hbeef; sent.added[1] = 16'hcafe; sent.added[2] = 16'h1234;
+    sent.pack_body(bytes); received.unpack_body(bytes, offset);
+    if (offset != bytes.size() || received.first !== sent.first || received.last !== sent.last ||
+        received.added !== sent.added || bytes[6] != 3 || bytes[7] != 0)
+      $fatal(1, "copied field block mismatch");
+    $display("SVTYPES_EDITED_ARRAY_BLOCK_PASS");
+    $finish;
+  end
+endmodule
+'''
+    _run_target('codegen-explicit-derived-added-array', source + bench, 'SVTYPES_EDITED_ARRAY_BLOCK_PASS')

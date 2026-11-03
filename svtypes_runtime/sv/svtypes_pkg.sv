@@ -1211,7 +1211,10 @@ package svtypes_pkg;
     endfunction
   endclass
 
-  class numeric_array_field_operations #(type T = bit, type CODEC = bit_packer#(T));
+  // Array callers must provide an element-aware codec. A scalar bit_packer#(T)
+  // is not a valid default when T is an unpacked array; keeping an invalid
+  // sentinel also makes an omitted codec fail rather than silently truncate.
+  class numeric_array_field_operations #(type T = bit, type CODEC = int);
     static function void apply(ref T value, input string name, input bit is_signed,
                                input bit wire_enabled, input bit dump_enabled,
                                input bit plusarg_enabled, input int action,

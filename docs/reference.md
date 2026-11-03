@@ -402,11 +402,14 @@ Running generated code does not require its artifact hashes to match source. Dur
 `mode="check"` always reports differences without writing. See the
 [implementation record](SVTYPES_GENERATED_CODE_EDITABILITY_IMPLEMENTATION.md) for implementation and verification details.
 
-SV generation uses explicit declared types by default, with named `typedef`s where container types
-require them. `to_sv_obj(use_type_reference=True)`, `to_sv_pkg(use_type_reference=True)`, and
-`generate(..., use_type_reference=True)` instead use SystemVerilog `type(expression)` in helper code.
-The latter follows manual field-type changes, while the default favors tool compatibility; manual
-type changes in the default output also require updating the corresponding helper types or typedefs.
+SV generation uses explicit helper types by default, deriving supported bit/logic widths and array
+dimensions from the actual field declaration with `$bits` and `$size`. This supports manual width
+and fixed-size edits without `type(expression)`. Encoding category and signedness remain part of
+the generated field's contract and must be updated when the field's category changes. Parameterized
+classes retain explicit types where deriving a type constant is unsupported by the target; their
+shape checks reject incompatible edits instead of silently truncating values.
+`to_sv_obj(use_type_reference=True)`, `to_sv_pkg(use_type_reference=True)`, and
+`generate(..., use_type_reference=True)` select SystemVerilog `type(expression)` in helper code.
 
 `generate()` can emit an unbound parameterized class as a target-language template. Since that
 declaration has no concrete source schema, its name appears in `unbound_templates` in the schema

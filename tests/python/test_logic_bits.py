@@ -114,5 +114,5 @@ def test_generated_logic_field_supports_rand_plusarg_and_coverage():
     assert "rand logic [1:0] [3:0] data;" in code
     assert '::apply(this.data, "data", 1\'b0, 1\'b1, 1\'b1, 1\'b1,' in code
     assert "data: coverpoint item.data {" in code
-    assert "logic_packer#(logic [1:0] [3:0])" in code
+    assert "logic_packer#(logic [$bits(this.data)-1:0])" in code
     assert "__svtypes_apply_fields(4, __svtypes_bytes, __svtypes_offset, __svtypes_result, prefix);" in code
