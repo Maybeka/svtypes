@@ -161,9 +161,9 @@ def python_gets_many_types_tx():
         raise AssertionError(f"unexpected q_colors: {tx.q_colors.value}")
     if tx.assoc.value != {"cat": 31, "dog": -41}:
         raise AssertionError(f"unexpected assoc: {tx.assoc.value}")
-    if [(v.a.value, v.b.value) for v in tx.q_inner] != [(101, 0xA1), (-102, 0xA2)]:
+    if [(v.a.value, v.b.value) for v in tx.q_inner.value] != [(101, 0xA1), (-102, 0xA2)]:
         raise AssertionError("unexpected q_inner")
-    if [(v.a.value, v.b.value) for v in tx.inner_arr] != [(201, 0xB1), (-202, 0xB2)]:
+    if [(v.a.value, v.b.value) for v in tx.inner_arr.value] != [(201, 0xB1), (-202, 0xB2)]:
         raise AssertionError("unexpected inner_arr")
     if tx.nested.a.value != 303 or tx.nested.b.value != 0xC3:
         raise AssertionError("unexpected nested object")

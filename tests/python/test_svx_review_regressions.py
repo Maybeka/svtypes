@@ -78,16 +78,16 @@ def test_external_randomization_publishes_null_and_shared_container_handles():
 
     storage, parent, child = LockedStorage(), Parent(), Child()
     storage.seed("count", Parent.count, 0)
-    parent.absent = None
-    parent.child = parent.shared = child
+    parent.absent.value = None
+    parent.child.value = parent.shared.value = child
     parent.children.value = [child, None, child]
     parent.bind_external_storage(storage, {FieldIdentity(Parent, "count"): "count"})
     choices = []
     with RandomContext(seed=401):
         for _ in range(4):
             assert parent.randomize()
-            assert parent.absent is None
-            assert parent.child is parent.shared is child
+            assert parent.absent.value is None
+            assert parent.child.value is parent.shared.value is child
             assert parent.children.value == [child, None, child]
             choices.append(child.choice.value)
     assert set(choices) == {0, 1, 2, 3}
@@ -105,14 +105,14 @@ def test_value_copy_preserves_null_shared_and_cyclic_handles():
 
     source, target = Node(), Node()
     source.count.value = 12
-    source.link = source
-    target.link = target
+    source.link.value = source
+    target.link.value = target
     target.value = source
-    assert target.link is target
+    assert target.link.value is target
     assert target.count.value == 12
-    source.link = None
+    source.link.value = None
     target.value = source
-    assert target.link is None
+    assert target.link.value is None
 
 
 @pytest.mark.parametrize("base", [SvObject, SvStruct])
@@ -170,7 +170,7 @@ def test_external_null_handle_root_is_published_without_allocating_a_child():
         FieldIdentity(Parent, "child"): "child",
     })
     assert parent.randomize()
-    assert parent.child is None
+    assert parent.child.value is None
     assert storage.writes == [(key, FieldPath(), FieldOperation.SET) for key in ("count", "child")]
 
 

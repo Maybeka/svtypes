@@ -221,6 +221,8 @@ def test_handle_specs_keep_existing_descriptor_identity() -> None:
         pass
 
     assert Object[RegisteredChild](registry=registry).cls_name == "wire_child"
+    assert Object[RegisteredChild]().registry is registry
+    assert Object[RegisteredChild] is Object[RegisteredChild]
     with pytest.raises(TypeError, match="registered SvObject"):
         Object[UnregisteredChild]
 

@@ -206,9 +206,11 @@ construction lifecycle 不属于 `RecordSchema` 或该协商接口。
 
 - `SvObject.__getattribute__` 在 first access 时 clone class-level `TypeBase` attribute 到 instance `__dict__`，保证
   instance independence。
-- `ObjectDescriptor` 处理 nested `SvObject` 的 instantiation/link。已分配的 non-null child 需要参与 parent constrained
-  randomization 时，使用 `Object["Child"](rand=True)`；生成 `rand Child child`。默认 `rand=False`，不会 allocate 或 randomize
-  handle。
+- `ObjectDescriptor` 声明固定的可空 handle 槽。访问 `owner.child` 得到槽，
+  使用 `owner.child.value` 读写所指对象。初值为 `None`，需要对象时显式构造。
+  容器元素也通过 `queue[0].value` 或 `table[key].value` 取值。外部下标定位当前
+  路径，跨结构变更保留已选元素时使用 `borrow_element`。
+  `Object["Child"](rand=True)` 生成 `rand Child child`，并对已赋值的子对象执行递归随机化。
 - `SvObject.__setattr__` 阻止 `obj.x = 10`，强制使用 `obj.x.value = 10`。
 - `@constraint` 声明 predicate。`@rand_layer(priority)` 把 rand member 与 constraint 分组；可列出 fixed unpacked-array
   element（如 `self.words[0]`）或整个 `DynArray` / `Queue`。dynamic container 逐 current element 处理：进入时 disabled 的
@@ -217,7 +219,224 @@ construction lifecycle 不属于 `RecordSchema` 或该协商接口。
   用户不能 override `randomize()` / `randomize_with()` / `layered_randomize()`，但可 override `pre_randomize()` /
   `post_randomize()`。
 
+#### 非打包结构体的值
+
+普通 Python 和受检入口中的非打包结构体通过 `.value` 读取独立映射，键为声明字段名。
+嵌套容器和结构体递归转为普通数据，对象 handle 保留身份。将完整映射赋给 `.value`
+时，按结构体声明校验并写入。访问名为 `value` 的字段时，将旧写法
+`record.value.value` 改为 `field(record, "value").value`。约束和覆盖率声明按类型
+声明解析字段名，其中的 `self.record.value` 指向名为 `value` 的字段。
+
+#### Python 受检变量访问
+
+使用 `run_checked(main)` 执行操作受检变量槽的项目函数。普通 SvTypes 类型标注
+等价于 `Input[T]`。`Input` 拷入值，`Output` 初始未赋值，`Inout` 拷入并写回。
+`Output` 和 `Inout` 只在正常返回时写回，先准备全部写入，再按声明顺序发布。
+`Ref[T]` 在调用期间访问原槽，要求实际参数的声明类型一致。读取尚未赋值的
+`Output` 会报错。`CopyoutError` 提供失败参数 `parameter`、阶段 `phase`
+（`"preparation"` 或 `"publication"`）及已完成的参数 `completed`。
+发布失败保留之前的写入，并保留底层异常作为原因。
+实参表达式遵守 Python 的求值顺序。所有实参求值完毕后，在调用入口读取并拷入
+Input 载体的值；已经通过 `.value` 或其他表达式取得的值不重新求值。
+索引形式的 Input 只需要普通字段读取能力，不需要稳定元素借用；聚合值独立复制，
+其中的对象句柄仍保持原对象身份。
+受检操作的异常附注包含源码位置及表达式，包括触发写回的显式 return。
+可通过异常的 cause 查看底层错误。
+
+结构体和定长数组的 `Output` 可以通过声明的字段槽或元素槽逐项初始化。
+已赋值的槽可以单独读取。读取整体值或正常返回时，需要所有槽均已初始化，
+否则会指出第一个未赋值的路径。动态容器先通过整体赋值确定形状，再编辑元素。
+
+```python
+from svtypes import Inout, Int, run_checked
+
+def increment(word: Inout[Int]) -> None:
+    word.value += 1
+
+def main() -> int:
+    word = Int(10)
+    increment(word)
+    return word.value
+
+assert run_checked(main) == 11
+```
+
+向普通参数传递 `.value`。受检代码拒绝保存槽的别名、将槽传给无载体契约的参数，
+或直接返回槽。`*args` 和 `**kwargs` 使用独立值，传递槽时直接传给有方向
+契约的参数。项目模块加载器检查命名导入、通配导入、类体声明和函数默认值中的
+载体别名。将载体操作放在受检入口或它调用的函数中。
+需要记录源码输入的工具可以使用上下文管理器 `observe_module_sources(observer)`。
+受检模块加载器在解析或变换前，针对每次读取的源码调用
+`observer(filename, source_bytes)`；字节保留原始编码和换行。回调可以抛出异常
+拒绝加载，但不能替换源码或关闭检查。观察者只作用于当前执行上下文，支持嵌套，
+离开作用域（包括异常退出）后移除。已缓存模块及其他加载器处理的模块不产生
+观察记录，由工具自行负责这些输入。受检查找器将范围外源码交给后续导入查找器。
+框架集成可以使用 `with checked_library_sources(*sources):` 划定实现边界，
+每项是已存在的精确源码文件或包目录。作用域内的框架实现正常执行，不做用户源码
+变换；嵌套作用域在退出时恢复，包括异常退出。范围外的用户源码仍受检查，包括
+通过 SvTypes 构造网关调用的用户构造器。普通的带类型契约框架函数调用也遵守此边界：
+函数体不改写，但调用前后的参数方向、形参生命周期、copyout 和返回值逃逸检查保留。
+无类型契约的参数仍不能接收载体。框架自行回调用户函数时，必须经受检入口
+交接。该边界是显式的框架集成契约，不是安全隔离机制，也不是业务代码绕过变量
+使用约定的方式。
+已经自行执行受检参数契约的框架转接函数可以使用 `@checked_call_gateway`。
+该标记仅在其源码位于 `checked_library_sources` 作用域内时生效，保留原函数
+及签名，将原始实参直接交给转接函数，并拒绝载体返回值。转接函数必须通过
+`run_checked` 应用真实参数方向，并经受检入口调用用户回调，从而避免重复绑定
+参数及发布输出。此能力不允许作用域外无类型契约的业务辅助函数接收载体。
+受检入口采用黑名单制度：默认允许 Python 行为，只拒绝明确的变量使用违规，
+包括载体别名、保存、捕获或逃逸，缺失或非法的载体参数契约，替换或删除声明槽，
+以及违反生命周期、类型和读写权限的访问。普通类型注解不是运行时约束；没有可检查
+源码或遇到未识别的语法形式，本身不构成违规。
+可读取的项目源码通过变换观察这些操作；不透明代码和项目外代码正常执行，调用边界
+仍检查参数和返回值，不承诺检查不透明函数体内部。类注解、dataclass 和依赖调用者
+作用域的内置函数保留 Python 行为。载体转发使用显式参数契约；不得将 Ref 保存在闭包或
+延迟生成器中。生成器可以拥有自己新声明的变量并产出其值；检查作用域只在恢复
+执行时生效，包括 `send`、`throw` 和 `close`，不会跨暂停持有。普通异步定义和
+仅使用值的异步工作正常执行；延迟执行不得将 Ref 或其他载体保留到同步形参作用域之外。
+这是使用约定，不是防止刻意绕过的沙箱。高阶回调支持
+`sorted`、`list.sort`、`min`、`max`、
+`map`、`filter`、`functools.reduce`，以及 `itertools.accumulate`、
+`dropwhile`、`filterfalse`、`groupby`、`starmap` 和 `takewhile`。
+即使在受检入口返回后才消费迭代器，延迟回调也会接受检查。
+
+通过 SvTypes 的编解码入口调用自定义结构体 `pack` 和 `unpack` 时，
+原签名和 `super()` 转发在受检入口内仍可使用。解包回调可以将新解码的
+结构体和已消费字节数交回 SvTypes，回调体仍遵守受检载体规则。
+
+在受检入口中用 `copy.deepcopy(owner)` 复制对象图。复制回调共享原生递归
+使用的 `memo`，可以将它传给基类实现，也可以用它登记自己新建的副本。
+`memo` 的访问限于复制回调，由受检 `deepcopy()` 调用在内部创建。复制变量
+载体里的值时，使用声明的值接口。
+`read_value(slot)` 取得独立的复合值并保留 handle 身份；
+`field(owner, "value")` 选取名为 `value` 的声明字段；
+`write_value(slot, value)` 显式赋值。
+
+`queue.value.append(3)` 和 `table.value.update(entries)` 等直接操作修改原存储。
+`rows.value[0].append(3)` 等嵌套调用也修改声明的子存储；外部子槽按需使用作用域借用，
+后端缺少所需能力时明确报错，不会转而修改快照。
+本地动态序列的 `reverse()` 和 `sort()` 随元素移动原槽。本地定长数组保留原槽，
+将重排后的值写入各槽。外部绑定的序列拒绝这两种操作。后端若提供能保留借用元素
+身份的重排操作，可通过后端执行。
+
+在受检入口之外，`with borrow_element(container, index_or_key) as slot:` 获取
+`ElementBorrow`。即使元素已经离开容器，`slot.value` 仍读写原元素。
+`forward()` 为同一元素创建独立借用，`child(FieldPath(...))` 为声明的子槽
+创建借用。关闭借用会结束这份访问权限。在受检代码中，将选中的元素直接传给
+`Ref[T]` 形参，即可在调用期间借用该元素。
+
+外部存储通过 `isinstance(backend, ExternalBorrowStorage)` 检查是否支持稳定借用。
+后端在 `acquire_borrow()` 时解析一次字段路径。`read_borrow()` 和
+`write_borrow()` 使用现有的 SvTypes 字节编码，最后以 `release_borrow()` 释放
+令牌。已借用聚合值的稳定子槽需要 `ExternalBorrowPathStorage`，它提供
+`acquire_borrow_child()` 并返回独立释放的令牌。只提供 `ExternalFieldStorage`
+的后端仍支持普通路径访问，申请稳定借用时会报错。借用遵守原绑定的关闭状态和写权限。
+
+可选的 `ExternalBorrowFieldStorage` 为已借用聚合值提供即时相对路径操作。
+`read_borrow_path(token, path)` 读取相对字段；
+`write_borrow_path(token, path, operation, payload)` 转交普通的 `FieldOperation`
+和 SvTypes 字节，包含 append/insert/delete/pop/resize。相对路径在每次操作时求值，
+不承诺子元素的稳定身份：将子变量继续传给 Ref 仍需 `ExternalBorrowPathStorage`
+和独立申请的令牌。后端可以实现其中一个或两个能力。没有相对字段操作能力时，
+保留既有的子令牌读取/赋值路径，结构操作仍明确拒绝，不退化成整个聚合值复制写回。
+这些操作也先检查借用关闭状态和只读权限。
+
+框架可以通过 `external_storage_location(variable)` 查询已有槽的位置。
+本地变量与独立的 Input/Output/Inout 形参返回 `None`。外部槽返回不可变的
+`ExternalStorageLocation`：`kind == "field"` 提供 `storage`、根 `descriptor`、
+`key` 和精确 `path`；`kind == "borrow"` 提供 `storage`、叶子 `descriptor`
+与既有不透明 `token`，不提供下标或键路径。两者均提供 `readonly` 和 `session`。
+转发的 Ref 形参保留原端点。查询本身不读值、不申请 lease，也不延长形参、绑定或
+借用的生命周期；任一来源作用域关闭后，所有属性与 `require_open()` 均拒绝访问。
+查询前取得成员仍可能依照普通访问规则读取父值。这是框架集成接口，不允许受检
+业务代码借此保存或返回变量引用，也不实现存储重定位或后端稳定借用能力。
+
+
+#### 本地变量槽的作用域存储
+
+框架直接从 `svtypes` 导入 `SlotIdentity`、`slot_identity()` 和
+`relocated_slot()`，无需实验模块或修改私有绑定属性。这些是框架集成接口，
+不放宽受检业务代码保存、捕获或返回载体及存储元数据的禁令。
+
+`slot_identity(variable)` 只查询**本地**槽身份，不读值、不取得租约。使用
+`==` 比较，不使用 Python 的 `is`：原变量及有效 Ref 转发身份相等、哈希一致；
+值相等的独立变量以及独立 Input/Output/Inout 形参身份不同。未赋值 Output
+也有身份，但不能转绑。它不是可序列化 ID。`is_valid` 查询有效期，
+`require_open()` 显式检查；比较和哈希也检查有效期。每份身份受其来源形参、
+借用或临时视图的作用域约束；一份租约关闭，不影响通过另一份有效租约取得的身份。
+身份只持有弱引用，不延长来源寿命；普通本地变量以载体的存活期为有效期。
+框架应在来源关闭前从映射中移除身份。复制身份仍表示原身份。
+
+`relocated_slot(variable, create_storage)` 是同步上下文管理器：
+
+```python
+from svtypes import Int, MemoryExternalFieldStorage, relocated_slot
+
+value = Int(3)
+backend = MemoryExternalFieldStorage()
+
+def create_storage(initial, identity):
+    backend.seed("counter", Int(), initial)
+    return backend, "counter", lambda: None  # 在此释放后端资源
+
+with relocated_slot(value, create_storage) as temporary:
+    value.value = 8
+    assert temporary.value == 8
+assert value.value == 8
+```
+
+`StorageFactory` 接收独立初值和有作用域的身份，返回 `(backend, key, release)`。
+工厂成功返回有效三元组前，自行负责部分分配的清理。后端沿用
+`ExternalFieldStorage` 的类型、路径和字节编码，codec 可通过工厂闭包传入。
+原载体及既有、后续形成的 Ref 共用同一存储。同槽嵌套复用首次分配，不调用内层工厂；
+最后退出时恢复最新值、关闭临时视图并释放资源。函数体异常和取消引发的同步栈退出
+均保留已经完成的写入。这不是异步 Ref 接口，也不提供跨线程存储同步。
+
+支持本地标量、枚举、packed 值、RemoteRef 值记录、结构体、定长数组、动态数组、
+队列和关联数组，包括选中的本地值元素和已赋值的独立值形参。值内的句柄保留所指
+对象和编码会话；混合会话在分配前拒绝。裸对象实体及 Object 句柄槽不属于可转绑
+的值根。聚合根仍有活动子槽借用/Ref 或独立外部绑定时，在分配前拒绝整体转绑；
+最后一份子槽租约关闭后允许转绑，已脱离容器的旧元素不阻塞原容器。已转绑聚合根
+的子槽不能再次独立转绑。已有外部字段和借用继续使用 `external_storage_location()`
+及原端点，本地身份接口不为其猜测等价关系。只读、关闭和类型检查继续生效。
+
+`StorageRelocationError` 提供 `phase`、`restored`、`body_error` 和全部
+`failures`（各项为 `StorageRelocationFailure.phase`/`.cause`）。阶段包括
+`prepare`（准备）、`readback`（读回）、`restore`（恢复本地值）、`close`（关闭视图）
+和 `release`（释放资源）。清理出错后仍继续其余清理；有效分配返回后，释放尝试一次。
+清理成功时原样重新抛出函数体异常；清理也失败时，函数体异常保留在 `body_error`
+及异常链中。`restored=False` 表示未能恢复最新外部值，本地槽可能是旧值或部分
+恢复结果，不能当作成功结果使用。不承诺回滚或跨后端事务。
+
+#### 可选受检调用存储策略
+
+- `current_borrow_purpose()` 对显式取得借用返回 `BorrowPurpose.EXPLICIT`，
+  对受检临时操作返回 `OPERATION`，对真正 Ref 实参返回 `REF`。执行上下文局部状态
+  在成功和异常后均恢复。用途只提供信息，不授予权限，也不替代稳定身份。
+- `ExternalRefValidationStorage` 增加 `validate_ref_borrow(token)`。每次真正
+  Ref 绑定都在函数体前校验，包括已有租约和继续转发；校验抛异常则不进入函数体，
+  临时取得的租约正常释放。未实现此方法的旧后端保持现有行为。
+- `ExternalValueParameterStorage` 增加 `value_arguments_by_path: bool`。只有显式
+  `True` 才选择 Output/Inout 捕获地址写回：索引或键求值一次，形参仍然独立，
+  正常返回时先准备全部输出，再按声明顺序发布。结构变化可能改变该地址的元素，
+  不保证旧元素身份。异常或取消不执行普通 copyout。聚合借用和转绑适配器保留此
+  策略。未启用时仍采用选中槽语义；真正 Ref 仍需要稳定借用和校验，不能用此标志
+  获得 Ref 能力。
+
+可用 `isinstance(backend, 协议名)` 检查上述两个可选协议，再检查策略值。
+普通 Input 无需新标注：实参按 Python 顺序求值，调用入口再读取并拷入载体值；
+已求值的数据不重新求值。原实验私有标志和上下文变量由这些公开接口替代；旧实验
+模块仅保留两个存储函数的导入转接。
+
+
 ### 外部字段存储
+
+外部容器的 `.value` 索引、切片、遍历及 `pop()` 与直接槽读取使用同一绑定会话
+解析句柄，返回原对象，不复制对象或重放字节中保存的旧对象字段。独立绑定通过
+`bind_external_value(..., session=session)` 选择会话；未指定时使用默认会话。
+结构体视图保留其存储绑定和读写权限，其中的句柄仍指向原对象。
+对象整体值复制从源对象的实际存储读取句柄，保留深复制的共享、空值和循环关系；
+新复制的对象归属目标会话。
 
 `MyObject.refresh_declarations()` 用于框架在创建任何实例之前完成类的基类组装后，
 重新校验继承字段与约束。它保留已有 `__init__`，不执行用户类钩子。

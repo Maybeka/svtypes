@@ -158,7 +158,7 @@ class NullAfterHandleResize(SvObject):
 def test_rand_handle_joins_parent_and_child_constraints_and_hooks():
     parent = HandleParent()
     child = HandleChild()
-    parent.child = child
+    parent.child.value = child
 
     assert parent.randomize()
     assert child.data.value <= 10
@@ -185,7 +185,7 @@ def test_plain_handle_is_not_recursively_randomized():
     parent = PlainHandleParent()
     child = HandleChild()
     child.data.value = 99
-    parent.child = child
+    parent.child.value = child
 
     assert parent.randomize()
     assert child.data.value == 99
@@ -196,14 +196,14 @@ def test_plain_handle_is_not_recursively_randomized():
 def test_shared_child_and_cycle_are_solved_once_by_canonical_identity():
     parent = SharedHandleParent()
     node = HandleNode()
-    node.next = node
-    parent.left = node
-    parent.right = node
+    node.next.value = node
+    parent.left.value = node
+    parent.right.value = node
 
     assert parent.randomize()
     assert node.data.value <= 3
-    assert parent.left is parent.right is node
-    assert node.next is node
+    assert parent.left.value is parent.right.value is node
+    assert node.next.value is node
     assert (node.pre_count, node.post_count) == (1, 1)
 
 
@@ -211,7 +211,7 @@ def test_unsat_joint_handle_constraints_restore_child_value():
     parent = UnsatHandleParent()
     child = HandleChild()
     child.data.value = 9
-    parent.child = child
+    parent.child.value = child
 
     assert not parent.randomize()
     assert parent.svtypes_randomize_status.reason == "unsat"
@@ -224,7 +224,7 @@ def test_child_rand_mode_is_respected_in_joint_solve():
     child = HandleChild()
     child.data.value = 7
     child.data.rand_mode(0)
-    parent.child = child
+    parent.child.value = child
 
     assert parent.randomize()
     assert child.data.value == 7
@@ -237,7 +237,7 @@ def test_child_constraint_mode_is_respected_in_joint_solve():
     child.own_legal.constraint_mode(0)
     child.data.value = 99
     child.data.rand_mode(0)
-    parent.child = child
+    parent.child.value = child
 
     assert parent.randomize()
     assert child.data.value == 99
@@ -247,7 +247,7 @@ def test_child_constraint_mode_is_respected_in_joint_solve():
 def test_child_randc_state_belongs_to_the_child_across_joint_calls():
     parent = HandleRandcParent()
     child = HandleRandcChild()
-    parent.child = child
+    parent.child.value = child
 
     values = []
     for _ in range(4):

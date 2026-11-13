@@ -61,7 +61,7 @@ def test_context_collection_limit_rolls_back_object_registration():
 def test_context_nesting_and_input_size_limits_are_enforced():
     source_session = CodecSession(origin=0x52)
     source = GraphNode(session=source_session)
-    source.next = source
+    source.next.value = source
     payload = source.to_bytes()
 
     target_session = CodecSession(origin=0x53)

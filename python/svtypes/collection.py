@@ -2,12 +2,27 @@ from __future__ import annotations
 import copy
 import struct
 from typing import Any, Generic, TypeVar
+from ._checked_callbacks import call_codec
 from .base import BuiltInType, TypeBase
 from .errors import DeclarationError, EncodeError, ResourceLimitError
 from .limits import DEFAULT_MAX_DYNAMIC_LENGTH
 
 class CollectionBase(BuiltInType):
     """Base class for all hardware collection types (arrays, queues, etc.)"""
+    def __iter__(self):
+        from .external_storage import external_binding
+        from .variable_access import _bound_location
+
+        binding = external_binding(self)
+        if binding is None:
+            return iter(self._elements)
+        if isinstance(self, AssocArray):
+            return iter(_bound_location(binding).read())
+        return (self[index] for index in range(len(self)))
+
+    def __setitem__(self, key, value):
+        raise TypeError("Direct element assignment is disabled. Use container[index].value = ... instead.")
+
     def sv_pack_loop(self, name: str, level: int, indent: str) -> list[str]:
         raise NotImplementedError
 
@@ -38,6 +53,33 @@ def _assign_element_value(element: Any, value: Any) -> None:
         SvStruct.value.fset(element, value)
     else:
         element.value = value
+
+
+_DEFAULT_ELEMENT = object()
+
+
+def _new_element(template: Any, value: Any = _DEFAULT_ELEMENT) -> Any:
+    if _container_elem_is_object_handle(template):
+        from .variable_access import _HandleSlot
+
+        element = _HandleSlot(template)
+    else:
+        element = copy.deepcopy(template)
+    if value is not _DEFAULT_ELEMENT:
+        _assign_element_value(element, value)
+    return element
+
+
+def _element_referent(element: Any) -> Any:
+    """Unwrap a handle slot for internal graph traversal."""
+    from .external_storage import ExternalValueBinding
+    from .variable_access import _HandleSlot
+
+    if isinstance(element, _HandleSlot):
+        return element.value
+    if isinstance(element, ExternalValueBinding) and _container_elem_is_object_handle(element._binding.leaf.codec):
+        return element.value
+    return element
 
 
 def _validate_element_template(codec: TypeBase, location: str) -> None:
@@ -143,8 +185,7 @@ class Array(CollectionBase, Generic[T], metaclass=_ArrayMeta):
         self._size = size
         self._elem_template = elem_type
         # Value elements have independent storage; class-handle slots start null.
-        self._elements = [None if _container_elem_is_object_handle(self._elem_template)
-                          else copy.deepcopy(self._elem_template) for _ in range(self._size)]
+        self._elements = [_new_element(self._elem_template) for _ in range(self._size)]
 
     @property
     def rand(self):
@@ -159,9 +200,6 @@ class Array(CollectionBase, Generic[T], metaclass=_ArrayMeta):
         binding = external_binding(self)
         if binding is not None:
             return collection_view(binding)  # type: ignore[return-value]
-        from .object import ObjectDescriptor
-        if _container_elem_is_object_handle(self._elem_template):
-            return list(self._elements)
         return [_element_value(e) for e in self._elements]
 
     @value.setter
@@ -174,18 +212,24 @@ class Array(CollectionBase, Generic[T], metaclass=_ArrayMeta):
             return
         if len(vals) != self._size:
             raise ValueError(f"Array size mismatch: expected {self._size}, got {len(vals)}")
-        from .object import ObjectDescriptor, SvObject
-        for i, v in enumerate(vals):
-            if _container_elem_is_object_handle(self._elem_template):
-                self._elements[i] = v
-            else:
-                _assign_element_value(self._elements[i], v)
+        if _container_elem_is_object_handle(self._elem_template):
+            # Validate the entire assignment before changing a fixed slot.
+            from .variable_access import _prepare
+
+            prepared = [_prepare(self._elem_template, value) for value in vals]
+            for element, value in zip(self._elements, prepared):
+                element._write_local(value)
+            return
+        for element, value in zip(self._elements, vals):
+            _assign_element_value(element, value)
 
     def __getitem__(self, i: int) -> T:
-        from .external_storage import _set_external_binding, external_binding
+        from .external_storage import ExternalValueBinding, _set_external_binding, external_binding
 
         binding = external_binding(self)
         if binding is not None:
+            if _container_elem_is_object_handle(self._elem_template):
+                return ExternalValueBinding(binding)[i]
             child = copy.deepcopy(self._elem_template)
             return _set_external_binding(child, binding.child_index(i))
         return self._elements[i]
@@ -199,14 +243,14 @@ class Array(CollectionBase, Generic[T], metaclass=_ArrayMeta):
 
         b = b''
         for i in range(self._size):
-            b += self._elem_template.pack(value[i])
+            b += call_codec(self._elem_template, "pack", value[i])
         return b
 
     def unpack(self, bytes_: bytes) -> tuple[list[Any], int]:
         offset = 0
         vals = []
         for i in range(self._size):
-            val, count = self._elem_template.unpack(bytes_[offset:])
+            val, count = call_codec(self._elem_template, "unpack", bytes_[offset:])
             vals.append(val)
             offset += count
         return vals, offset
@@ -310,9 +354,6 @@ class DynArray(CollectionBase, Generic[T]):
         binding = external_binding(self)
         if binding is not None:
             return collection_view(binding)  # type: ignore[return-value]
-        from .object import ObjectDescriptor
-        if _container_elem_is_object_handle(self._elem_template):
-            return list(self._elements)
         return [_element_value(e) for e in self._elements]
 
     @value.setter
@@ -329,32 +370,27 @@ class DynArray(CollectionBase, Generic[T]):
             raise EncodeError(
                 f"{self.__class__.__name__} length {len(vals)} exceeds encoder limit {self._max_length}"
             )
-        from .object import ObjectDescriptor, SvObject
-        self._elements = []
-        for v in vals:
-            if _container_elem_is_object_handle(self._elem_template):
-                self._elements.append(v)
-            else:
-                new_elem = copy.deepcopy(self._elem_template)
-                _assign_element_value(new_elem, v)
-                self._elements.append(new_elem)
+        self._elements = [_new_element(self._elem_template, value) for value in vals]
         self._bind_mode_elements()
 
     def __getitem__(self, i: int) -> T:
-        from .external_storage import _set_external_binding, external_binding
+        from .external_storage import ExternalValueBinding, _set_external_binding, external_binding
 
         binding = external_binding(self)
         if binding is not None:
+            if _container_elem_is_object_handle(self._elem_template):
+                return ExternalValueBinding(binding)[i]
             child = copy.deepcopy(self._elem_template)
             return _set_external_binding(child, binding.child_index(i))
         return self._elements[i]
 
     def __len__(self):
         from .external_storage import external_binding
+        from .variable_access import _bound_location
 
         binding = external_binding(self)
         if binding is not None:
-            return len(binding.read_value())
+            return len(_bound_location(binding).read())
         return len(self._elements)
 
     def size(self) -> int:
@@ -372,12 +408,7 @@ class DynArray(CollectionBase, Generic[T]):
             # New slots of a class-handle dynamic array or queue default to
             # null.  randomize() resizes the collection but never constructs
             # the pointed-to objects.
-            from .object import ObjectDescriptor
-
-            if _container_elem_is_object_handle(self._elem_template):
-                self._elements.append(None)
-            else:
-                self._elements.append(copy.deepcopy(self._elem_template))
+            self._elements.append(_new_element(self._elem_template))
         self._bind_mode_elements()
 
     def _bind_mode_elements(self) -> None:
@@ -394,7 +425,7 @@ class DynArray(CollectionBase, Generic[T]):
             )
         b = struct.pack('<I', len(value))
         for v in value:
-            b += self._elem_template.pack(v)
+            b += call_codec(self._elem_template, "pack", v)
         return b
 
     def unpack(self, bytes_: bytes) -> tuple[list[Any], int]:
@@ -411,7 +442,7 @@ class DynArray(CollectionBase, Generic[T]):
         offset = 4
         vals = []
         for _ in range(length):
-            val, count = self._elem_template.unpack(bytes_[offset:])
+            val, count = call_codec(self._elem_template, "unpack", bytes_[offset:])
             vals.append(val)
             offset += count
         return vals, offset
@@ -473,13 +504,7 @@ class Queue(DynArray):
             raise EncodeError(
                 f"Queue length would exceed encoder limit {self._max_length}"
             )
-        from .object import ObjectDescriptor, SvObject
-        if _container_elem_is_object_handle(self._elem_template):
-            self._elements.append(val)
-        else:
-            new_elem = copy.deepcopy(self._elem_template)
-            _assign_element_value(new_elem, val)
-            self._elements.append(new_elem)
+        self._elements.append(_new_element(self._elem_template, val))
         self._bind_mode_elements()
 
     def pop_front(self) -> Any:
@@ -500,9 +525,6 @@ class Queue(DynArray):
         # an empty index's explicit mode remains available if it is populated
         # again.  Rebind closures after the indices shift.
         self._bind_mode_elements()
-        from .object import ObjectDescriptor
-        if _container_elem_is_object_handle(self._elem_template):
-            return elem
         return _element_value(elem)
 
     def sv_pack_loop(self, name: str, level: int, indent: str) -> list[str]:
@@ -579,9 +601,6 @@ class AssocArray(CollectionBase, Generic[K, V]):
         binding = external_binding(self)
         if binding is not None:
             return collection_view(binding)  # type: ignore[return-value]
-        from .object import ObjectDescriptor
-        if _container_elem_is_object_handle(self._val_template):
-            return dict(self._elements)
         return {k: _element_value(e) for k, e in self._elements.items()}
 
     @value.setter
@@ -598,32 +617,26 @@ class AssocArray(CollectionBase, Generic[K, V]):
             raise EncodeError(
                 f"AssocArray length {len(vals)} exceeds encoder limit {self._max_length}"
             )
-        from .object import ObjectDescriptor, SvObject
-
-        self._elements = {}
-        for k, v in vals.items():
-            if _container_elem_is_object_handle(self._val_template):
-                self._elements[k] = v
-            else:
-                new_val_elem = copy.deepcopy(self._val_template)
-                _assign_element_value(new_val_elem, v)
-                self._elements[k] = new_val_elem
+        self._elements = {key: _new_element(self._val_template, value) for key, value in vals.items()}
 
     def __getitem__(self, key: Any) -> V:
-        from .external_storage import _set_external_binding, external_binding
+        from .external_storage import ExternalValueBinding, _set_external_binding, external_binding
 
         binding = external_binding(self)
         if binding is not None:
+            if _container_elem_is_object_handle(self._val_template):
+                return ExternalValueBinding(binding)[key]
             child = copy.deepcopy(self._val_template)
             return _set_external_binding(child, binding.child_key(key))
         return self._elements[key]
 
     def __len__(self):
         from .external_storage import external_binding
+        from .variable_access import _bound_location
 
         binding = external_binding(self)
         if binding is not None:
-            return len(binding.read_value())
+            return len(_bound_location(binding).read())
         return len(self._elements)
 
     def size(self) -> int:
@@ -636,11 +649,11 @@ class AssocArray(CollectionBase, Generic[K, V]):
                 f"AssocArray length {len(value)} exceeds encoder limit {self._max_length}"
             )
         b = struct.pack('<I', len(value))
-        sorted_keys = sorted(value.keys(), key=self._key_template.pack)
+        sorted_keys = sorted(value.keys(), key=lambda key: call_codec(self._key_template, "pack", key))
 
         for k in sorted_keys:
-            b += self._key_template.pack(k)
-            b += self._val_template.pack(value[k])
+            b += call_codec(self._key_template, "pack", k)
+            b += call_codec(self._val_template, "pack", value[k])
         return b
 
     def unpack(self, bytes_: bytes) -> tuple[dict[Any, Any], int]:
@@ -657,9 +670,9 @@ class AssocArray(CollectionBase, Generic[K, V]):
         offset = 4
         vals = {}
         for _ in range(length):
-            key, count = self._key_template.unpack(bytes_[offset:])
+            key, count = call_codec(self._key_template, "unpack", bytes_[offset:])
             offset += count
-            val, count = self._val_template.unpack(bytes_[offset:])
+            val, count = call_codec(self._val_template, "unpack", bytes_[offset:])
             offset += count
             vals[key] = val
         return vals, offset

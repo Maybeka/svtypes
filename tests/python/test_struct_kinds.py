@@ -5,13 +5,14 @@ from pathlib import Path
 import subprocess
 
 import pytest
+
 from svtypes import CovPoint, Cross, Enum, bins, covergroup
 
 from svtypes import (Array, AssocArray, Bit, CodecSession, DynArray, Int, Object, ObjectRegistry,
                      Queue, String, SvObject, SvStruct, SvPackedStruct,
                      UnsupportedTypeError, checked_unpack, encoding_descriptor,
                      materialize_type_spec, schema_descriptor, type_spec_identity,
-                     type_spec_from_identity, constraint, rand_layer, unique, ConstraintTypeError)
+                     type_spec_from_identity, constraint, rand_layer, unique, ConstraintTypeError, field)
 from svtypes import CovPoint, covergroup
 
 
@@ -39,21 +40,21 @@ def test_struct_copy_allows_member_named_value_including_nested_struct():
         item = NamedValue()
 
     source = NamedValue()
-    source.value.value = 7
+    field(source, "value").value = 7
     cloned = copy.copy(source)
-    cloned.value.value = 9
-    assert source.value.value == 7
-    assert cloned.value.value == 9
+    field(cloned, "value").value = 9
+    assert field(source, "value").value == 7
+    assert field(cloned, "value").value == 9
     nested = Nested()
-    nested.item.value.value = 11
+    field(nested.item, "value").value = 11
     nested_copy = copy.copy(nested)
-    nested_copy.item.value.value = 12
-    assert nested.item.value.value == 11
-    assert nested_copy.item.value.value == 12
+    field(nested_copy.item, "value").value = 12
+    assert field(nested.item, "value").value == 11
+    assert field(nested_copy.item, "value").value == 12
     deep_copy = copy.deepcopy(nested)
-    deep_copy.item.value.value = 13
-    assert nested.item.value.value == 11
-    assert deep_copy.item.value.value == 13
+    field(deep_copy.item, "value").value = 13
+    assert field(nested.item, "value").value == 11
+    assert field(deep_copy.item, "value").value == 13
 
 
 def test_struct_member_named_value_survives_all_container_value_copies():
@@ -61,7 +62,7 @@ def test_struct_member_named_value_survives_all_container_value_copies():
         value = Bit[8]()
 
     source = NamedValue()
-    source.value.value = 7
+    field(source, "value").value = 7
     for container, values, key in (
         (Array[NamedValue, 1](), [source], 0),
         (DynArray[NamedValue](), [source], 0),
@@ -70,14 +71,14 @@ def test_struct_member_named_value_survives_all_container_value_copies():
     ):
         container.value = values
         assert isinstance(container.value[key], NamedValue)
-        container[key].value.value = 9
-        assert source.value.value == 7
-        assert container.value[key].value.value == 9
+        field(container[key], "value").value = 9
+        assert field(source, "value").value == 7
+        assert field(container.value[key], "value").value == 9
     queue = Queue[NamedValue]()
     queue.push_back(source)
     popped = queue.pop_front()
     assert isinstance(popped, NamedValue)
-    assert popped.value.value == 7
+    assert field(popped, "value").value == 7
 
 
 _struct_registry = ObjectRegistry()
@@ -104,8 +105,8 @@ def test_struct_handles_share_one_graph_transaction_and_rollback_truncated_input
     value = HandleRecord()
     child = StructChild()
     child.number.value = 7
-    child.next_child = child
-    value.left = value.right = child
+    child.next_child.value = child
+    value.left.value = value.right.value = child
     value.children.value = [child, None]
     value.text.value = "tail"
     data = value.to_bytes()
@@ -114,9 +115,9 @@ def test_struct_handles_share_one_graph_transaction_and_rollback_truncated_input
     session = CodecSession()
     decoded, used = checked_unpack(HandleRecord.codec_template(), data, encoding_descriptor(HandleRecord), context=UnpackContext(session))
     assert used == len(data)
-    assert decoded.left is decoded.right
-    assert decoded.left.next_child is decoded.left
-    assert decoded.children[0] is decoded.left and decoded.children[1] is None
+    assert decoded.left.value is decoded.right.value
+    assert decoded.left.value.next_child.value is decoded.left.value
+    assert decoded.children[0].value is decoded.left.value and decoded.children[1].value is None
     for size in (inline_size, len(data) - 1):
         empty = CodecSession()
         with pytest.raises((ValueError, TypeError)):
@@ -138,9 +139,9 @@ def test_struct_decode_enforces_input_and_nesting_limits():
 def test_generated_cpp_struct_shared_and_cyclic_handle_codecs(tmp_path):
     child = StructChild()
     child.number.value = 7
-    child.next_child = child
+    child.next_child.value = child
     value = HandleRecord()
-    value.left = value.right = child
+    value.left.value = value.right.value = child
     value.children.value = [child, None]
     value.text.value = "tail"
     expected = ",".join(str(byte) for byte in value.to_bytes())
@@ -332,23 +333,23 @@ def test_struct_handle_fields_share_graph_context_without_struct_identity():
     source = References()
     child = Child()
     child.code.value = 17
-    source.left = child
-    source.right = child
+    source.left.value = child
+    source.right.value = child
     data = source.pack(source)
     context = CodecSession(origin=2).unpack_context()
     decoded, used = checked_unpack(References.codec_template(), data,
                                    encoding_descriptor(References), context=context)
     assert used == len(data)
-    assert decoded.left is decoded.right
-    assert decoded.left.code.value == 17
-    assert context.session.get(decoded.left.svtypes_object_number) is decoded.left
+    assert decoded.left.value is decoded.right.value
+    assert decoded.left.value.code.value == 17
+    assert context.session.get(decoded.left.value.svtypes_object_number) is decoded.left.value
     target = References()
     target.value = source
-    assert target.left is source.left
-    assert target.right is source.right
+    assert target.left.value is source.left.value
+    assert target.right.value is source.right.value
     copied = copy.copy(source)
-    assert copied.left is child
-    assert copied.right is child
+    assert copied.left.value is child
+    assert copied.right.value is child
 
 
 @pytest.mark.parametrize("factory", [lambda: Array[PackedHeader, 2](),
@@ -714,9 +715,9 @@ def test_unpacked_struct_random_graph_reaches_allocated_handles_without_allocati
     assert obj.data.to_bytes() == b"\0"
     assert obj.data.__dict__.get(descriptor._cache_key) is None
     child = Child()
-    obj.data.child = child
+    obj.data.child.value = child
     assert obj.randomize()
-    assert obj.data.child is child and child.tag.value == 5
+    assert obj.data.child.value is child and child.tag.value == 5
     child.tag.value = 0
     child.tag.rand_mode(0)
     assert not obj.randomize()
@@ -730,7 +731,7 @@ def test_unpacked_struct_random_graph_reaches_allocated_handles_without_allocati
 
     child.tag.rand_mode(1)
     bundle = Bundle()
-    bundle.child = child
+    bundle.child.value = child
     for cls, expected in ((ContainerHost, 5), (StateContainerHost, 0)):
         child.tag.value = 0
         host = cls()
@@ -922,14 +923,15 @@ def test_struct_request_response_codecs_preserve_value_fields_and_opaque_referen
     original.owner.value = 42
     original.references.value = [42, None, 42]
     incoming = request()
-    incoming.value.value = original
+    field(incoming, "value").value = original
     original.payload.data.value.append(9)
     decoded, used = checked_unpack(request.codec_template(), incoming.to_bytes(), encoding_descriptor(request))
     assert used == len(incoming.to_bytes())
-    assert decoded.value.payload.data.value == [1, 2]
+    decoded_value = field(decoded, "value")
+    assert decoded_value.payload.data.value == [1, 2]
     outgoing = response()
     for name in ("result", "previous", "current"):
-        getattr(outgoing, name).value = decoded.value
+        getattr(outgoing, name).value = decoded_value
     outgoing.previous.payload.label.value = "output"
     outgoing.current.payload.data.value = [3]
     restored, used = checked_unpack(response.codec_template(), outgoing.to_bytes(), encoding_descriptor(response))

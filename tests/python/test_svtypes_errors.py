@@ -86,11 +86,11 @@ def test_late_bound_object_descriptor_supports_recursive_graphs():
 
     node = RecursiveNode()
     node.data.value = 3
-    node.next = node
+    node.next.value = node
 
     out, count = RecursiveNode().unpack(node.to_bytes())
     assert count == len(node.to_bytes())
-    assert out.next is out
+    assert out.next.value is out
 
 
 def test_object_null_presence_marker_roundtrip():
@@ -150,7 +150,7 @@ def test_type_registry_rejects_duplicate_name_for_different_type():
 
 
 def test_public_version_matches_project_metadata():
-    assert __version__ == "1.4.2"
+    assert __version__ == "1.5.0"
 
 
 def test_public_exception_hierarchy_is_importable():

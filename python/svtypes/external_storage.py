@@ -132,6 +132,48 @@ class ExternalFieldStorage(Protocol):
     ) -> bytes | None: ...
 
 
+@runtime_checkable
+class ExternalBorrowStorage(ExternalFieldStorage, Protocol):
+    """Optional stable element storage. Paths are resolved at acquisition only."""
+
+    def acquire_borrow(self, key: object, descriptor: FieldDescriptor, path: FieldPath) -> object: ...
+
+    def read_borrow(self, token: object) -> bytes: ...
+
+    def write_borrow(self, token: object, payload: bytes) -> None: ...
+
+    def release_borrow(self, token: object) -> None: ...
+
+
+@runtime_checkable
+class ExternalBorrowPathStorage(ExternalBorrowStorage, Protocol):
+    """Optional subslot access relative to a stable aggregate token.
+
+    The returned token has an independent lifetime. The backend resolves the
+    relative path against the current contents of the selected aggregate and
+    retains the selected child even if it later leaves that aggregate.
+    """
+
+    def acquire_borrow_child(self, token: object, path: FieldPath) -> object: ...
+
+
+@runtime_checkable
+class ExternalBorrowFieldStorage(ExternalBorrowStorage, Protocol):
+    """Optional immediate field operations relative to a retained aggregate.
+
+    A relative path is evaluated for each operation; this capability does not
+    promise stable child identity. Payloads and results use the ordinary field
+    codecs and operation semantics, including structural edits and pop results.
+    """
+
+    def read_borrow_path(self, token: object, path: FieldPath) -> bytes: ...
+
+    def write_borrow_path(
+        self, token: object, path: FieldPath, operation: FieldOperation,
+        payload: bytes | None,
+    ) -> bytes | None: ...
+
+
 class _BindingState:
     __slots__ = ("closed",)
 
@@ -139,7 +181,7 @@ class _BindingState:
         self.closed = False
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class _ExternalBinding:
     storage: ExternalFieldStorage
     key: object
@@ -147,6 +189,7 @@ class _ExternalBinding:
     path: FieldPath = FieldPath()
     readonly: bool = False
     state: _BindingState | None = None
+    session: Any = None
 
     def _check_open(self) -> None:
         if self.state is not None and self.state.closed:
@@ -168,9 +211,17 @@ class _ExternalBinding:
     def _replace_path(self, path: FieldPath) -> "_ExternalBinding":
         # Validate before publishing a derived view to a backend.
         self.root.resolve_path(path)
-        return _ExternalBinding(self.storage, self.key, self.root, path, self.readonly, self.state)
+        return _ExternalBinding(self.storage, self.key, self.root, path, self.readonly, self.state, self.session)
 
-    def read_value(self) -> Any:
+    def _decode_value(self, payload: bytes, *, resolve_only: bool | None = None) -> Any:
+        from .variable_access import _has_handle
+
+        if resolve_only is None:
+            resolve_only = _has_handle(self.leaf.codec)
+        return _unpack_exact(self.leaf.codec, payload, session=self.session if resolve_only else None,
+                             resolve_only=resolve_only)
+
+    def read_value(self, *, resolve_only: bool | None = None) -> Any:
         self._check_open()
         try:
             payload = self.storage.read(self.key, self.root, self.path)
@@ -180,16 +231,26 @@ class _ExternalBinding:
             raise ExternalStorageError("external field read failed") from exc
         if not isinstance(payload, bytes):
             raise ExternalStorageError("external field read must return bytes")
-        return _unpack_exact(self.leaf.codec, payload)
+        return self._decode_value(payload, resolve_only=resolve_only)
 
-    def write_value(self, value: Any, operation: FieldOperation = FieldOperation.SET) -> Any:
+    def _check_writable(self) -> None:
         self._check_open()
         if self.readonly:
             raise ExternalStorageError("external value binding is read-only")
-        payload = _pack_value(self.leaf.codec, value)
+
+    def write_value(self, value: Any, operation: FieldOperation = FieldOperation.SET) -> Any:
+        self._check_writable()
+        payload = _pack_bound_value(self.leaf.codec, value, self)
         # Decode our own outgoing bytes so the return value has precisely the
         # same normalisation as a normal local descriptor assignment.
-        normalized = _unpack_exact(self.leaf.codec, payload)
+        normalized = self._decode_value(payload)
+        self._publish_payload(payload, operation)
+        return normalized
+
+    def _publish_payload(
+        self, payload: bytes, operation: FieldOperation = FieldOperation.SET, *, resolve_only: bool | None = None,
+    ) -> None:
+        self._check_writable()
         try:
             returned = self.storage.write(self.key, self.root, self.path, operation, payload)
         except ExternalStorageError:
@@ -199,16 +260,19 @@ class _ExternalBinding:
         if returned is not None:
             if not isinstance(returned, bytes):
                 raise ExternalStorageError("external field write must return bytes or None")
-            _unpack_exact(self.leaf.codec, returned)
-        return normalized
+            self._decode_value(returned, resolve_only=resolve_only)
 
-    def write_operation(self, operation: FieldOperation, value: Any | None = None) -> None:
+    def write_operation(self, operation: FieldOperation, value: Any | None = None) -> bytes | None:
         self._check_open()
         if self.readonly:
             raise ExternalStorageError("external value binding is read-only")
         needs_value = operation in (FieldOperation.APPEND, FieldOperation.INSERT)
-        payload = (_pack_value(_operation_payload_descriptor(self.leaf.codec, operation), value)
+        payload = (_pack_bound_value(_operation_payload_descriptor(self.leaf.codec, operation), value, self)
                    if value is not None or needs_value else None)
+        return self._publish_operation(operation, payload)
+
+    def _publish_operation(self, operation: FieldOperation, payload: bytes | None) -> bytes | None:
+        self._check_writable()
         try:
             returned = self.storage.write(self.key, self.root, self.path, operation, payload)
         except ExternalStorageError:
@@ -217,6 +281,36 @@ class _ExternalBinding:
             raise ExternalStorageError("external field operation failed") from exc
         if returned is not None and not isinstance(returned, bytes):
             raise ExternalStorageError("external field write must return bytes or None")
+        return returned
+
+
+def _pack_bound_value(codec: Any, value: Any, binding: _ExternalBinding) -> bytes:
+    from collections.abc import Mapping, Sequence
+    from .collection import Array, AssocArray, DynArray
+    from .object import SvStruct
+    from .variable_access import _has_handle, _prepare_external, _snapshot
+
+    def value_input(declaration, incoming):
+        # Collection views historically accept both struct instances and
+        # mappings. Normalize them before applying value/session validation.
+        if isinstance(declaration, SvStruct):
+            if isinstance(incoming, SvStruct):
+                if not isinstance(incoming, type(declaration)):
+                    raise TypeError(f'expected {type(declaration).__name__}, got {type(incoming).__name__}')
+                return _snapshot(declaration, incoming)
+            if isinstance(incoming, Mapping):
+                members = dict(declaration._SvObject__svtypes_members)
+                return {key: value_input(members.get(key), child) for key, child in incoming.items()}
+        elif isinstance(declaration, AssocArray) and isinstance(incoming, Mapping):
+            return {key: value_input(declaration._val_template, child) for key, child in incoming.items()}
+        elif isinstance(declaration, (Array, DynArray)) and isinstance(incoming, Sequence):
+            if not isinstance(incoming, (str, bytes, bytearray)):
+                return [value_input(declaration._elem_template, child) for child in incoming]
+        return incoming
+
+    if _has_handle(codec):
+        return _prepare_external(codec, value_input(codec, value), binding, handles=True)
+    return _pack_value(codec, value)
 
 
 def _operation_payload_descriptor(descriptor: Any, operation: FieldOperation) -> Any:
@@ -271,14 +365,20 @@ def _pack_value(descriptor: Any, value: Any) -> bytes:
     return SvObject._pack_field_value(descriptor, value, PackContext())
 
 
-def _unpack_exact(descriptor: Any, payload: bytes, *, session: Any | None = None) -> Any:
+def _unpack_exact(
+    descriptor: Any, payload: bytes, *, session: Any | None = None, resolve_only: bool = False,
+) -> Any:
     from .object import SvObject, UnpackContext
 
     try:
-        value, count = SvObject._unpack_field_value(descriptor, payload, UnpackContext(session))
+        context = UnpackContext(session, diagnostics="strict" if resolve_only else "off")
+        context._resolve_only = resolve_only
+        value, count = SvObject._unpack_field_value(descriptor, payload, context)
     except Exception as exc:
         if isinstance(exc, ExternalStorageError):
             raise
+        if resolve_only:
+            raise ExternalStorageError(f"external handle-value read failed: {exc}") from exc
         raise ExternalStorageError("external field payload cannot be decoded") from exc
     if count != len(payload):
         raise ExternalStorageError(
@@ -288,6 +388,13 @@ def _unpack_exact(descriptor: Any, payload: bytes, *, session: Any | None = None
 
 
 def _set_external_binding(value: Any, binding: _ExternalBinding | None) -> Any:
+    migration = getattr(value, '_svtypes_migration', None)
+    if migration is not None and migration['users'] and migration['view'] is not None:
+        active = migration['view']._binding
+        if binding is None:
+            return value
+        if binding is not active:
+            raise ExternalStorageError('cannot replace an active slot relocation')
     if binding is None:
         try:
             object.__delattr__(value, "_svtypes_external_binding")
@@ -307,18 +414,16 @@ def is_externally_bound(value: Any) -> bool:
 
 
 def _bind_loaded_object(value: Any, binding: _ExternalBinding) -> Any:
-    from .object import SvObject
+    from .object import SvStruct
 
     if isinstance(value, list):
         return _ExternalSequence(binding)
     if isinstance(value, dict):
         return _ExternalMapping(binding)
-    if isinstance(value, SvObject):
-        # Object decode can resolve an existing object from a codec session.
-        # Never attach an owner-specific backend binding to that shared
-        # registry object: another owner could otherwise inherit this field's
-        # storage location.  A detached view keeps the binding per access.
-        value = copy.deepcopy(value)
+    if isinstance(value, SvStruct):
+        # Decoding creates a fresh by-value struct. Bind that view directly;
+        # cloning it would clone its handles too. Object handles themselves
+        # remain the session's referents and never acquire a container binding.
         _set_external_binding(value, binding)
     return value
 
@@ -372,7 +477,7 @@ class _ExternalSequence(MutableSequence[Any]):
             if self._binding.readonly:
                 raise ExternalStorageError("external value binding is read-only")
             # Validate the complete resulting shape before issuing local writes.
-            _pack_value(self._binding.leaf.codec, replacement)
+            _pack_bound_value(self._binding.leaf.codec, replacement, self._binding)
             start, stop, step = index.indices(len(values))
             positions = list(range(start, stop, step))
             for position, item in zip(positions, updates):
@@ -412,8 +517,11 @@ class _ExternalSequence(MutableSequence[Any]):
         if index == -1:
             index = len(values) - 1
         result = values[index]
-        self._binding.child_index(index).write_operation(FieldOperation.POP)
-        return result
+        selected = self._binding.child_index(index)
+        returned = selected.write_operation(FieldOperation.POP)
+        # Older backends can omit a result; typed backends return the value
+        # actually removed, which may differ from the preliminary snapshot.
+        return result if returned is None else selected._decode_value(returned)
 
 
 class _ExternalMapping(MutableMapping[Any, Any]):
@@ -458,16 +566,61 @@ class ExternalValueBinding:
     def __init__(self, binding: _ExternalBinding) -> None:
         self._binding = binding
 
+    def __getitem__(self, key: Any):
+        from operator import index as integer_index
+        from .collection import Array, AssocArray, DynArray
+        from .variable_access import _bound_location, _prepare
+
+        binding = self._binding
+        codec = binding.leaf.codec
+        if isinstance(codec, AssocArray):
+            return ExternalValueBinding(binding.child_key(_prepare(codec._key_template, key)))
+        if not isinstance(codec, (Array, DynArray)):
+            raise TypeError("indexed access requires a collection binding")
+        if isinstance(key, slice):
+            size = codec._size if isinstance(codec, Array) else len(_bound_location(binding).read())
+            return [ExternalValueBinding(binding.child_index(i)) for i in range(*key.indices(size))]
+        key = integer_index(key)
+        if key < 0:
+            key += codec._size if isinstance(codec, Array) else len(_bound_location(binding).read())
+        if key < 0 or (isinstance(codec, Array) and key >= codec._size):
+            raise IndexError("collection index out of range")
+        return ExternalValueBinding(binding.child_index(key))
+
+    def __iter__(self):
+        from .collection import Array, AssocArray, DynArray
+        from .variable_access import _bound_location
+
+        codec = self._binding.leaf.codec
+        if isinstance(codec, AssocArray):
+            return iter(_bound_location(self._binding).read())
+        if isinstance(codec, (Array, DynArray)):
+            return iter(self[:])
+        raise TypeError("iteration requires a collection binding")
+
+    def __setitem__(self, key, value):
+        raise TypeError("Direct element assignment is disabled. Use binding[index].value = ... instead.")
+
     @property
     def value(self) -> Any:
-        from .collection import CollectionBase
+        from .collection import CollectionBase, _container_elem_is_object_handle
+        from .variable_access import _bound_location
 
-        if isinstance(self._binding.leaf.codec, CollectionBase):
+        codec = self._binding.leaf.codec
+        if isinstance(codec, CollectionBase):
             return collection_view(self._binding)
+        if _container_elem_is_object_handle(codec):
+            return _bound_location(self._binding).read()
         return _bind_loaded_object(self._binding.read_value(), self._binding)
 
     @value.setter
     def value(self, value: Any) -> None:
+        from .collection import _container_elem_is_object_handle
+        from .variable_access import _bound_location
+
+        if _container_elem_is_object_handle(self._binding.leaf.codec):
+            _bound_location(self._binding).prepare(value)()
+            return
         self._binding.write_value(value)
 
     def close(self) -> None:
@@ -481,13 +634,14 @@ def bind_external_value(
     key: object,
     *,
     readonly: bool = False,
+    session: Any = None,
 ) -> ExternalValueBinding:
-    """Bind one temporary value root without inventing a second value DSL."""
+    """Bind a value root, optionally selecting the session for handle reads."""
 
     if not isinstance(storage, ExternalFieldStorage):
         raise TypeError("storage must implement ExternalFieldStorage.read/write")
     field = descriptor if isinstance(descriptor, FieldDescriptor) else FieldDescriptor(descriptor)
-    return ExternalValueBinding(_ExternalBinding(storage, key, field, readonly=readonly, state=_BindingState()))
+    return ExternalValueBinding(_ExternalBinding(storage, key, field, readonly=readonly, state=_BindingState(), session=session))
 
 
 class MemoryExternalFieldStorage:
@@ -518,7 +672,9 @@ class MemoryExternalFieldStorage:
         root_descriptor, root_payload = self._root(key, descriptor)
         root = _unpack_exact(root_descriptor.codec, root_payload, session=self._session)
         leaf = descriptor.resolve_path(path).codec
-        value = None if payload is None else _unpack_exact(_operation_payload_descriptor(leaf, operation), payload)
+        value = None if payload is None else _unpack_exact(
+            _operation_payload_descriptor(leaf, operation), payload, session=self._session,
+        )
         root = _apply_operation(root, root_descriptor.codec, path, operation, value)
         self._roots[key] = (root_descriptor, _pack_value(root_descriptor.codec, root))
         return None
@@ -561,8 +717,11 @@ def _write_path(root: Any, descriptor: Any, path: FieldPath, value: Any) -> Any:
         return value
     first = path.segments[0]
     child_desc = _child_descriptor(descriptor, first)
-    child = _get_path(root, descriptor, FieldPath((first,)))
-    updated = _write_path(child, child_desc, FieldPath(path.segments[1:]), value)
+    if len(path) == 1:
+        updated = value
+    else:
+        child = _get_path(root, descriptor, FieldPath((first,)))
+        updated = _write_path(child, child_desc, FieldPath(path.segments[1:]), value)
     if isinstance(first, FieldMember):
         SvObject._assign_unpacked_field(root, first.name, child_desc, updated)
     elif isinstance(first, FieldIndex):
@@ -584,10 +743,14 @@ def _container_at(root: Any, descriptor: Any, path: FieldPath) -> tuple[Any, Any
 
 
 def _apply_operation(root: Any, descriptor: Any, path: FieldPath, operation: FieldOperation, value: Any) -> Any:
+    from .base import TypeBase
     from .collection import Array, AssocArray, DynArray, Queue
+    from .object import ObjectDescriptor
 
     parent, parent_desc, last = _container_at(root, descriptor, path)
     if operation is FieldOperation.SET:
+        if last is None and isinstance(descriptor, ObjectDescriptor):
+            return value
         if last is None:
             # The caller replaces the root in the only place that can observe
             # it: mutate object/collections in place when possible.
@@ -595,14 +758,15 @@ def _apply_operation(root: Any, descriptor: Any, path: FieldPath, operation: Fie
                 root[:] = value
             elif isinstance(root, dict):
                 root.clear(); root.update(value)
-            elif hasattr(root, "value"):
+            elif isinstance(root, TypeBase):
                 root.value = value
             else:
                 return value
             return root
         return _write_path(root, descriptor, path, value)
-    target = _get_path(root, descriptor, path)
-    target_desc = FieldDescriptor(descriptor).resolve_path(path).codec
+    if operation in (FieldOperation.APPEND, FieldOperation.RESIZE):
+        target = _get_path(root, descriptor, path)
+        target_desc = FieldDescriptor(descriptor).resolve_path(path).codec
     if operation is FieldOperation.APPEND:
         if not isinstance(target, list) or not isinstance(target_desc, (DynArray, Queue)):
             raise ExternalStorageError("append requires a dynamic array or queue")

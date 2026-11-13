@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import Any
 
+from ._checked_callbacks import call_callback, guard_declared_copy_methods
+
 
 def _require_single_bit_value(type_name: str, value: Any) -> None:
     """Reject an integer that a single bit cannot represent exactly.
@@ -44,6 +46,10 @@ class TypeBase:
     _default_cov = True
     _default_intelli = False
     _default_pack_bytes = True
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        guard_declared_copy_methods(cls)
 
     def __init__(
         self,
@@ -181,10 +187,10 @@ class TypeBase:
         raise NotImplementedError
 
     def to_bytes(self):
-        return self.pack(self.value)
+        return call_callback(self.pack, self.value)
 
     def from_bytes(self, bytes_: bytes):
-        val, count = self.unpack(bytes_)
+        val, count = call_callback(self.unpack, bytes_)
         self.value = val
         return count
 

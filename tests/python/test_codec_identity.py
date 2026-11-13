@@ -37,27 +37,27 @@ def test_checked_decode_reuses_graph_identity_and_reserves_imported_numbers():
     received_graphs = []
     for index in range(3):
         graph = Graph(session=source)
-        graph.first = graph.shared = None
+        graph.first.value = graph.shared.value = None
         if index:
             node = Node(session=source)
             node.number.value = index
-            node.link = node
-            graph.first = graph.shared = node
+            node.link.value = node
+            graph.first.value = graph.shared.value = node
         payload = graph.pack(graph, source.pack_context())
         value, consumed = checked_unpack(codec, payload, descriptor, receiver.unpack_context())
         assert consumed == len(payload)
         assert receiver.get(value.svtypes_object_number) is value
         if index:
-            assert value.first is value.shared
-            assert value.first.link is value.first
-            assert value.first.number.value == index
+            assert value.first.value is value.shared.value
+            assert value.first.value.link.value is value.first.value
+            assert value.first.value.number.value == index
         else:
-            assert value.first is value.shared is None
+            assert value.first.value is value.shared.value is None
         again, _ = checked_unpack(codec, payload, descriptor, receiver.unpack_context())
         assert again is value
         received_graphs.append(value)
     local = Graph(session=receiver)
-    assert local.svtypes_object_number > received_graphs[-1].first.svtypes_object_number
+    assert local.svtypes_object_number > received_graphs[-1].first.value.svtypes_object_number
     assert receiver.get(local.svtypes_object_number) is local
 
 

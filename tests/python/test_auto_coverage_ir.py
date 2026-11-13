@@ -90,16 +90,25 @@ def test_default_auto_coverage_group_is_bound_and_samples_scalar_and_dynamic_val
     assert snapshot["dynamic"]["hits"] == {"auto[0]": 1, "auto[3]": 1}
 
 
-def test_default_auto_coverage_tracks_handle_nullness_and_excludes_xz_from_two_state_bins():
+def test_default_auto_coverage_excludes_handle_nullness_and_xz_from_two_state_bins():
+    from svtypes import ObjectRegistry
+
+    registry = ObjectRegistry()
+
+    class Child(SvObject):
+        pass
+
+    registry.register(Child)
+
     class Packet(SvObject):
         state = Logic[1]()
-        child = Object["Child"]()
+        child = Object[Child]()
 
     packet = Packet()
     packet.state.value = "x"
     packet.svtypes_auto_cov.sample()
     packet.state.value = 1
-    packet.child = Packet()
+    packet.child.value = Child()
     packet.svtypes_auto_cov.sample()
     snapshot = packet.svtypes_auto_cov.instance.snapshot()
     assert snapshot["state"]["hits"] == {"auto[1]": 1}

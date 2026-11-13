@@ -330,11 +330,11 @@ def test_dist_applies_after_dynamic_element_expansion():
 def test_dist_applies_to_an_allocated_rand_handle_leaf():
     counts = {0: 0, 3: 0}
     packet = HandleDistPacket()
-    packet.child = DistHandleChild()
+    packet.child.value = DistHandleChild()
     with RandomContext(seed=307):
         for _ in range(160):
             assert packet.randomize()
-            counts[packet.child.choice.value] += 1
+            counts[packet.child.value.choice.value] += 1
     assert counts[3] > counts[0] * 2
 
 

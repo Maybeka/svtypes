@@ -100,7 +100,7 @@ class Header(SvObject):
 `[first, second, first]` 与 `is` 断言则刻意区分了“值相等”和“同一个对象”。把最后一个 `first` 改成
 `Node()` 后，重新运行并观察身份断言为何改变。
 
-**练习：** 删除 `second.next = first`，确认重复引用仍保留；再把 `path` 改为 `DynArray[Object["Node"](...)]`
+**练习：** 删除 `second.next.value = first`，确认重复引用仍保留；再把 `path` 改为 `DynArray[Object["Node"](...)]`
 并思考何时应使用 queue 语义、何时应该使用动态数组语义。
 
 ## 3. 受约束随机：先写可读的合法空间

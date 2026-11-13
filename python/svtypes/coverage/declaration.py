@@ -9,6 +9,7 @@ import weakref
 from collections.abc import Mapping
 from typing import Any, Callable, Generic, TypeVar, get_args, get_type_hints, overload
 
+from .._checked_callbacks import call_method_callback, callback_gateway
 from ..errors import CoverageError
 from .canonical import semantic_digest
 from .context import coverage_case_name
@@ -496,12 +497,12 @@ def coverage_init(function: Callable[..., Any]) -> Callable[..., Any]:
         depth = getattr(self, "_svtypes_coverage_init_depth", 0)
         object.__setattr__(self, "_svtypes_coverage_init_depth", depth + 1)
         try:
-            return function(self, *args, **kwargs)
+            return call_method_callback(function, self, *args, **kwargs)
         finally:
             object.__setattr__(self, "_svtypes_coverage_init_depth", depth)
 
     setattr(wrapped, "_svtypes_coverage_init", True)
-    return wrapped
+    return callback_gateway(wrapped)
 
 
 def _has_coverage_init(cls: type[Any]) -> bool:

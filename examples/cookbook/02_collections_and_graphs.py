@@ -27,8 +27,8 @@ def main() -> None:
     # 构造两个节点和一个真正的环，模拟描述符/链表等常见对象图。
     first, second = Node(), Node()
     first.code.value, second.code.value = 10, 20
-    first.next = second
-    second.next = first  # a real cycle, not a copied nested value
+    first.next.value = second
+    second.next.value = first  # a real cycle, not a copied nested value
 
     message = Message()
     message.bytes.value = [1, 2, 3]
@@ -38,9 +38,9 @@ def main() -> None:
     assert consumed == len(message.to_bytes())
     assert decoded.bytes.value == [1, 2, 3]
     # “is” 验证共享身份；只比较 value 无法发现图被错误复制。
-    assert decoded.path[0] is decoded.path[2]
-    assert decoded.path[0].next is decoded.path[1]
-    assert decoded.path[1].next is decoded.path[0]
+    assert decoded.path[0].value is decoded.path[2].value
+    assert decoded.path[0].value.next.value is decoded.path[1].value
+    assert decoded.path[1].value.next.value is decoded.path[0].value
     print("解码后的对象图同时保留了环和重复引用")
 
 

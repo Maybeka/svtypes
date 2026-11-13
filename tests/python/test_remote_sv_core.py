@@ -745,11 +745,11 @@ def _write_inputs(out: Path) -> None:
     clear_object_registry()
     child = GraphNode()
     child.data.value = 33
-    child.next = None
+    child.next.value = None
     pair = GraphPair()
     pair.tag.value = 7
-    pair.left = child
-    pair.right = child
+    pair.left.value = child
+    pair.right.value = child
     refq = GraphRefQueue()
     refq.tag.value = 9
     refq.nodes.value = [child, child]
@@ -758,7 +758,7 @@ def _write_inputs(out: Path) -> None:
     valq.nodes.value = [child, child]
     cycle = GraphNode()
     cycle.data.value = 123
-    cycle.next = cycle
+    cycle.next.value = cycle
     _write_hex(out / "pair_in.hex", pair.to_bytes())
     _write_hex(out / "refq_in.hex", refq.to_bytes())
     _write_hex(out / "valq_in.hex", valq.to_bytes())
@@ -870,8 +870,8 @@ def test_remote_sv_core_types_graph_and_policies(target_core_sim):
     assert many.dyn_signed.value == [-128, -1, 0, 127]
     assert many.q_colors.value == [Color.GREEN, Color.RED]
     assert many.assoc.value == {"cat": 31, "dog": -41}
-    assert [(v.a.value, v.b.value) for v in many.q_inner] == [(101, 0xA1), (-102, 0xA2)]
-    assert [(v.a.value, v.b.value) for v in many.inner_arr] == [(201, 0xB1), (-202, 0xB2)]
+    assert [(v.a.value, v.b.value) for v in many.q_inner.value] == [(101, 0xA1), (-102, 0xA2)]
+    assert [(v.a.value, v.b.value) for v in many.inner_arr.value] == [(201, 0xB1), (-202, 0xB2)]
     assert many.nested.a.value == 303
     assert many.nested.b.value == 0xC3
 
@@ -911,26 +911,26 @@ def test_remote_sv_core_types_graph_and_policies(target_core_sim):
     clear_object_registry()
     pair = GraphPair()
     pair.from_bytes(_read_hex(out / "pair_out.hex"))
-    assert pair.left is pair.right
-    assert pair.left.data.value == 44
+    assert pair.left.value is pair.right.value
+    assert pair.left.value.data.value == 44
 
     clear_object_registry()
     cycle = GraphNode()
     cycle.from_bytes(_read_hex(out / "cycle_out.hex"))
-    assert cycle.next is cycle
+    assert cycle.next.value is cycle
     assert cycle.data.value == 7
 
     clear_object_registry()
     refq = GraphRefQueue()
     refq.from_bytes(_read_hex(out / "refq_out.hex"))
-    assert refq.nodes[0] is refq.nodes[1]
-    assert refq.nodes[0].data.value == 55
+    assert refq.nodes[0].value is refq.nodes[1].value
+    assert refq.nodes[0].value.data.value == 55
 
     clear_object_registry()
     valq = GraphQueue()
     valq.from_bytes(_read_hex(out / "valq_out.hex"))
-    assert valq.nodes[0] is valq.nodes[1]
-    assert valq.nodes[0].data.value == 66
+    assert valq.nodes[0].value is valq.nodes[1].value
+    assert valq.nodes[0].value.data.value == 66
 
 
 @pytest.mark.remote_sv

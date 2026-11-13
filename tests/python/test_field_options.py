@@ -256,7 +256,7 @@ def test_python_dump_is_ordered_selective_and_cycle_safe():
     node = Node()
     node.visible.value = 3
     node.hidden.value = 99
-    node.next = node
+    node.next.value = node
     rendered = node.svtypes_sprint()
     assert rendered.startswith(f"Node#{node.svtypes_object_number}{{visible=3, next=")
     assert f"<ref#{node.svtypes_object_number}>" in rendered

@@ -661,6 +661,7 @@ def checked_unpack(
         raise CompatibilityError(
             "SvTypes encoding fingerprint mismatch for " + expected.unified_type_name
         )
+    from ._checked_callbacks import call_codec
     from .object import SvObject, UnpackContext
 
     if context is not None:
@@ -671,7 +672,7 @@ def checked_unpack(
         previous = context.diagnostics
         context.diagnostics = "strict"
         try:
-            return codec.unpack(data, context)
+            return call_codec(codec, "unpack", data, context)
         finally:
             context.diagnostics = previous
-    return codec.unpack(data)
+    return call_codec(codec, "unpack", data)

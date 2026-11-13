@@ -9,11 +9,13 @@ from typing import Any
 
 from ..errors import CoverageError
 from ..logic import LogicValue
+from ..object import SvStruct, _declared_member
 from .ir import CoverageBinIR, CoverageCrossIR, CoverageIR, CoveragePointIR
 
 
 def _value(value: Any) -> Any:
-    value = value.value if hasattr(value, "value") else value
+    if not isinstance(value, SvStruct):
+        value = getattr(value, "value", value)
     if hasattr(value, "value_mask") and not getattr(value, "x_mask", 0) and not getattr(value, "z_mask", 0):
         return value.value_mask
     return value
@@ -33,17 +35,15 @@ def eval_expr(expression: Any, context: dict[str, Any]) -> Any:
         item = context["item"]
         *parents, field_name = field_name.split(".")
         for parent in parents:
-            item = getattr(item, parent)
+            item = _declared_member(item, parent)
         if kind == "is_null":
             descriptor = next((base.__dict__[field_name] for base in type(item).mro() if field_name in base.__dict__), None)
             return int(item.__dict__.get(getattr(descriptor, "_cache_key", "")) is None)
-        value = getattr(item, field_name)
+        value = _declared_member(item, field_name)
         if "projection" in expression:
             values = [value]
             for step in expression["projection"]:
                 if step["kind"] == "member":
-                    from ..object import SvStruct
-
                     values = [SvStruct._struct_member_value(child, step["name"],
                               dict(child._SvObject__svtypes_members)[step["name"]]) for child in values]
                 elif step["kind"] == "index":
@@ -85,7 +85,8 @@ def eval_expr(expression: Any, context: dict[str, Any]) -> Any:
         except KeyError as error:
             raise CoverageError(f"unknown coverage expression name {expression['name']!r}") from error
     if kind == "attribute":
-        return _value(getattr(eval_expr(expression["base"], context), expression["name"]))
+        owner = eval_expr(expression["base"], context)
+        return _value(_declared_member(owner, expression["name"]))
     if kind == "subscript":
         base = eval_expr(expression["base"], context)
         index = expression["index"]

@@ -145,9 +145,9 @@ def worker(case, size, calls, seed):
         obj.product.value = (size + 1) * (size + 3) if case == "nonlinear" else factors[size][0] * factors[size][1]
     elif case == "graph":
         obj = Graph(session=session)
-        obj.child = Child(session=session)
-        obj.child.count.value = size
-        obj.child.domain.value = size
+        obj.child.value = Child(session=session)
+        obj.child.value.count.value = size
+        obj.child.value.domain.value = size
     else:
         obj = Permutation(session=session)
         obj.count.value = size
@@ -156,10 +156,10 @@ def worker(case, size, calls, seed):
     outputs = set()
     successes = 0
     statuses = []
-    child_identity = id(obj.child) if case == "graph" else None
+    child_identity = id(obj.child.value) if case == "graph" else None
     with RandomContext(seed=seed):
         for _ in range(calls):
-            target = obj.child if case == "graph" else obj
+            target = obj.child.value if case == "graph" else obj
             before = tuple(target.data.value) if case not in ("nonlinear", "factor", "dependent_dist") else (obj.x.value, obj.y.value)
             started = perf_counter()
             ok = obj.randomize()
@@ -188,7 +188,7 @@ def worker(case, size, calls, seed):
                     assert len(set(values)) == size and all(0 <= x < size for x in values)
                     if case == "graph":
                         assert obj.tag.value == values[0]
-                        assert id(obj.child) == child_identity, "randomize replaced the child handle"
+                        assert id(obj.child.value) == child_identity, "randomize replaced the child handle"
             outputs.add(values)
             print("verified_call", file=sys.stderr, flush=True)
     ordered = sorted(elapsed)

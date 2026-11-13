@@ -10,7 +10,7 @@ from ..collection import Array, AssocArray, DynArray, Queue
 from ..enum import Enum
 from ..errors import ConstraintError
 from ..logic import Logic, LogicValue
-from ..object import ObjectDescriptor, SvObject, SvStruct
+from ..object import ObjectDescriptor, SvObject, SvStruct, _declared_member
 from ..randomizable import is_randomizable
 
 
@@ -137,13 +137,11 @@ def iter_object_leaves(obj: Any, cls: type | None = None) -> Iterator[tuple[str,
     if cls is None:
         cls = obj.__class__
     for name, desc in getattr(cls, "_SvObject__svtypes_members", ()):
-        # A descriptor access allocates an ObjectDescriptor on demand.  Leaf
-        # collection must never turn a null handle into an object merely by
-        # inspecting it for randomization.
+        # The graph collector handles recursion through class handles.
         if _is_handle(desc):
             continue
         declared_rand = bool(getattr(desc, "rand", False)) and is_randomizable(desc)
-        yield from _flatten_object_descriptor(getattr(obj, name), desc, name, declared_rand)
+        yield from _flatten_object_descriptor(_declared_member(obj, name), desc, name, declared_rand)
 
 
 def _flatten_object_descriptor(
@@ -174,7 +172,7 @@ def _flatten_object_descriptor(
                 continue
             member_rand = declared_rand and (desc._svtypes_packed or bool(getattr(member, "rand", False)))
             yield from _flatten_object_descriptor(
-                getattr(value, name), member, f"{path}.{name}", member_rand
+                _declared_member(value, name), member, f"{path}.{name}", member_rand
             )
         return
     if isinstance(desc, (Bit, Logic, Enum)):
@@ -182,14 +180,18 @@ def _flatten_object_descriptor(
 
 
 def resolve_attr(obj: Any, path: str) -> Any:
+    from ..collection import _element_referent
+    from ..object import ObjectDescriptor
+
     current = obj
     for token in split_path(path):
         if isinstance(token, int):
-            current = current[token]
+            current = _element_referent(current[token])
         elif isinstance(token, tuple) and token[0] == "assoc":
-            current = current._elements[token[1]]
+            current = _element_referent(current[token[1]])
         else:
-            current = getattr(current, token)
+            descriptor = getattr(type(current), token, None)
+            current = descriptor._get_value(current) if isinstance(descriptor, ObjectDescriptor) else _declared_member(current, token)
     return current
 
 

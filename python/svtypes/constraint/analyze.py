@@ -9,6 +9,7 @@ from ..collection import Array, AssocArray, DynArray, Queue
 from ..enum import Enum
 from ..errors import (
     ConstraintNameError,
+    ConstraintSyntaxError,
     ConstraintTypeError,
     ConstraintUnsupportedError,
 )
@@ -462,13 +463,8 @@ class _Analyzer:
         raise ConstraintNameError(f"{loc.format()}: cannot access {head!r} on {prefix}")
 
     def member(self, node: MemberRef) -> Expr:
-        path_parts, desc = self._ref_descriptor(node.base)
-        if isinstance(desc, (SvStruct, ObjectDescriptor)):
-            nested = self._member_descriptor(desc, node.name, node.loc)
-            if nested is None:
-                raise ConstraintNameError(f"{node.loc.format()}: unknown member {node.name!r}")
-            return self._indexed_leaf([*path_parts, node.name], nested, node.loc)
-        raise ConstraintNameError(f"{node.loc.format()}: cannot access {node.name!r}")
+        path_parts, desc = self._ref_descriptor(node)
+        return self._indexed_leaf(path_parts, desc, node.loc)
 
     def size(self, node: SizeExpr) -> Expr:
         parts, desc = self._ref_descriptor(node.base)
@@ -603,12 +599,15 @@ class _Analyzer:
             return [*parts, index_part], element
         if isinstance(node, MemberRef):
             parts, desc = self._ref_descriptor(node.base)
-            if isinstance(desc, (SvStruct, ObjectDescriptor)):
+            aggregate = isinstance(desc, (SvStruct, ObjectDescriptor))
+            if aggregate:
                 nested = self._member_descriptor(desc, node.name, node.loc)
-                if nested is None:
-                    raise ConstraintNameError(f"{node.loc.format()}: unknown member {node.name!r}")
-                return [*parts, node.name], nested
-            raise ConstraintNameError(f"{node.loc.format()}: cannot access {node.name!r}")
+                if nested is not None:
+                    return [*parts, node.name], nested
+            if node.name == "value":
+                raise ConstraintSyntaxError(f"{node.loc.format()}: runtime attribute .value is not allowed in constraints")
+            reason = "unknown member" if aggregate else "cannot access"
+            raise ConstraintNameError(f"{node.loc.format()}: {reason} {node.name!r}")
         raise ConstraintNameError(f"{node.loc.format()}: index base must be a field path")
 
     @staticmethod

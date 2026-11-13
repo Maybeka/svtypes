@@ -10,6 +10,7 @@ from svtypes import (
     Bit,
     ExternalStorageClosedError,
     ExternalStorageError,
+    FieldDescriptor,
     FieldIdentity,
     FieldOperation,
     FieldPath,
@@ -492,7 +493,7 @@ def test_external_random_graph_keeps_child_callbacks_and_randc_history():
 
     child = Child()
     parent = Parent()
-    parent.child = child
+    parent.child.value = child
     storage = RecordingStorage()
     storage.seed('tag', Parent.tag, 0)
     parent.bind_external_storage(storage, {FieldIdentity(Parent, 'tag'): 'tag'})
@@ -500,14 +501,14 @@ def test_external_random_graph_keeps_child_callbacks_and_randc_history():
         values = []
         for _ in range(4):
             assert parent.randomize()
-            assert parent.child is child
+            assert parent.child.value is child
             values.append(child.choice.value)
     assert set(values) == {0, 1, 2, 3}
     assert seen == [('parent_pre', parent), ('child_pre', child),
                     ('child_post', child), ('parent_post', parent)] * 4
 
 
-def test_external_object_handle_uses_a_detached_owner_view() -> None:
+def test_external_object_handle_preserves_referent_without_attaching_binding() -> None:
     registry = ObjectRegistry()
 
     @svobj
@@ -527,5 +528,66 @@ def test_external_object_handle_uses_a_detached_owner_view() -> None:
     parent = Parent()
     parent.bind_external_storage(storage, {FieldIdentity(Parent, "child"): "child"})
 
-    parent.child.value.value = 8
-    assert parent.child.value.value == 8
+    assert parent.child.value is child
+    parent.child.value.value.value = 8
+    assert parent.child.value.value.value == 8
+    assert not storage.operations
+
+
+def test_external_handle_assignment_replaces_backend_value_and_accepts_null():
+    registry = ObjectRegistry()
+
+    @svobj(registry=registry)
+    class Child(SvObject):
+        code = Int()
+
+    class Parent(SvObject):
+        child = Object[Child](registry=registry, strict_set=True)
+
+    parent = Parent()
+    storage = RecordingStorage()
+    storage.seed("child", Parent.child, Child())
+    parent.bind_external_storage(storage, {FieldIdentity(Parent, "child"): "child"})
+    replacement = Child()
+    replacement.code.value = 42
+
+    with pytest.raises(TypeError, match="Parent.child"):
+        parent.child.value = parent
+    assert not storage.operations
+
+    parent.child.value = replacement
+    descriptor = FieldDescriptor(Parent.child)
+    assert storage.read("child", descriptor, FieldPath()) == replacement.to_bytes()
+    assert parent.child.value.code.value == 42
+    parent.child.value = None
+    assert parent.child.value is None
+    assert storage.read("child", descriptor, FieldPath()) == b"\x00"
+    assert storage.operations == [("child", FieldPath(), FieldOperation.SET)] * 2
+
+
+def test_nested_external_handle_assignment_checks_readonly_and_closed():
+    registry = ObjectRegistry()
+
+    @svobj(registry=registry)
+    class Child(SvObject):
+        code = Int()
+
+    class Record(SvStruct):
+        child = Object[Child](registry=registry, strict_set=True)
+
+    storage = RecordingStorage()
+    value = Record()
+    value.child.value = Child()
+    storage.seed("record", Record(), value)
+    readonly = bind_external_value(Record(), storage, "record", readonly=True)
+    with pytest.raises(ExternalStorageError, match="read-only"):
+        readonly.value.child.value = None
+
+    writable = bind_external_value(Record(), storage, "record")
+    view = writable.value
+    view.child.value = None
+    assert writable.value.child.value is None
+    writable.close()
+    with pytest.raises(ExternalStorageClosedError, match="closed"):
+        view.child.value = value.child.value
+    assert storage.operations == [("record", FieldPath().member("child"), FieldOperation.SET)]

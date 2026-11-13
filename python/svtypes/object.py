@@ -5,9 +5,13 @@ import functools
 import struct
 import weakref
 from contextvars import ContextVar
+from types import FunctionType
 from typing import Any, TypeVar, Callable, overload
 from collections.abc import Mapping
 
+from ._checked_callbacks import (
+    call_callback, call_codec, call_method_callback, callback_gateway, guard_copy_method, is_callback_wrapper,
+)
 from .base import TypeBase, UserDefinedType
 from .enum import Enum
 from .errors import DeclarationError, EncodeError, RegistryError, ResourceLimitError, UnsupportedTypeError
@@ -198,6 +202,7 @@ class ObjectRegistry:
 
     def __init__(self):
         object.__setattr__(self, '_types', {})
+        object.__setattr__(self, '_handle_specs', {})
 
     def register(self, cls: type[SvObject] | type[Enum] | type[TypeBase], name: str | None = None) -> None:
         reg_name = name or cls.__name__
@@ -214,6 +219,7 @@ class ObjectRegistry:
         # ``__name__``) so an unregistered class cannot accidentally become a
         # valid handle specification.
         cls._svtypes_registered_object_name = reg_name
+        cls._svtypes_registered_object_registry = self
         namespace = getattr(self, "path", None)
         if namespace:
             normalized_namespace = namespace.replace("::", ".")
@@ -325,6 +331,7 @@ class UnpackContext:
         self._inline_object_numbers: set[int] = set()
         self._replaceable_bindings: dict[int, SvObject] = {}
         self._pending: list[tuple[SvObject, int, int, list[tuple[str, Any, Any]]]] = []
+        self._resolve_only = False
 
     def _begin(self, input_size: int) -> bool:
         root = self._depth == 0
@@ -442,6 +449,13 @@ class ObjectDescriptor:
         self.attr_name: str | None = None
         self._cache_key = f'_object_cache_{id(self)}'
 
+    def __deepcopy__(self, memo):
+        # The declaration can be cloned for an instance or container, but
+        # forward targets must still resolve through the original registry.
+        descriptor = copy.copy(self)
+        memo[id(self)] = descriptor
+        return descriptor
+
     def __set_name__(self, owner, name):
         self.attr_name = name
         self._cache_key = f'_object_cache_{name}'
@@ -449,26 +463,38 @@ class ObjectDescriptor:
     def __get__(self, obj, objtype=None):
         if obj is None:
             return self
-        if self._cache_key in obj.__dict__:
-            return obj.__dict__[self._cache_key]
-        sv_obj: SvObject | None = None
-        if sv_obj is None:
-            cls = self.registry.get(self.cls_name)
-            if cls is not None:
-                session = getattr(obj, "codec_session", None)
-                instance = cls(session=session)
-                setattr(obj, self._cache_key, instance)
-                sv_obj = instance
-            else:
-                raise ValueError(f"Class name '{self.cls_name}' not found in registry. Available types: {self.registry.list_types()}")
-        return sv_obj
+        from .variable_access import _handle_slot
+
+        return _handle_slot(obj, self.attr_name, self)
+
+    def _get_value(self, owner):
+        binding = owner._external_field_binding(self.attr_name, self)
+        if binding is not None:
+            return binding.read_value()
+        return owner.__dict__.get(self._cache_key)
+
+    def _set_value(self, owner, value):
+        self._validate_assignment(owner, value, require_strict=True)
+        binding = owner._external_field_binding(self.attr_name, self)
+        if binding is not None:
+            binding.write_value(value)
+        else:
+            owner.__dict__[self._cache_key] = value
+
+    def _validate_assignment(self, obj, value, *, require_strict=False):
+        if value is None or not (self.strict_set or require_strict):
+            return
+        expected_cls = self.registry.get(self.cls_name)
+        field = f"{type(obj).__name__}.{self.attr_name}"
+        if expected_cls is None:
+            raise TypeError(
+                f"{field}: unresolved object target {self.cls_name!r}, got {type(value).__name__}"
+            )
+        if not isinstance(value, expected_cls):
+            raise TypeError(f"{field}: expected {self.cls_name}, got {type(value).__name__}")
 
     def __set__(self, obj, value):
-        if self.strict_set and value is not None:
-            expected_cls = self.registry.get(self.cls_name)
-            if expected_cls is not None and not isinstance(value, expected_cls):
-                raise TypeError(f"Expected {self.cls_name}, got {type(value).__name__}")
-        setattr(obj, self._cache_key, value)
+        raise AttributeError(f"Direct assignment to '{self.attr_name}' is disabled. Use '{self.attr_name}.value = ...' instead.")
 
     @property
     def pack_bytes(self) -> bool:
@@ -488,6 +514,19 @@ class ObjectDescriptor:
         return f"{self.cls_name}*"
 
 
+def _managed_constructor(initializer):
+    @functools.wraps(initializer)
+    def managed_init(instance, *args, **kwargs):
+        depth = getattr(instance, "_svtypes_coverage_construction_depth", 0)
+        object.__setattr__(instance, "_svtypes_coverage_construction_depth", depth + 1)
+        try:
+            return call_method_callback(initializer, instance, *args, **kwargs)
+        finally:
+            object.__setattr__(instance, "_svtypes_coverage_construction_depth", depth)
+
+    return callback_gateway(managed_init)
+
+
 class ReadOnlyMetaclass(type):
     def __setattr__(cls, name, value):
         from .parameter import Parameter
@@ -495,7 +534,9 @@ class ReadOnlyMetaclass(type):
             attr = cls.__dict__[name]
             if isinstance(attr, Parameter):
                 raise AttributeError(f"Parameter '{name}' in class '{cls.__name__}' is immutable. Use specialize() to override.")
-        super().__setattr__(name, value)
+        if name == "__init__" and isinstance(value, FunctionType) and not is_callback_wrapper(value):
+            value = _managed_constructor(value)
+        super().__setattr__(name, guard_copy_method(name, value))
 
 
 def _unmaterialized_declaration_hint(value: Any) -> str | None:
@@ -658,13 +699,11 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         for name, _ in self.__svtypes_members:
             desc = dict(self.__svtypes_members)[name]
             if isinstance(desc, ObjectDescriptor):
-                binding = self._external_field_binding(name, desc)
-                if binding is not None:
-                    setattr(copied, name, copy.deepcopy(binding.read_value(), memo))
-                elif desc._cache_key in self.__dict__:
-                    setattr(copied, name, copy.deepcopy(getattr(self, name), memo))
+                value = desc._get_value(self)
+                if value is not None:
+                    desc._set_value(copied, copy.deepcopy(value, memo))
                 continue
-            member = getattr(self, name)
+            member = _declared_member(self, name)
             source_value = member if isinstance(desc, SvStruct) else member.value
             from .collection import AssocArray, CollectionBase
 
@@ -676,9 +715,9 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 source_value = list(source_value)
             copied_value = copy.deepcopy(source_value, memo)
             if isinstance(desc, SvStruct):
-                SvStruct.value.fset(getattr(copied, name), copied_value)
+                SvStruct.value.fset(_declared_member(copied, name), copied_value)
             else:
-                getattr(copied, name).value = copied_value
+                _declared_member(copied, name).value = copied_value
         rand_modes = getattr(self, "_SvObject__svtypes_rand_modes", None)
         if rand_modes is not None:
             copied.__svtypes_rand_modes = dict(rand_modes)
@@ -711,11 +750,13 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             if isinstance(desc, SvStruct):
                 members = []
                 for member_name, member_desc in desc.__svtypes_members:
-                    member = getattr(value, member_name)
-                    members.append(
-                        f"{member_name}="
-                        + render(member_desc, member if isinstance(member_desc, SvStruct) else member.value)
-                    )
+                    if isinstance(member_desc, ObjectDescriptor):
+                        member = member_desc._get_value(value)
+                    else:
+                        member = _declared_member(value, member_name)
+                        if not isinstance(member_desc, SvStruct):
+                            member = member.value
+                    members.append(f"{member_name}=" + render(member_desc, member))
                 return f"{desc.__class__.__name__}{{{', '.join(members)}}}"
             if isinstance(desc, SvObject):
                 return "null" if value is None else value.svtypes_sprint(seen)
@@ -739,8 +780,11 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         for name, desc in self.__svtypes_members:
             if isinstance(desc, TypeBase) and not desc.dump:
                 continue
-            member = getattr(self, name)
-            value = member if isinstance(desc, (ObjectDescriptor, SvStruct)) else member.value
+            if isinstance(desc, ObjectDescriptor):
+                value = desc._get_value(self)
+            else:
+                member = _declared_member(self, name)
+                value = member if isinstance(desc, SvStruct) else member.value
             fields.append(f"{name}={render(desc, value)}")
         return f"{self.__class__.__name__}#{self.svtypes_object_number}{{{', '.join(fields)}}}"
 
@@ -788,11 +832,20 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         if id(val) in memo:
             return
         memo[id(val)] = self
+        if not isinstance(self, SvStruct):
+            # New referents belong to the destination graph's session, including
+            # when its handle fields are backed by external storage.
+            memo.setdefault("__svtypes_session__", self.codec_session)
         # Resolve source values before publication; null handles are values, not
         # scalar descriptors. Do not allocate previously untouched handles.
-        pending = [(name, desc, val.__dict__.get(desc._cache_key)
-                    if isinstance(desc, ObjectDescriptor) else getattr(val, name).value)
-                   for name, desc in self.__svtypes_fields]
+        pending = []
+        for name, desc in self.__svtypes_fields:
+            if isinstance(desc, ObjectDescriptor):
+                source = desc._get_value(val)
+            else:
+                member = _declared_member(val, name)
+                source = member if isinstance(desc, SvStruct) else member.value
+            pending.append((name, desc, source))
         for name, desc, source in pending:
             if isinstance(desc, ObjectDescriptor):
                 binding = self._external_field_binding(name, desc)
@@ -801,10 +854,11 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 if binding is not None:
                     binding.write_value(copied)
                 else:
-                    setattr(self, name, copied)
+                    desc._set_value(self, copied)
             else:
-                field = getattr(self, name)
-                field.value = self._copy_member_value(desc, source, field.value, memo)
+                field = _declared_member(self, name)
+                current = field if isinstance(desc, SvStruct) else field.value
+                field.value = self._copy_member_value(desc, source, current, memo)
 
     @staticmethod
     def _copy_member_value(desc, source, current, memo):
@@ -839,7 +893,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             identity = self._svtypes_field_identity(name, desc)
             keys = self.__dict__["_SvObject__svtypes_external_field_keys"]
             if identity in keys:
-                return _ExternalBinding(storage, keys[identity], FieldDescriptor(desc, identity))
+                return _ExternalBinding(storage, keys[identity], FieldDescriptor(desc, identity), session=self.__dict__.get("_codec_session"))
         return None
 
     def __get__(self, instance, owner):
@@ -860,34 +914,11 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         members = object.__getattribute__(self, '_SvObject__svtypes_members')
         for m_name, m_attr in members:
             if m_name == name:
-                from .external_storage import (
-                    FieldDescriptor,
-                    FieldIdentity,
-                    _ExternalBinding,
-                    _bind_loaded_object,
-                    _set_external_binding,
-                )
+                from .external_storage import _set_external_binding
 
-                parent_binding = getattr(self, "_svtypes_external_binding", None)
-                root_binding = None
-                if parent_binding is not None:
-                    root_binding = parent_binding.child_member(m_name)
-                else:
-                    try:
-                        storage = object.__getattribute__(self, "_SvObject__svtypes_external_storage")
-                        keys = object.__getattribute__(self, "_SvObject__svtypes_external_field_keys")
-                    except AttributeError:
-                        storage, keys = None, {}
-                    if storage is not None:
-                        identity = self._svtypes_field_identity(m_name, m_attr)
-                        if identity in keys:
-                            root_binding = _ExternalBinding(
-                                storage, keys[identity], FieldDescriptor(m_attr, identity)
-                            )
                 if isinstance(m_attr, ObjectDescriptor):
-                    if root_binding is not None:
-                        return _bind_loaded_object(root_binding.read_value(), root_binding)
-                    return object.__getattribute__(self, name)
+                    return m_attr.__get__(self, type(self))
+                root_binding = self._external_field_binding(m_name, m_attr)
                 # Return instance-specific clone of the member
                 storage_key = m_attr._storage_key
                 if storage_key not in self.__dict__:
@@ -967,9 +998,6 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         members = object.__getattribute__(self, '_SvObject__svtypes_members')
         for m_name, m_attr in members:
             if m_name == name:
-                if isinstance(m_attr, ObjectDescriptor):
-                    super().__setattr__(name, value)
-                    return
                 raise AttributeError(f"Direct assignment to '{name}' is disabled. Use '{name}.value = ...' instead.")
 
         super().__setattr__(name, value)
@@ -981,16 +1009,18 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
     def to_bytes(self) -> bytes:
         # Explicit record fields may legitimately be named ``value``.
-        return self.pack(self)
+        return call_codec(self, "pack", self)
 
     def from_bytes(self, bytes_: bytes, *, context: UnpackContext | None = None):
-        decoded, count = self.unpack(bytes_, context, _target=self)
+        decoded, count = call_codec(self, "unpack", bytes_, context, _target=self)
         if decoded is None:
             raise ValueError(f"Cannot unpack null into existing {self.__class__.__name__} object")
         self.__svtypes_object_number = decoded.svtypes_object_number
         for name, desc in self.__svtypes_fields:
             if isinstance(desc, ObjectDescriptor):
-                setattr(self, name, getattr(decoded, name))
+                # The decode transaction already assigned handles on its target.
+                if decoded is not self:
+                    desc._set_value(self, desc._get_value(decoded))
             elif isinstance(desc, SvObject):
                 object.__setattr__(self, desc._storage_key, getattr(decoded, name))
             else:
@@ -1370,16 +1400,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             def original_init(instance, *args, **kwargs):
                 super(cls, instance).__init__(*args, **kwargs)
 
-        @functools.wraps(original_init)
-        def managed_init(instance, *args, **kwargs):
-            depth = getattr(instance, "_svtypes_coverage_construction_depth", 0)
-            object.__setattr__(instance, "_svtypes_coverage_construction_depth", depth + 1)
-            try:
-                return original_init(instance, *args, **kwargs)
-            finally:
-                object.__setattr__(instance, "_svtypes_coverage_construction_depth", depth)
-
-        cls.__init__ = managed_init
+        cls.__init__ = _managed_constructor(original_init)
         if cls.__name__ not in ("SvStruct", "SvPackedStruct"):
             cls._prepare_encoding_metadata()
             _prepared_codec_types.add(cls)
@@ -2782,19 +2803,19 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         from .collection import AssocArray, DynArray, Queue, Array
 
         if isinstance(desc, ObjectDescriptor):
+            if value is None:
+                return b"\x00"
             cls = desc.registry.get(desc.cls_name)
             if cls is None:
                 raise ValueError(
                     f"Class name '{desc.cls_name}' not found in registry. "
                     f"Available types: {desc.registry.list_types()}"
                 )
-            if value is not None:
-                return value.pack(value, ctx)
-            return cls.codec_template(session=ctx.session).pack(None, ctx)
+            return call_codec(value, "pack", value, ctx)
         if isinstance(desc, SvStruct):
-            return desc.pack(value, ctx)
+            return call_codec(desc, "pack", value, ctx)
         if isinstance(desc, SvObject):
-            return desc.pack(value, ctx)
+            return call_codec(desc, "pack", value, ctx)
         if isinstance(desc, Array):
             if len(value) != desc._size:
                 raise ValueError(f"Expected list of size {desc._size}")
@@ -2817,29 +2838,32 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                     f"AssocArray length {len(value)} exceeds encoder limit {desc._max_length}"
                 )
             data = struct.pack("<I", len(value))
-            keys = sorted(value.keys(), key=desc._key_template.pack)
+            keys = sorted(value.keys(), key=functools.partial(call_callback, desc._key_template.pack))
             for key in keys:
                 data += SvObject._pack_field_value(desc._key_template, key, ctx)
                 data += SvObject._pack_field_value(desc._val_template, value[key], ctx)
             return data
-        return desc.pack(value)
+        return call_codec(desc, "pack", value)
 
     @staticmethod
     def _unpack_field_value(desc: Any, bytes_: bytes, ctx: _UnpackContext) -> tuple[Any, int]:
         from .collection import AssocArray, DynArray, Queue, Array
 
         if isinstance(desc, ObjectDescriptor):
+            if bytes_[:1] == b"\x00":
+                return None, 1
             cls = desc.registry.get(desc.cls_name)
             if cls is None:
                 raise ValueError(
                     f"Class name '{desc.cls_name}' not found in registry. "
                     f"Available types: {desc.registry.list_types()}"
                 )
-            return cls.codec_template(session=ctx.session).unpack(bytes_, ctx)
+            codec = cls.codec_template(session=ctx.session)
+            return call_codec(codec, "unpack", bytes_, ctx, _handle_registry=desc.registry)
         if isinstance(desc, SvStruct):
-            return desc.unpack(bytes_, ctx)
+            return call_codec(desc, "unpack", bytes_, ctx)
         if isinstance(desc, SvObject):
-            return desc.unpack(bytes_, ctx)
+            return call_codec(desc, "unpack", bytes_, ctx)
         if isinstance(desc, Array):
             offset = 0
             values = []
@@ -2888,11 +2912,11 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 offset += count
                 values[key] = value
             return values, offset
-        return desc.unpack(bytes_)
+        return call_codec(desc, "unpack", bytes_)
 
     @staticmethod
     def _assign_unpacked_field(obj: "SvObject", name: str, desc: Any, value: Any) -> None:
-        from .collection import AssocArray, DynArray, Queue, Array
+        from .collection import AssocArray, DynArray, Queue, Array, _container_elem_is_object_handle
         from .external_storage import FieldDescriptor, _ExternalBinding, is_externally_bound
 
         # Handle every root kind, including ObjectDescriptor and nested
@@ -2910,24 +2934,28 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 return
 
         if isinstance(desc, ObjectDescriptor):
-            setattr(obj, name, value)
+            desc._set_value(obj, value)
             return
         if isinstance(desc, SvObject):
             object.__setattr__(obj, desc._storage_key, value)
             return
-        field = getattr(obj, name)
+        field = _declared_member(obj, name)
         # ``from_bytes`` must not silently mutate a stale local collection
         # shadow when this owner is externally bound.  A single root set also
         # gives a backend the documented all-or-nothing field update.
         if is_externally_bound(field):
             field.value = value
             return
+        if isinstance(desc, (Array, DynArray)) and _container_elem_is_object_handle(desc._elem_template):
+            field.value = value
+            return
+        if isinstance(desc, AssocArray) and _container_elem_is_object_handle(desc._val_template):
+            field.value = value
+            return
         if isinstance(desc, Array):
             for index, item in enumerate(value):
                 elem_desc = desc._elem_template
-                if isinstance(elem_desc, ObjectDescriptor):
-                    field._elements[index] = item
-                elif isinstance(elem_desc, SvObject):
+                if isinstance(elem_desc, SvObject):
                     field._elements[index] = item
                 else:
                     field._elements[index].value = item
@@ -2935,9 +2963,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         if isinstance(desc, Queue) or isinstance(desc, DynArray):
             field._elements = []
             for item in value:
-                if isinstance(desc._elem_template, ObjectDescriptor):
-                    field._elements.append(item)
-                elif isinstance(desc._elem_template, SvObject):
+                if isinstance(desc._elem_template, SvObject):
                     field._elements.append(item)
                 else:
                     elem = copy.deepcopy(desc._elem_template)
@@ -2976,10 +3002,11 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         )
         for name, desc in self.__svtypes_fields:
             if isinstance(desc, ObjectDescriptor):
-                b += self._pack_field_value(desc, getattr(value, name), ctx)
+                b += self._pack_field_value(desc, desc._get_value(value), ctx)
             else:
-                val_obj = getattr(value, name)
-                b += self._pack_field_value(desc, val_obj.value, ctx)
+                member = _declared_member(value, name)
+                raw = member if isinstance(desc, SvStruct) else member.value
+                b += self._pack_field_value(desc, raw, ctx)
         return b
 
     def unpack(
@@ -2988,13 +3015,14 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         ctx: UnpackContext | None = None,
         *,
         _target: "SvObject" | None = None,
+        _handle_registry: ObjectRegistry | None = None,
     ):
         if ctx is None:
             ctx = UnpackContext(self.codec_session)
         root = ctx._begin(len(bytes_))
         succeeded = False
         try:
-            result = self._unpack_transaction(bytes_, ctx, _target=_target)
+            result = self._unpack_transaction(bytes_, ctx, _target=_target, _handle_registry=_handle_registry)
             succeeded = True
             return result
         finally:
@@ -3006,6 +3034,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         ctx: UnpackContext,
         *,
         _target: "SvObject" | None = None,
+        _handle_registry: ObjectRegistry | None = None,
     ):
         offset = 0
         if len(bytes_) < 1:
@@ -3032,15 +3061,48 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         if present != 1:
             raise ValueError(f"Invalid object presence marker: {present}")
 
-        header_offset, object_number = self._unpack_object_header(
-            bytes_,
-            offset,
-            self.__class__._encoding_type_name(),
-            bytes.fromhex(self.__class__._encoding_fingerprint_hex()) if ctx.diagnostics == "strict" else None,
-            len(self.__svtypes_fields) if ctx.diagnostics == "strict" else None,
-        )
+        header_offset, object_number, type_name, field_count = self._read_object_header(bytes_, offset)
+        decoded_cls = type(self)
+        expected_type_name = decoded_cls._encoding_type_name()
+        if type_name != expected_type_name:
+            if _handle_registry is None:
+                raise ValueError(
+                    f"SvTypes object type mismatch: expected {expected_type_name}, got {type_name}"
+                )
+            candidates = {
+                cls for cls in _handle_registry._types.values()
+                if issubclass(cls, SvObject) and not issubclass(cls, SvStruct)
+                and cls._encoding_type_name() == type_name
+            }
+            if not candidates:
+                raise ValueError(f"SvTypes unknown dynamic object type {type_name!r} for {expected_type_name}")
+            if len(candidates) != 1:
+                raise ValueError(f"SvTypes ambiguous dynamic object type {type_name!r} for {expected_type_name}")
+            decoded_cls = candidates.pop()
+            if not issubclass(decoded_cls, type(self)):
+                raise ValueError(
+                    f"SvTypes object type mismatch: expected {expected_type_name} or a subclass, got {type_name}"
+                )
+
+        fields_to_decode = decoded_cls.__svtypes_fields
+        if ctx.diagnostics == "strict":
+            expected_count = len(fields_to_decode)
+            if field_count != expected_count:
+                raise ValueError(
+                    f"SvTypes object field-count mismatch for {type_name}: "
+                    f"expected {expected_count}, got {field_count}"
+                )
+            expected_fingerprint = decoded_cls._encoding_fingerprint_hex()
+            fingerprint = bytes_[header_offset - 32:header_offset].hex()
+            if fingerprint != expected_fingerprint:
+                raise ValueError(
+                    f"SvTypes object encoding fingerprint mismatch for {type_name}: "
+                    f"expected {expected_fingerprint}, got {fingerprint}"
+                )
         ctx._record_inline_object(object_number)
         existing = ctx.objects.get(object_number) or ctx.session.get(object_number)
+        if ctx._resolve_only and existing is None:
+            raise RegistryError(f"SvTypes object number {object_number} is unavailable in the handle read session")
         if _target is not None:
             old_id = _target.svtypes_object_number
             if existing is not None and existing is not _target:
@@ -3052,14 +3114,16 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 ctx._replaceable_bindings[object_number] = existing
             new_inst = _target
         elif existing is not None:
-            if not isinstance(existing, self.__class__):
+            matches_type = (type(existing) is decoded_cls if _handle_registry is not None
+                            else isinstance(existing, decoded_cls))
+            if not matches_type:
                 raise TypeError(
                     f"SvTypes object number collision for {object_number}: "
-                    f"expected {self.__class__.__name__}, got {existing.__class__.__name__}"
+                    f"expected {decoded_cls.__name__}, got {type(existing).__name__}"
                 )
             new_inst = existing
         else:
-            new_inst = self.__class__.codec_template(session=ctx.session)
+            new_inst = decoded_cls.codec_template(session=ctx.session)
             old_id = 0
         if _target is None and existing is not None:
             old_id = existing.svtypes_object_number
@@ -3067,12 +3131,13 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
 
         offset = header_offset
         fields = []
-        for name, desc in self.__svtypes_fields:
+        for name, desc in fields_to_decode:
             val, count = self._unpack_field_value(desc, bytes_[offset:], ctx)
             offset += count
             fields.append((name, desc, val))
 
-        ctx._stage(new_inst, object_number, old_id, fields)
+        if not ctx._resolve_only:
+            ctx._stage(new_inst, object_number, old_id, fields)
 
         return new_inst, offset
 
@@ -3091,14 +3156,8 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             + encoding_fingerprint
         )
 
-    def _unpack_object_header(
-        self,
-        bytes_: bytes,
-        offset: int,
-        expected_type_name: str,
-        expected_encoding_fingerprint: bytes | None,
-        expected_field_count: int | None,
-    ) -> tuple[int, int]:
+    @staticmethod
+    def _read_object_header(bytes_: bytes, offset: int) -> tuple[int, int, str, int]:
         if len(bytes_) < offset + 20:
             raise ValueError("Not enough bytes to unpack object header")
         if bytes_[offset:offset + 4] != b"SVXO":
@@ -3116,23 +3175,15 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             raise ValueError("Not enough bytes to unpack object type name")
         type_name = bytes_[offset:offset + name_len].decode()
         offset += name_len
-        if type_name != expected_type_name:
-            raise ValueError(
-                f"SvTypes object type mismatch: expected {expected_type_name}, got {type_name}"
-            )
-        if expected_field_count is not None and field_count != expected_field_count:
-            raise ValueError(
-                f"SvTypes object field-count mismatch for {expected_type_name}: "
-                f"expected {expected_field_count}, got {field_count}"
-            )
         if len(bytes_) < offset + 32:
             raise ValueError("Not enough bytes to unpack object encoding fingerprint")
-        if expected_encoding_fingerprint is not None and bytes_[offset:offset + 32] != expected_encoding_fingerprint:
-            raise ValueError(
-                f"SvTypes object encoding fingerprint mismatch for {expected_type_name}: "
-                f"expected {expected_encoding_fingerprint.hex()}, got {bytes_[offset:offset + 32].hex()}"
-            )
-        return offset + 32, object_number
+        return offset + 32, object_number, type_name, field_count
+
+
+def _declared_member(owner, name):
+    if name == "value" and isinstance(owner, SvStruct):
+        return SvObject.__getattribute__(owner, name)
+    return getattr(owner, name)
 
 
 class SvStruct(SvObject):
@@ -3156,13 +3207,34 @@ class SvStruct(SvObject):
     def codec_session(self) -> CodecSession:
         raise AttributeError("SvStruct values do not participate in codec sessions")
 
+    def __getattribute__(self, name):
+        if name == "value" and not type(self)._svtypes_packed:
+            return SvStruct.value.fget(self)
+        return super().__getattribute__(name)
+
+    def __setattr__(self, name, value):
+        if name == "value" and not type(self)._svtypes_packed:
+            SvStruct.value.fset(self, value)
+            return
+        super().__setattr__(name, value)
+
     @property
-    def value(self) -> "SvStruct":
-        return self
+    def value(self) -> "dict[str, Any] | SvStruct":
+        if self._svtypes_packed:
+            return self
+        from .variable_access import read_value
+
+        return read_value(self)
 
     @value.setter
-    def value(self, val: "SvStruct") -> None:
+    def value(self, val: "Mapping[str, Any] | SvStruct") -> None:
         from .external_storage import external_binding
+
+        if isinstance(val, Mapping):
+            from .variable_access import write_value
+
+            write_value(self, val)
+            return
 
         binding = external_binding(self)
         if binding is not None:
@@ -3173,12 +3245,12 @@ class SvStruct(SvObject):
         for name, desc in self._SvObject__svtypes_members:
             source = self._struct_member_value(val, name, desc)
             if isinstance(desc, ObjectDescriptor):
-                setattr(self, name, source)
+                desc._set_value(self, source)
                 continue
             if isinstance(desc, SvObject) and not isinstance(desc, SvStruct):
                 object.__setattr__(self, desc._storage_key, source)
                 continue
-            target = getattr(self, name)
+            target = _declared_member(self, name)
             if isinstance(desc, SvStruct):
                 SvStruct.value.fset(target, source)
             else:
@@ -3186,11 +3258,9 @@ class SvStruct(SvObject):
 
     @staticmethod
     def _struct_member_value(owner: "SvStruct", name: str, desc: Any) -> Any:
-        from .external_storage import external_binding
-
-        if isinstance(desc, ObjectDescriptor) and external_binding(owner) is None:
-            return owner.__dict__.get(desc._cache_key)
-        return getattr(owner, name)
+        if isinstance(desc, ObjectDescriptor):
+            return desc._get_value(owner)
+        return _declared_member(owner, name)
 
     @staticmethod
     def _copy_struct_member_value(desc: Any, value: Any) -> Any:
@@ -3240,11 +3310,11 @@ class SvStruct(SvObject):
                 value, count = SvObject._unpack_field_value(desc, bytes_[offset:], ctx)
                 offset += count
                 if isinstance(desc, ObjectDescriptor):
-                    setattr(result, name, value)
+                    desc._set_value(result, value)
                 elif isinstance(desc, SvObject):
                     object.__setattr__(result, desc._storage_key, value)
                 else:
-                    getattr(result, name).value = value
+                    _declared_member(result, name).value = value
             succeeded = True
             return result, offset
         finally:
@@ -3264,7 +3334,7 @@ class SvStruct(SvObject):
         return any(contains(desc) for _, desc in cls._SvObject__svtypes_fields)
 
     def from_bytes(self, bytes_: bytes, *, context: UnpackContext | None = None) -> int:
-        decoded, count = self.unpack(bytes_, context)
+        decoded, count = call_codec(self, "unpack", bytes_, context)
         SvStruct.value.fset(self, decoded)
         return count
 
@@ -3620,7 +3690,7 @@ class SvPackedStruct(SvStruct):
 
         bits = xmask = zmask = 0
         for name, desc in self._SvObject__svtypes_members:
-            member = getattr(self, name)
+            member = _declared_member(self, name)
             value = member._packed_value() if isinstance(member, SvPackedStruct) else member.value
             width = desc.width
             bits <<= width
@@ -3688,6 +3758,7 @@ class _ObjectFactory:
         return ObjectDescriptor(cls_name, registry=registry, strict_set=strict_set, rand=rand)
 
     def __getitem__(self, target: str | type[SvObject]) -> "TypeSpec":
+        registry = _default_registry
         if isinstance(target, str):
             cls_name = target
         elif isinstance(target, type) and issubclass(target, SvObject):
@@ -3697,21 +3768,26 @@ class _ObjectFactory:
                     "Object[Class] requires a registered SvObject class; "
                     "use Object[\"Name\"] for a forward reference"
                 )
+            registry = target.__dict__["_svtypes_registered_object_registry"]
         else:
             raise TypeError("Object[...] requires an SvObject class or nonempty registry name")
         if not cls_name:
             raise ValueError("Object target name cannot be empty")
 
-        return _object_spec(self, cls_name)
+        spec = registry._handle_specs.get(cls_name)
+        if spec is None:
+            spec = _object_spec(self, cls_name, registry)
+            registry._handle_specs[cls_name] = spec
+        return spec
 
 
-@functools.lru_cache(maxsize=None)
-def _object_spec(factory: _ObjectFactory, cls_name: str):
+def _object_spec(factory: _ObjectFactory, cls_name: str, registry: ObjectRegistry):
     from .typespec import TypeSpec
 
     def construct(*args: Any, **kwargs: Any) -> ObjectDescriptor:
         if args:
             raise TypeError("Object[...] accepts only declaration keyword arguments")
+        kwargs.setdefault("registry", registry)
         return factory._from_target(cls_name, **kwargs)
 
     return TypeSpec(factory, (cls_name,), construct)

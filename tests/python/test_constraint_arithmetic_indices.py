@@ -78,13 +78,13 @@ class IndexedParent(SvObject):
 
 def test_arithmetic_index_child_is_in_parent_joint_solve():
     obj = IndexedParent()
-    obj.child = IndexedChild()
-    identity = obj.child
+    obj.child.value = IndexedChild()
+    identity = obj.child.value
     with RandomContext(seed=607):
         for _ in range(5):
             assert obj.randomize()
-            assert obj.child is identity
-            assert obj.child.data.value == list(range(1, 9))
+            assert obj.child.value is identity
+            assert obj.child.value.data.value == list(range(1, 9))
             assert obj.tag.value == 8
 
 

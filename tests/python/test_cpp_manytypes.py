@@ -192,7 +192,7 @@ int main() {
     assert out_tx.dyn_signed.value == [-128, -1, 0, 127]
     assert out_tx.q_colors.value == [Color.GREEN, Color.RED]
     assert out_tx.assoc.value == {"cat": 31, "dog": -41}
-    assert [(v.a.value, v.b.value) for v in out_tx.q_inner] == [(101, 0xA1), (-102, 0xA2)]
-    assert [(v.a.value, v.b.value) for v in out_tx.inner_arr] == [(201, 0xB1), (-202, 0xB2)]
+    assert [(v.a.value, v.b.value) for v in out_tx.q_inner.value] == [(101, 0xA1), (-102, 0xA2)]
+    assert [(v.a.value, v.b.value) for v in out_tx.inner_arr.value] == [(201, 0xB1), (-202, 0xB2)]
     assert out_tx.nested.a.value == 303
     assert out_tx.nested.b.value == 0xC3

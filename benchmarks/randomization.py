@@ -143,7 +143,7 @@ def _measure(name: str, factory: Callable[[], SvObject], calls: int, warmup: int
 
 def _handle_parent() -> SvObject:
     parent = HandleParent()
-    parent.child = HandleChild()
+    parent.child.value = HandleChild()
     return parent
 
 

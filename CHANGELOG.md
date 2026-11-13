@@ -1,5 +1,43 @@
 # 变更记录
 
+## 1.5.0 — 2026-11-14
+
+本版包含 Python 接口的破坏性变更：Object 句柄槽和非打包结构体的使用方式需要
+按下述说明迁移。新增的受检调用和存储协议详见中英文参考文档。
+
+- `SvStruct` 默认采用非打包结构体语义；需要 packed 布局时使用 `SvPackedStruct`。
+  原有 packed 声明需要改用新类型并重新生成目标代码；对应类型身份、编码、嵌套容器和
+  生成声明均区分两种结构体。
+- 优化生成代码的可维护性：默认使用真实类型声明，`type(...)` 为可选模式并以 `var`
+  声明变量；字段 wire 形状从声明推导，辅助诊断与核心代码分离。
+- 改善约束采样和内联缓存生命周期，优化覆盖率索引、数据库序列化，并增加性能基准。
+- 覆盖率桌面入口采用 pywebview，提供 GUI 专用依赖裁剪及 Windows 单文件打包流程。
+
+- 公开 `slot_identity()` / `relocated_slot()`：同槽 Ref 共享作用域内的外部存储，
+  身份不延长来源寿命；退出恢复最新值，失败按阶段报告并保留函数体及清理异常。
+- 公开借用用途查询、Ref 绑定校验和可选值参数地址写回协议；普通后端行为保持不变，
+  框架无需依赖实验模块或私有上下文标志。
+
+- 修复外部容器 `.value` 路径复制句柄、回放旧字段值，以及对象整体复制丢失外部句柄的问题。
+  结构体视图保留存储权限，句柄读取统一使用绑定会话；整体复制的新对象使用目标会话。
+
+- `run_checked()` 改为黑名单检查：默认保留 Python 行为，只拒绝明确的载体使用违规。
+  普通注解、类注解、dataclass、调用者作用域和无源码回调不再被误拒绝；Input 在
+  实参求值完毕后的调用入口拷入，已求值的数据不重新求值。
+
+- Python 的 `Object[T]` 成员现在返回固定的可空槽。将 `owner.child = child`
+  迁移为 `owner.child.value = child`，并使用 `owner.child.value` 读取所指对象。
+  需要对象时请显式构造。handle 容器元素同样使用 `container[i].value` 或
+  `container[key].value` 取值。生成的 SystemVerilog 和 C++ 保留各自的 handle 访问语法。
+
+- 非打包结构体的 `.value` 读取独立的字段映射，也支持赋入完整映射。若成员名为
+  `value`，将 `record.value.value` 改为 `field(record, "value").value`。
+
+- 新增 `run_checked()` 和 `Input`、`Output`、`Inout`、`Ref` 参数方向。
+  `Output` 和 `Inout` 在正常返回时先准备所有写回，再按形参声明顺序发布。
+- 新增 `borrow_element()` 稳定借用。借用在容器移位或删除后仍指向所选元素；
+  外部存储可通过 `ExternalBorrowStorage` 提供这一能力。
+
 ## 1.4.2 — 2026-10-08
 
 - 补齐集成方所需的公开 codec 接口：`AssocArray.key_codec` / `value_codec`、`sv_codegen_context()`、声明初始化值查询、`SvObject.codec_template()` 和带会话上下文的 `checked_unpack()`。codec prototype、解码和复制不执行用户构造器；导入的同源对象编号不会被重新分配。

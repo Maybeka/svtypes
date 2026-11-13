@@ -8,9 +8,11 @@ from types import FunctionType
 from typing import Any, Callable
 from weakref import WeakKeyDictionary
 
-from ..collection import Array, AssocArray, DynArray, Queue
+from .._checked_callbacks import call_callback
+from ..collection import Array, AssocArray, DynArray, Queue, _container_elem_is_object_handle, _element_referent
 from ..errors import ConstraintBackendError, ConstraintError, DeclarationError
 from ..logic import Logic
+from ..object import _declared_member
 from .analyze import compile_block
 from .budget import SolveFailure, poll, solving
 from .eval import _constant_condition, eval_bool, eval_dist_weight, eval_expr
@@ -235,8 +237,7 @@ def _collect_random_graph(root: Any, root_cls: type, extra: ConstraintIR | None)
             if isinstance(desc, ObjectDescriptor):
                 if not desc.rand:
                     continue
-                # Do not use getattr(): ObjectDescriptor.__get__ allocates a
-                # child on demand, whereas SV randomize never does so.
+                # The collector needs the referent, not its Python slot.
                 child = obj.__dict__.get(desc._cache_key)
                 if child is not None:
                     visit(
@@ -247,7 +248,7 @@ def _collect_random_graph(root: Any, root_cls: type, extra: ConstraintIR | None)
                     )
                 continue
             _visit_rand_container_handles(
-                getattr(obj, name),
+                _declared_member(obj, name),
                 desc,
                 member_path,
                 name,
@@ -316,9 +317,7 @@ def _refresh_graph_leaves(graph: _RandomGraph) -> None:
 def _snapshot_collection_elements(collection: Any) -> list[Any]:
     """Snapshot collection contents without copying class-handle identity."""
 
-    from ..object import ObjectDescriptor
-
-    if isinstance(collection._elem_template, ObjectDescriptor):
+    if _container_elem_is_object_handle(collection._elem_template):
         return list(collection._elements)
     root = getattr(collection, "_svtypes_mode_root", None)
     # Bound leaves refer back to their mode owner. It is not snapshot data:
@@ -330,13 +329,11 @@ def _snapshot_collection_elements(collection: Any) -> list[Any]:
 def _restore_collection_elements(collection: Any, elements: list[Any]) -> None:
     """Restore a collection snapshot while retaining handle identities."""
 
-    from ..object import ObjectDescriptor
-
     root = getattr(collection, "_svtypes_mode_root", None)
     memo = {id(root): root} if root is not None else {}
     collection._elements = (
         list(elements)
-        if isinstance(collection._elem_template, ObjectDescriptor)
+        if _container_elem_is_object_handle(collection._elem_template)
         else copy.deepcopy(elements, memo)
     )
     collection._bind_mode_elements()
@@ -373,7 +370,7 @@ def _visit_rand_container_handles(
             if not member.rand:
                 continue
             child = (value.__dict__.get(member._cache_key) if isinstance(member, ObjectDescriptor)
-                     else getattr(value, name))
+                     else _declared_member(value, name))
             _visit_rand_container_handles(child, member, f"{path}.{name}",
                                           f"{local_path}.{name}", visit, mode_active, True)
         return
@@ -384,7 +381,7 @@ def _visit_rand_container_handles(
     if isinstance(desc, Array):
         for index, element in enumerate(value._elements):
             _visit_rand_container_handles(
-                element,
+                _element_referent(element),
                 desc._elem_template,
                 f"{path}[{index}]",
                 f"{local_path}[{index}]",
@@ -396,7 +393,7 @@ def _visit_rand_container_handles(
     if isinstance(desc, (DynArray, Queue)):
         for index, element in enumerate(value._elements):
             _visit_rand_container_handles(
-                element,
+                _element_referent(element),
                 desc._elem_template,
                 f"{path}[{index}]",
                 f"{local_path}[{index}]",
@@ -408,7 +405,7 @@ def _visit_rand_container_handles(
     if isinstance(desc, AssocArray):
         for key, element in value._elements.items():
             _visit_rand_container_handles(
-                element,
+                _element_referent(element),
                 desc._val_template,
                 assoc_path(path, key),
                 assoc_path(local_path, key),
@@ -440,7 +437,7 @@ def _null_handle_path(root: Any, path: str) -> str | None:
                 return None
             traversed = assoc_path(traversed, token[1])
             desc = desc._val_template
-            current = current._elements.get(token[1])
+            current = _element_referent(current._elements.get(token[1]))
             if isinstance(desc, ObjectDescriptor) and current is None:
                 return traversed
             continue
@@ -450,7 +447,7 @@ def _null_handle_path(root: Any, path: str) -> str | None:
             traversed = f"{traversed}[{token}]"
             desc = desc._elem_template
             try:
-                current = current._elements[token]
+                current = _element_referent(current._elements[token])
             except IndexError:
                 return None
             if isinstance(desc, ObjectDescriptor) and current is None:
@@ -489,7 +486,7 @@ def randomize_object(obj: Any, extra: ConstraintIR | None = None) -> bool:
     graph = _collect_random_graph(obj, cls, extra)
     active_nodes = [node for node in graph.nodes if node.active]
     for node in active_nodes:
-        node.obj.pre_randomize()
+        call_callback(node.obj.pre_randomize)
     # External storage is observable: a solver must never expose trial
     # assignments.  Solve an ordinary detached clone, then publish each bound
     # root once after SAT.  The common local path stays allocation-free.
@@ -525,7 +522,7 @@ def randomize_object(obj: Any, extra: ConstraintIR | None = None) -> bool:
         obj._SvObject__svtypes_randomize_status = solve_obj._SvObject__svtypes_randomize_status
     if ok:
         for node in reversed(active_nodes):
-            node.obj.post_randomize()
+            call_callback(node.obj.post_randomize)
     return ok
 
 
@@ -1378,7 +1375,7 @@ def _unique_fields_from_value(value: Any, path: str, loc: Any) -> list[Expr]:
     if isinstance(value, SvPackedStruct):
         members = tuple(child
                         for name, _ in value._SvObject__svtypes_members
-                        for child in _unique_fields_from_value(getattr(value, name), f"{path}.{name}", loc))
+                        for child in _unique_fields_from_value(_declared_member(value, name), f"{path}.{name}", loc))
         return [Expr("packed_struct", (path, *members), bv(sum(member.ty.width for member in members)), loc)]
     from ..bit import Bit
     from ..enum import Enum

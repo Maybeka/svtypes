@@ -207,11 +207,302 @@ incompatible or explicitly duplicated live identities still raise an error.
 ### 5. Complex Objects (`SvObject` & `ObjectDescriptor`)
 `SvObject` is the container for all other types:
 - **Cloning Mechanism**: `SvObject.__getattribute__` clones class-level `TypeBase` attributes into the instance's `__dict__` on first access, ensuring instance independence.
-- **`ObjectDescriptor`**: Handles nested `SvObject` instances, ensuring they are properly instantiated and linked. Use `Object["Child"](rand=True)` when an already allocated, non-null child must participate in the parent's constrained randomization; the generated declaration is `rand Child child`. The default is `rand=False` and does not allocate or randomize the handle.
+- **`ObjectDescriptor`**: Declares a fixed, nullable handle slot. Accessing `owner.child` returns the slot. Read or write its referent through `owner.child.value`. The initial value is `None`; construct the child explicitly. Handle elements use the same convention, for example `queue[0].value` or `table[key].value`. An external index is a path view. Use `borrow_element` to retain the selected element across structural edits. `Object["Child"](rand=True)` generates `rand Child child` and enables recursive randomization of an already assigned child.
 - **Strict Access**: `SvObject.__setattr__` blocks direct assignment (e.g., `obj.x = 10` is banned), forcing the use of `obj.x.value = 10`.
 - **Constrained random**: `@constraint` declares predicates. `@rand_layer(priority)` groups rand members and constraints, including fixed unpacked-array elements such as `self.words[0]`, or a complete `DynArray` / `Queue` member. Dynamic containers are handled per current element: entry-disabled elements stay disabled, and elements created during a layered call remain enabled. `layered_randomize()` solves those groups from high priority to low, with unlisted members in implicit `builtin` (priority 0). Python returns `bool`; generated SV is `virtual function int layered_randomize()`. `randomize()` / `randomize_with()` / `layered_randomize()` cannot be overridden. Users may override `pre_randomize()` / `post_randomize()`.
 
+#### Unpacked structure values
+
+In ordinary Python and in the checked entry, an unpacked structure's `.value`
+reads a detached mapping from declared field names to values. Nested containers
+and structures are copied as ordinary data. Object handles retain their identity.
+Assign a complete mapping to `.value` to write the structure through its
+declaration. To access a member named `value`, migrate `record.value.value`
+to `field(record, "value").value`. Constraint and coverage declarations resolve
+member names against the type declaration, so `self.record.value` in those
+declarations names the declared member.
+
+#### Checked Python variable access
+
+Use `run_checked(main)` for a project function that uses checked variable slots.
+A plain SvTypes type annotation is equivalent to `Input[T]`. `Input` copies
+in the value, `Output` starts unassigned, and `Inout` copies in and writes
+back. Output and Inout write back on normal return, in declaration order,
+after preparing all writebacks. `Ref[T]` accesses the original slot for the
+duration of the call and requires the same declaration type. Reading an
+unassigned `Output` raises an error. A `CopyoutError` exposes `parameter`,
+`phase` (`"preparation"` or `"publication"`), and the `completed` parameters.
+A publication failure preserves earlier writes and chains the underlying error.
+Actual arguments follow Python evaluation order. Input carriers are read and
+copied at call entry, after all actual expressions have been evaluated; values
+already obtained through `.value` or another expression are not reevaluated.
+Indexed Input reads need ordinary field access, not stable element borrowing.
+Aggregates are independent copies while object handle identity is preserved.
+The exception notes include the source location and expression for a checked
+operation, including an explicit return that triggers copyout. The underlying
+error remains available through the exception cause.
+
+An `Output` structure or fixed array can be initialized through its declared
+member or element slots. An assigned slot can be read while other slots
+are still unset. Reading the whole value or returning normally requires
+all slots to be initialized. The error identifies the first missing path.
+A dynamic collection needs a whole value assignment to establish its shape
+before element edits.
+
+```python
+from svtypes import Inout, Int, run_checked
+
+def increment(word: Inout[Int]) -> None:
+    word.value += 1
+
+def main() -> int:
+    word = Int(10)
+    increment(word)
+    return word.value
+
+assert run_checked(main) == 11
+```
+
+Pass `.value` to ordinary parameters. Checked code rejects storing a slot as
+another variable, passing it to an untyped parameter, or returning it.
+Use independent values in `*args` and `**kwargs`. Pass a slot directly to a
+parameter with a declared direction. The project module loader checks named
+and wildcard imports, class declarations, and function defaults for carrier
+aliases. Place carrier operations in the checked entry or its callees.
+Tools that record source inputs may use `observe_module_sources(observer)` as
+a context manager. The observer receives `(filename, source_bytes)` for each
+source read by the checked module loader, before parsing or transformation.
+Bytes retain the original encoding and line endings. The callback may raise to
+reject a load, but cannot replace source or disable checks. Nested observers
+compose within the current execution context and are removed on exit, including
+exceptions. Cached modules and modules handled by other loaders produce no
+observation; the tool remains responsible for those sources. The checked finder
+leaves sources outside its scope to later import finders.
+Framework integrations may delimit their implementation with
+`with checked_library_sources(*sources):`, where each source is an existing exact
+file or package directory. Within that context, framework implementation runs
+normally instead of undergoing the user-source transformation. Nested scopes
+restore on exit, including exceptions. User sources outside those paths remain
+checked, including user constructors called by SvTypes constructor gateways.
+Ordinary calls to typed framework functions use the same boundary: parameter
+direction, formal lifetime, copyout and result-escape checks still surround the
+unmodified function body. An untyped parameter still cannot receive a carrier.
+Frameworks must route their own user callbacks through checked entry points;
+this boundary is an explicit integration contract, not a security mechanism or
+a way for application code to bypass the variable convention.
+Framework trampolines that already apply their own checked parameter contract
+may use `@checked_call_gateway`. The marker is effective only while its source
+is inside `checked_library_sources`. It preserves the original function and
+signature, passes actuals directly to the trampoline, and rejects carrier
+results. The trampoline must apply the real parameter directions with
+`run_checked` and route user callbacks through checked entry points. This avoids
+binding parameters and publishing outputs twice; it does not grant an untyped
+application helper permission to receive carriers outside that explicit scope.
+Checked execution uses a denylist: Python behavior is allowed by default.
+Only concrete violations of the variable convention are rejected: carrier
+alias/storage/capture or escape, missing or invalid carrier parameter contracts,
+replacement/deletion of declared slots, and invalid lifetime, type or permission
+access. Ordinary annotations are not runtime constraints. Unavailable source or
+an unrecognized syntax form is not evidence of a violation.
+Readable project source is instrumented to observe these operations; opaque and
+external bodies execute normally, retaining parameter and return checks at the
+boundary. This does not promise inspection inside opaque code. Class annotations,
+dataclasses and caller-scoped builtins retain their Python behavior. Use
+explicit parameter contracts for carrier forwarding; do not retain a Ref in a
+closure or deferred generator. A generator may own freshly declared variables
+and yield their values. Its checked scope is active only while it is resumed,
+including `send`, `throw`, and `close`, not while it is suspended. Ordinary
+asynchronous definitions and value-only work execute normally; deferred work must
+not retain a Ref or another carrier beyond the synchronous parameter scope.
+These checks enforce a usage convention,
+not a sandbox against deliberate bypasses. The callback gateways cover `sorted`, `list.sort`, `min`,
+`max`, `map`, `filter`, `functools.reduce`, and the callbacks of
+`itertools.accumulate`, `dropwhile`, `filterfalse`, `groupby`,
+`starmap`, and `takewhile`. Lazy callbacks still run checked when their
+iterators are consumed after the entry returns.
+
+SvTypes can call custom structure `pack` and `unpack` methods through its
+standard encoding and decoding operations. Their existing signatures and
+`super()` delegation apply inside the checked entry. The decoder can hand a
+newly decoded structure to SvTypes together with the consumed byte count.
+Its function body remains subject to the checked carrier rules.
+
+Call `copy.deepcopy(owner)` inside the checked entry to copy an object graph.
+Its copy hooks share the native recursion memo. A hook can forward the memo
+to its base implementation and use it to register its new copy. The memo is
+scoped to the copy hooks. Checked calls to `deepcopy()` create that memo
+internally. Copy the value of a variable carrier through its declared value
+interface.
+`read_value(slot)` returns detached aggregate data with handle identities
+preserved. Use `field(owner, "value")` to select a declared field named
+`value`, and `write_value(slot, value)` for explicit value assignment.
+
+Direct edits such as `queue.value.append(3)` and `table.value.update(entries)`
+act on the original storage. Local dynamic sequences preserve element slots
+when `reverse()` or `sort()` moves them. Fixed local arrays keep their slots
+and assign the reordered values to them. Externally bound sequences reject
+`reverse()` and `sort()`. Use the backend's own reorder operation if it
+provides one and can preserve borrowed element identity.
+
+Nested calls such as `rows.value[0].append(3)` also edit the declared child
+storage. External child selection uses scoped borrowing where required; a
+backend missing that capability raises an error instead of editing a snapshot.
+
+Outside the checked entry, `with borrow_element(container, index_or_key) as slot:`
+provides an `ElementBorrow`. Its `.value` reads or writes the selected element,
+even after the element leaves the container. Use `forward()` for an independent
+lease on the same element or `child(FieldPath(...))` for a declared subslot.
+Closing a lease ends its access. In checked code, pass the selected element
+directly to a `Ref[T]` parameter to borrow it for the call.
+
+For external storage, use `isinstance(backend, ExternalBorrowStorage)` to
+detect support for stable element borrowing. The backend resolves the field
+path once in `acquire_borrow()`. It uses the same SvTypes bytes for
+`read_borrow()` and `write_borrow()`, then releases the token with
+`release_borrow()`. Stable subslots of an already borrowed aggregate require
+`ExternalBorrowPathStorage`, which adds `acquire_borrow_child()` with an
+independently released token. Ordinary path access remains available on
+backends with only `ExternalFieldStorage`. A stable borrow on such a backend
+raises an error. Leases honor the original binding's close and write permissions.
+
+`ExternalBorrowFieldStorage` optionally exposes immediate operations below an
+already borrowed aggregate. `read_borrow_path(token, path)` reads a relative
+field; `write_borrow_path(token, path, operation, payload)` forwards the ordinary
+`FieldOperation` and SvTypes bytes, including append/insert/delete/pop/resize.
+Relative paths are evaluated per operation. This does not promise stable child
+identity: forwarding a child variable still requires `ExternalBorrowPathStorage`
+and an independently acquired token. A backend may implement either capability
+or both. Without field-operation support, the existing child-token read/set
+fallback remains available and structural edits remain explicitly rejected,
+not implemented by whole-aggregate copyback. Borrow closure and readonly checks
+precede field operations too.
+
+Frameworks can inspect an existing slot with `external_storage_location(variable)`.
+Local variables and independent Input/Output/Inout formals return `None`. An
+external slot returns an immutable `ExternalStorageLocation`: `kind == "field"`
+provides `storage`, root `descriptor`, `key` and exact `path`; `kind == "borrow"`
+provides `storage`, leaf `descriptor` and the existing opaque `token`, never an
+index/key path. Both provide `readonly` and `session`. Forwarded Ref formals
+retain the original endpoint. The query itself reads no value, acquires no
+lease and does not extend the formal, binding or borrow lifetime; all properties
+and `require_open()` reject access after any source scope closes. Selecting a
+member before the query may still read its parent according to normal access
+rules. This is a framework integration API, not a way for checked business code
+to save or return variable references. It does not relocate storage or create
+backend borrowing support.
+
+
+#### Scoped local slot storage
+
+Frameworks can import `SlotIdentity`, `slot_identity()` and `relocated_slot()`
+from `svtypes`; no experimental module or private binding mutation is needed.
+These are integration operations, not additional permissions for checked business
+code to save, capture or return carriers or storage metadata.
+
+`slot_identity(variable)` queries a **local** slot without reading its value or
+acquiring a lease. Compare the result with `==`, not Python `is`: an actual and
+its valid Ref forwards compare equal and have equal hashes; equal-valued distinct
+variables and independent Input/Output/Inout formals remain different. Even an
+unassigned Output has an identity, but cannot yet be relocated. The identity
+is not a serialized ID. `is_valid` reports its lifetime and `require_open()` checks
+it. Comparison and hashing also check validity. Each identity expires with its
+own source formal, borrow or temporary view; closing one forwarded lease does
+not invalidate identities obtained through other still-open leases. An identity
+holds weak references only, so retaining it does not extend source lifetime.
+A plain local variable remains valid while its carrier exists. Remove identities
+from framework maps before their scopes close. Copying an identity preserves it.
+
+`relocated_slot(variable, create_storage)` is a synchronous context manager:
+
+```python
+from svtypes import Int, MemoryExternalFieldStorage, relocated_slot
+
+value = Int(3)
+backend = MemoryExternalFieldStorage()
+
+def create_storage(initial, identity):
+    backend.seed("counter", Int(), initial)
+    return backend, "counter", lambda: None  # release backend resources here
+
+with relocated_slot(value, create_storage) as temporary:
+    value.value = 8
+    assert temporary.value == 8
+assert value.value == 8
+```
+
+The `StorageFactory` callable receives a detached initial value and scoped
+identity, returning `(backend, key, release)`. It owns any partial allocation
+until it returns a valid triple. The backend uses the existing
+`ExternalFieldStorage` types, paths and byte encoding; the factory's closure can
+supply its codec. The original carrier and existing/new Ref formals use the same
+storage. Nested scopes for that slot reuse the first allocation and ignore the
+inner factory; the last exit restores the latest value, closes the temporary
+view and releases resources. Completed writes survive body exceptions and
+synchronous unwinding due to cancellation. This is not an asynchronous Ref API
+or a cross-thread storage synchronization mechanism.
+
+Supported roots are local scalar/enum/packed values, RemoteRef value records,
+structs and fixed/dynamic/queue/associative containers, including selected local
+value elements and independent assigned value formals. Handles inside values
+retain their referents and codec session; mixed sessions are rejected before
+allocation. A bare object entity or object-handle slot is not a relocatable value
+root. A root with active child borrows/Refs or independently externally bound
+children is rejected before allocation; closing the last child lease permits
+relocation. Detached old elements do not block their former container. Subslots
+of an already relocated aggregate cannot be independently relocated. Existing
+external fields/borrows continue using `external_storage_location()` and their
+original endpoint; the local identity API does not invent equivalence for them.
+Original readonly, closed-state and type checks remain in effect.
+
+`StorageRelocationError` reports `phase`, `restored`, `body_error` and all
+`failures` (`StorageRelocationFailure.phase`/`.cause`). Stages are `prepare`,
+`readback`, `restore`, `close` and `release`. Cleanup continues after failures;
+release is attempted once after a valid allocation. An exception in the body is
+re-raised unchanged when cleanup succeeds; otherwise it remains available in
+`body_error` and the exception chain. `restored=False` means the latest external
+value could not be restored: the local slot may contain stale or partially
+restored data and must not be treated as a successful result. No rollback or
+cross-backend transaction is promised.
+
+#### Optional checked-call storage policies
+
+- `current_borrow_purpose()` returns `BorrowPurpose.EXPLICIT` for explicit
+  acquisition, `OPERATION` for temporary checked operations, or `REF` for a
+  real Ref actual. Context-local state restores on success and failure. A
+  purpose is information, not permission or a substitute for stable identity.
+- `ExternalRefValidationStorage` adds `validate_ref_borrow(token)`. It runs on
+  **each** actual Ref binding, including pre-acquired leases and forwarding,
+  before the body. Raising prevents entry and releases temporary acquisitions.
+  Existing backends without the method keep their behavior.
+- `ExternalValueParameterStorage` adds `value_arguments_by_path: bool`.
+  Only explicit `True` opts into captured-address Output/Inout copyout. Indices
+  and keys are evaluated once; formals remain independent, and successful return
+  prepares all outputs before publishing them in declaration order. Structural
+  changes can change the element at that address; there is no old-element
+  identity promise. Exception/cancellation does not perform normal copyout.
+  Borrowed-aggregate and relocation adapters preserve this policy. Backends
+  without it retain selected-slot semantics. Real Ref still requires stable
+  borrowing and passes validation; the flag does not grant Ref support.
+
+Detect the two optional protocols with `isinstance(backend, ProtocolName)`;
+check the policy value separately. No changes to ordinary Input are required:
+actuals evaluate in Python order, then carriers are read/copied at call entry;
+already evaluated values are not reevaluated. The former experimental private
+flags/context variables are superseded by these public APIs. The old module
+only re-exports the two storage functions for import migration.
+
+
 ### 5.3 External field storage
+
+External collection `.value` indexing, slicing, iteration and `pop()` resolve
+handles in the same binding session as direct slot reads. They return the
+original referents without cloning them or replaying stale object fields from
+the stored bytes. Select a session with `bind_external_value(..., session=session)`;
+omitting it uses the default session. Struct views retain their storage binding
+and permissions while their handles still point to the original objects.
+Whole-object value copy reads handles from the source's actual storage and
+preserves deep-copy sharing, nulls and cycles. Newly copied objects belong to
+the destination session.
 
 `MyObject.refresh_declarations()` revalidates inherited fields and constraints
 after a framework finishes assembling the class's bases, before any instances

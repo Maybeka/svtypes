@@ -59,7 +59,7 @@ _CMP_OPS = {
     ast.Gt: "gt",
     ast.GtE: "ge",
 }
-_FORBIDDEN_ATTRS = {"value", "pack", "unpack", "to_bytes", "from_bytes"}
+_FORBIDDEN_ATTRS = {"pack", "unpack", "to_bytes", "from_bytes"}
 _module_ast_cache: dict[str, tuple[ast.AST, str]] = {}
 
 

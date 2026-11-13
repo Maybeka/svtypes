@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from ..errors import ConstraintError
-from ..object import SvStruct
+from ..object import SvStruct, _declared_member
 from ..randomizable import is_randomizable
 
 
@@ -165,7 +165,7 @@ def bind_nested(value: Any, root: Any, path: str, declared: bool, *, expose_mode
             ):
                 continue
             member_rand = declared and (value._svtypes_packed or bool(getattr(member_desc, "rand", False)))
-            bind_nested(getattr(value, member_name), root, f"{path}.{member_name}", member_rand,
+            bind_nested(_declared_member(value, member_name), root, f"{path}.{member_name}", member_rand,
                         expose_mode=not value._svtypes_packed)
 
 

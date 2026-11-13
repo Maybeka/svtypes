@@ -37,12 +37,12 @@ def test_cpp_graph_reference_parity_shared_pair_and_ref_queue():
 
     child = GraphNode()
     child.data.value = 33
-    child.next = None
+    child.next.value = None
 
     pair = GraphPair()
     pair.tag.value = 7
-    pair.left = child
-    pair.right = child
+    pair.left.value = child
+    pair.right.value = child
 
     queue = GraphRefQueue()
     queue.tag.value = 9
@@ -139,18 +139,18 @@ int main() {
         clear_object_registry()
         out_pair = GraphPair()
         out_pair.from_bytes((tmp_path / "pair_out.bin").read_bytes())
-        assert out_pair.left is out_pair.right
-        assert out_pair.left.data.value == 44
+        assert out_pair.left.value is out_pair.right.value
+        assert out_pair.left.value.data.value == 44
 
         out_queue = GraphRefQueue()
         out_queue.from_bytes((tmp_path / "queue_out.bin").read_bytes())
-        assert out_queue.nodes[0] is out_queue.nodes[1]
-        assert out_queue.nodes[0].data.value == 55
+        assert out_queue.nodes[0].value is out_queue.nodes[1].value
+        assert out_queue.nodes[0].value.data.value == 55
 
         out_value_decl_queue = GraphQueue()
         out_value_decl_queue.from_bytes((tmp_path / "value_decl_queue_out.bin").read_bytes())
-        assert out_value_decl_queue.nodes[0] is out_value_decl_queue.nodes[1]
-        assert out_value_decl_queue.nodes[0].data.value == 66
+        assert out_value_decl_queue.nodes[0].value is out_value_decl_queue.nodes[1].value
+        assert out_value_decl_queue.nodes[0].value.data.value == 66
 
 
 def test_cpp_graph_reference_parity_self_cycle():
@@ -158,7 +158,7 @@ def test_cpp_graph_reference_parity_self_cycle():
 
     node = GraphNode()
     node.data.value = 123
-    node.next = node
+    node.next.value = node
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -205,7 +205,7 @@ int main() {
         clear_object_registry()
         out_node = GraphNode()
         out_node.from_bytes((tmp_path / "node_out.bin").read_bytes())
-        assert out_node.next is out_node
+        assert out_node.next.value is out_node
         assert out_node.data.value == 124
 
 

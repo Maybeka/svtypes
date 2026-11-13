@@ -65,6 +65,8 @@ from .errors import (
     EncodeError,
     ExternalStorageClosedError,
     ExternalStorageError,
+    StorageRelocationError,
+    StorageRelocationFailure,
     LayeredRandomizationPriorityWarning,
     RegistryError,
     ResourceLimitError,
@@ -72,6 +74,9 @@ from .errors import (
     UnsupportedTypeError,
 )
 from .external_storage import (
+    ExternalBorrowFieldStorage,
+    ExternalBorrowPathStorage,
+    ExternalBorrowStorage,
     ExternalFieldStorage,
     ExternalValueBinding,
     FieldDescriptor,
@@ -98,6 +103,18 @@ from .constraint import (
     unique,
 )
 from .randomizable import is_randomizable
+from .variable_access import ElementBorrow, borrow_element, field, read_value, write_value
+from .storage_location import ExternalStorageLocation, external_storage_location
+from .slot_identity import SlotIdentity, slot_identity
+from .storage_relocation import StorageFactory, relocated_slot
+from .storage_policy import (
+    BorrowPurpose, current_borrow_purpose,
+    ExternalRefValidationStorage, ExternalValueParameterStorage,
+)
+from .checked_call import CheckedAccessError, CopyoutError, Inout, Input, Output, Ref
+from .checked_source import run_checked
+from .checked_imports import observe_module_sources
+from ._checked_callbacks import checked_call_gateway, checked_library_sources
 from .coverage import (
     CoverageDatabase,
     CovPoint,
@@ -151,7 +168,7 @@ from .generator import GenerationResult, generate
 from pathlib import Path
 import sysconfig
 
-__version__ = "1.4.2"
+__version__ = "1.5.0"
 
 
 def package_root() -> Path:
@@ -183,3 +200,9 @@ def sv_weak_runtime_file() -> Path:
 
 def cpp_include_dir() -> Path:
     return runtime_root() / "cpp"
+
+
+from .checked_imports import _install as _install_checked_imports
+
+_install_checked_imports()
+del _install_checked_imports

@@ -6,7 +6,7 @@ from .types import GraphNode, GraphPair, GraphQueue, GraphRefQueue
 def _node(data: int) -> GraphNode:
     node = GraphNode()
     node.data.value = data
-    node.next = None
+    node.next.value = None
     return node
 
 
@@ -15,8 +15,8 @@ def python_puts_shared_pair():
     child = _node(101)
     pair = GraphPair()
     pair.tag.value = 100
-    pair.left = child
-    pair.right = child
+    pair.left.value = child
+    pair.right.value = child
 
     svx.channel("m4.shared.py_to_sv").put(pair)
     svx.display(f"python_puts_shared_pair size={len(pair.to_bytes())}")
@@ -25,7 +25,7 @@ def python_puts_shared_pair():
 @svx.export
 def python_puts_self_cycle():
     node = _node(201)
-    node.next = node
+    node.next.value = node
 
     svx.channel("m4.self.py_to_sv").put(node)
     svx.display(f"python_puts_self_cycle size={len(node.to_bytes())}")
@@ -60,10 +60,10 @@ def python_gets_shared_pair():
 
     if pair.tag.value != 300:
         raise AssertionError(f"unexpected tag: {pair.tag.value}")
-    if pair.left is not pair.right:
+    if pair.left.value is not pair.right.value:
         raise AssertionError("shared child identity was not preserved")
-    if pair.left.data.value != 301:
-        raise AssertionError(f"unexpected shared child data: {pair.left.data.value}")
+    if pair.left.value.data.value != 301:
+        raise AssertionError(f"unexpected shared child data: {pair.left.value.data.value}")
 
 
 @svx.export
@@ -73,7 +73,7 @@ def python_gets_self_cycle():
 
     if node.data.value != 401:
         raise AssertionError(f"unexpected node data: {node.data.value}")
-    if node.next is not node:
+    if node.next.value is not node:
         raise AssertionError("self-cycle identity was not preserved")
 
 
@@ -86,10 +86,10 @@ def python_gets_queue_repeat():
         raise AssertionError(f"unexpected queue tag: {queue.tag.value}")
     if len(queue.nodes.value) != 2:
         raise AssertionError(f"unexpected queue size: {len(queue.nodes.value)}")
-    if queue.nodes[0] is not queue.nodes[1]:
+    if queue.nodes[0].value is not queue.nodes[1].value:
         raise AssertionError("queue repeated reference identity was not preserved")
-    if queue.nodes[0].data.value != 601:
-        raise AssertionError(f"unexpected queue node data: {queue.nodes[0].data.value}")
+    if queue.nodes[0].value.data.value != 601:
+        raise AssertionError(f"unexpected queue node data: {queue.nodes[0].value.data.value}")
 
 
 @svx.export
@@ -101,7 +101,7 @@ def python_gets_ref_queue_repeat():
         raise AssertionError(f"unexpected ref queue tag: {queue.tag.value}")
     if len(queue.nodes.value) != 2:
         raise AssertionError(f"unexpected ref queue size: {len(queue.nodes.value)}")
-    if queue.nodes[0] is not queue.nodes[1]:
+    if queue.nodes[0].value is not queue.nodes[1].value:
         raise AssertionError("ref queue repeated reference identity was not preserved")
-    if queue.nodes[0].data.value != 801:
-        raise AssertionError(f"unexpected ref queue node data: {queue.nodes[0].data.value}")
+    if queue.nodes[0].value.data.value != 801:
+        raise AssertionError(f"unexpected ref queue node data: {queue.nodes[0].value.data.value}")

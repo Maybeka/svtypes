@@ -1,5 +1,7 @@
 """Public SvTypes exception hierarchy."""
 
+from dataclasses import dataclass
+
 
 class SvTypesError(Exception):
     """Base class for errors raised by public SvTypes APIs."""
@@ -51,6 +53,36 @@ class ExternalStorageError(SvTypesError):
 
 class ExternalStorageClosedError(ExternalStorageError):
     """A temporary external value binding has already been closed."""
+
+
+@dataclass(frozen=True, slots=True)
+class StorageRelocationFailure:
+    """One failed migration stage and its original exception."""
+
+    phase: str
+    cause: BaseException
+
+
+class StorageRelocationError(ExternalStorageError):
+    """Migration failed without hiding the body or subsequent cleanup errors."""
+
+    def __init__(self, failures: tuple[StorageRelocationFailure, ...], *,
+                 restored: bool, body_error: BaseException | None = None) -> None:
+        self.failures = failures
+        self.phase = failures[0].phase
+        self.restored = restored
+        self.body_error = body_error
+
+        def describe(error):
+            parts, seen = [], set()
+            while error is not None and id(error) not in seen:
+                seen.add(id(error))
+                parts.append(f'{type(error).__name__}: {error}')
+                error = error.__cause__
+            return ' <- '.join(parts)
+
+        details = '; '.join(f'{f.phase}: {describe(f.cause)}' for f in failures)
+        super().__init__(f'slot relocation failed ({details}); latest value restored: {restored}')
 
 
 class ConstraintError(SvTypesError):

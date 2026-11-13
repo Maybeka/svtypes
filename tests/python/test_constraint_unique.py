@@ -234,7 +234,8 @@ def test_unique_pigeonhole_array_is_unsat():
 
 def test_unique_collection_in_rand_object_is_constrained_by_parent_randomize():
     obj = UniqueGraphParent()
-    child = obj.child
+    child = UniqueGraphChild()
+    obj.child.value = child
     with RandomContext(seed=515):
         for _ in range(16):
             assert obj.randomize() is True
@@ -243,7 +244,8 @@ def test_unique_collection_in_rand_object_is_constrained_by_parent_randomize():
 
 def test_dynamic_unique_in_rand_object_is_constrained_by_parent_randomize():
     obj = UniqueGraphDynamicParent()
-    child = obj.child
+    child = UniqueGraphDynamicChild()
+    obj.child.value = child
     with RandomContext(seed=516):
         for _ in range(16):
             assert obj.randomize() is True
@@ -253,8 +255,10 @@ def test_dynamic_unique_in_rand_object_is_constrained_by_parent_randomize():
 
 def test_mixed_dynamic_and_queue_unique_in_rand_objects_are_constrained_by_parent_randomize():
     obj = UniqueGraphCollectionParent()
-    mixed = obj.mixed
-    queue = obj.queue
+    mixed = UniqueGraphMixedDynamicChild()
+    queue = UniqueGraphQueueChild()
+    obj.mixed.value = mixed
+    obj.queue.value = queue
     with RandomContext(seed=517):
         for _ in range(16):
             assert obj.randomize() is True
