@@ -36,6 +36,7 @@ from examples.milestone_4_graph.tests.types import (
 from svtypes import (
     Array,
     Bit,
+    CodecSession,
     DynArray,
     Enum,
     Int,
@@ -821,7 +822,8 @@ def target_core_sim():
 
 
 @pytest.mark.remote_sv
-def test_remote_sv_core_types_graph_and_policies(target_core_sim):
+@pytest.mark.parametrize("retain_objects", [True, False])
+def test_remote_sv_core_types_graph_and_policies(target_core_sim, retain_objects):
     host, out = target_core_sim
     result = _ssh(host, f"cd $SVTYPES_REMOTE_SV_ROOT/.tmp/{WORKDIR_NAME} && $SVTYPES_REMOTE_SV_RUNNER run +SVTYPES_CASE=core")
     log = result.stdout + result.stderr
@@ -909,25 +911,25 @@ def test_remote_sv_core_types_graph_and_policies(target_core_sim):
     assert drive.data.value == 0x20
 
     clear_object_registry()
-    pair = GraphPair()
+    pair = GraphPair(session=CodecSession(retain_objects=retain_objects))
     pair.from_bytes(_read_hex(out / "pair_out.hex"))
     assert pair.left.value is pair.right.value
     assert pair.left.value.data.value == 44
 
     clear_object_registry()
-    cycle = GraphNode()
+    cycle = GraphNode(session=CodecSession(retain_objects=retain_objects))
     cycle.from_bytes(_read_hex(out / "cycle_out.hex"))
     assert cycle.next.value is cycle
     assert cycle.data.value == 7
 
     clear_object_registry()
-    refq = GraphRefQueue()
+    refq = GraphRefQueue(session=CodecSession(retain_objects=retain_objects))
     refq.from_bytes(_read_hex(out / "refq_out.hex"))
     assert refq.nodes[0].value is refq.nodes[1].value
     assert refq.nodes[0].value.data.value == 55
 
     clear_object_registry()
-    valq = GraphQueue()
+    valq = GraphQueue(session=CodecSession(retain_objects=retain_objects))
     valq.from_bytes(_read_hex(out / "valq_out.hex"))
     assert valq.nodes[0].value is valq.nodes[1].value
     assert valq.nodes[0].value.data.value == 66

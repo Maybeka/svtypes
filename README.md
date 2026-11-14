@@ -5,7 +5,7 @@ constrained randomization, functional coverage, binary serialization, and
 SystemVerilog/C++ code generation. It can be used directly or integrated into
 other verification tools without depending on a particular host framework.
 
-当前稳定版本为 `1.4.1`。支持范围、明确排除项与兼容性承诺见
+当前稳定版本为 `1.6.0`。支持范围、明确排除项与兼容性承诺见
 [支持矩阵](docs/svtypes_support_matrix.md)和
 [二进制格式](docs/svtypes_binary_format.md)。
 

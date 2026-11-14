@@ -43,6 +43,30 @@ parameterized class。
 `Parameter` 一旦在 class/instance 赋值即冻结，后续 `.value` 修改报错。`ReadOnlyMetaclass` 阻止直接改写
 `SvObject` class 或 `Package` 已建立的声明 attribute，从而保护 model integrity。
 
+## Python 编码会话的所有权
+
+`CodecSession(..., retain_objects=True)` 保持原有默认行为：登记表强持有对象，
+直到 `remove()`、`clear()` 或 `close()`。使用 `CodecSession(retain_objects=False)`
+可选择非拥有型会话；只读属性 `retain_objects` 返回所选策略，参数必须是布尔值。
+
+非拥有型会话以弱引用登记对象。Python 变量、对象图成员和应用或框架的拥有者仍然
+保持对象存活，单纯登记不会延长寿命。存活对象的对象编号不变，重复解码仍恢复同一
+实例。不可达的循环引用由普通 Python 垃圾回收处理，不承诺具体回收时刻；回收后
+登记项消失，但回收不会使分配器回退，也不会自动重新发放曾经分配或导入的编号。
+显式重置分配器仍是调用者控制的操作，不属于回收行为。
+
+`PackContext`、`UnpackContext` 保持操作期间的图对象；共享边、循环引用、冲突检查、
+回滚和线格式不变。对象回收后可再次解码完整对象图，但只含已回收编号的引用记录会
+报告无法解析引用。对象编号或编码字节本身不是拥有引用。外部存储或应用协议若只保留
+编号，必须提供真实拥有者或使用拥有型会话。两种策略都支持显式移除、清空和关闭。
+显式 `PackContext` 可跨多次 pack 调用，因而在其存活期间强持有所见对象，释放上下文后才
+释放这部分引用，避免 Python `id()` 复用导致错误引用编码。解码上下文在顶层成功或失败后
+清除临时拥有的对象；保留空上下文本身不会延长已解码对象寿命。
+
+此策略只影响 Python 登记表，不改变可移植 SV 运行时的强句柄，不选择试验性的 SV
+弱引用后端，也不释放外部 `RemoteRef` 目标。独立会话的对象编码若进入同一接收
+命名空间，仍需使用不同的 origin。
+
 ## 类型实现
 
 ### `TypeBase` 基础
@@ -263,8 +287,11 @@ assert run_checked(main) == 11
 
 向普通参数传递 `.value`。受检代码拒绝保存槽的别名、将槽传给无载体契约的参数，
 或直接返回槽。`*args` 和 `**kwargs` 使用独立值，传递槽时直接传给有方向
-契约的参数。项目模块加载器检查命名导入、通配导入、类体声明和函数默认值中的
-载体别名。将载体操作放在受检入口或它调用的函数中。
+契约的参数。仅导入 SvTypes 不改变普通 Python 的导入、加载器或字节码缓存。
+需要检查项目导入时使用 `with checked_project(root):`；`run_checked()` 执行期间自动
+为入口所属项目启用该作用域。范围内的模块加载器检查命名导入、通配导入、类体声明
+和函数默认值中的载体别名。作用域支持嵌套，退出恢复；已在 `sys.modules` 中的模块
+不重新加载。将载体操作放在受检入口或它调用的函数中。
 需要记录源码输入的工具可以使用上下文管理器 `observe_module_sources(observer)`。
 受检模块加载器在解析或变换前，针对每次读取的源码调用
 `observer(filename, source_bytes)`；字节保留原始编码和换行。回调可以抛出异常
@@ -288,6 +315,8 @@ assert run_checked(main) == 11
 包括载体别名、保存、捕获或逃逸，缺失或非法的载体参数契约，替换或删除声明槽，
 以及违反生命周期、类型和读写权限的访问。普通类型注解不是运行时约束；没有可检查
 源码或遇到未识别的语法形式，本身不构成违规。
+普通模块导入也遵守此原则：`globals()`、`locals()`、`vars()`、`eval()`、`exec()`、
+`super()` 及其别名在原调用帧中执行，不因导入 SvTypes 而改用内部观察器的作用域。
 可读取的项目源码通过变换观察这些操作；不透明代码和项目外代码正常执行，调用边界
 仍检查参数和返回值，不承诺检查不透明函数体内部。类注解、dataclass 和依赖调用者
 作用域的内置函数保留 Python 行为。载体转发使用显式参数契约；不得将 Ref 保存在闭包或
@@ -476,7 +505,10 @@ assert packet.count.value == 3
 packet.count.value = 0x103  # Bit 宽度归一化仍然生效
 ```
 
-`bind_external_value(descriptor, storage, key)` 为 temporary value root 提供同样语义。`close()` 使 root 及全部 derived
+`bind_external_value(descriptor, storage, key)` 为 temporary value root 提供同样语义。
+可选 `diagnostics="strict"` 检查 wire 指纹和预期字段数；默认 `"off"`，包括句柄读取。
+子视图、元素借用和 pop 返回值继承该策略。句柄身份/会话解析、类型选择、边界及
+完整消费 payload 的检查仍属于必要操作。`close()` 使 root 及全部 derived
 collection view 失效。external randomization 在 detached value snapshot 上求解，只有 success 后才发布每个 bound root；
 unsuccessful solve 不改变 backend。
 结果发布支持空、共享和循环 handle，包括容器内元素，不会用试算副本替换
@@ -563,8 +595,31 @@ SV 使用相同的遍历与叶值 bin；宽整数 bin 边界在生成 SV 中保�
 `instance.get_coverage()` 返回 type coverage；`instance.get_inst_coverage()` 返回 individual covergroup instance。
 `instance.sample_count` 记录 accepted sample；`instance.has_illegal_hits()` 报告是否命中 illegal bin。
 
-仅能使用显式 frozen declaration binding 调用 `CoverageDatabase.import_ucis()`。UCIS 是具有 documented loss report 的 interchange
-projection，不是 SvTypes coverage database 的替代。
+`CoverageIR` 及其嵌套 selector、表达式、参数和选项深度不可变：映射只读、序列为 tuple。
+使用 `stable_dict()` / `definition_snapshot()` 取得独立的 JSON 数据；修改快照不会修改声明或实例。
+
+`CoverageDatabase.record(instance, logical_instance_key=...)` 刷新快照，不重复累加。
+`merge(other)` 默认严格检查同类型的声明，即使实例键不同也不能容纳冲突定义；同键还检查实例布局。
+匿名记录始终独立，包括经过文件保存/加载后的跨 run 合并。
+
+```python
+report = master.merge(incoming, mode="master", reject_conflicts=False)
+conflicts = report["conflicts"]
+master.write("merged.svtcov")
+```
+
+显式主库投影保留 master 的定义、层次与 bins，只累加语义一致的项。point 变化也阻止其依赖 cross
+的累加；覆盖组级语义、同键 input 布局、未知类型/命名实例冲突均报告，不猜测匹配。
+`reject_conflicts=True` 遇到冲突整次失败；严格合并、投影和 UCIS 导入均先准备后原子发布。
+`merge_reports` 返回独立副本，报告随库保存。当前二进制格式 v2 写出并读取 v1/v2；参数化 v1
+record 若无具体定义，不参与需要该定义的投影。`apply_baseline()` 恢复计数与有限来源（含 cross
+局部 illegal），不恢复 transition 历史或旧对象。
+
+`CoverageDatabase.import_ucis(xml, bindings={key: frozen_instance})` 要求显式冻结实例绑定，检查
+子集内 bin 种类/范围、cross 成员顺序/索引及计分选项；参数化数组使用实际实例 bins。缺失受支持
+bin 或不兼容定义会拒绝整次导入。source/iff 对应关系由绑定方保证，不反解析任意 SV 表达式。
+子集外缺失计数明确记入 loss report 和持久化 `import_provenance`，不能当成已证实的零命中。
+已存在同键时先导入独立库再 merge。UCIS 是互操作投影，不替代 SvTypes 原生数据库。
 
 ## 可选解码诊断与手改生成代码
 
@@ -589,9 +644,21 @@ C++ 使用 `DecodeContext` 的 `DiagnosticPolicy::off/strict` 和 `DecodeContext
 SV 生成默认使用显式辅助类型，并通过 `$bits` 和 `$size` 从实际字段声明派生支持的 bit/logic
 位宽和数组尺寸；手改这些字段的位宽或固定长度不需要 `type(expression)`。编码类别和有符号
 属性仍属于生成的字段契约，修改字段类别时需要同步调整相关设置。对于目标无法将成员形状作为
-类型常量的参数化类，保留显式类型，并在形状不匹配时拒绝操作，避免静默截断。
+类型常量的参数化类，保留显式类型，形状检查只在显式严格诊断上下文中执行。
+手改这些字段仍需同步修改声明及其显式 codec 类型；关闭诊断不会让不兼容的 SV ref
+连接变成合法连接，也不会自动适配通信布局。
 通过 `to_sv_obj(use_type_reference=True)`、`to_sv_pkg(use_type_reference=True)` 或
 `generate(..., use_type_reference=True)` 可选择让辅助代码使用 SystemVerilog `type(expression)`。
+
+`generate()` 默认 `targets={"sv", "cpp"}`，需要完整源 schema 时加入 `"schema"`，
+需要覆盖率观察清单时加入 `"coverage"`；两个元数据目标也可独立请求。仅代码生成
+不遍历源 schema 或计算其摘要，仍保留用于发布和手改保护的小型产物归属清单。
+多文件输出将分层随机等框架实现收进 `support/`；单文本接口仍自包含，并划分辅助区。
+
+类声明和普通随机/采样不准备编码指纹。首次编码、生成代码或显式查询编码描述时，
+只计算 wire 指纹一次，不构建源 schema。后续复用缓存；注册身份变化或声明刷新只使
+受影响缓存失效，下次请求时才重新准备。现有对象头仍携带指纹，写入协议字段与
+解码时比较指纹是两件事。普通随机求解只在涉及 randc 状态时计算约束循环签名。
 
 `generate()` 可将未绑定参数的类输出为目标语言模板。此时尚无具体的源 schema，其名称记录在
 schema 文档和生成清单的 `unbound_templates` 中，不加入 `types` 或具体指纹列表。需要具体

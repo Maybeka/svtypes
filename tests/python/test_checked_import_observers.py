@@ -1,9 +1,49 @@
 import importlib
 import sys
+import os
+import subprocess
 
 import pytest
 import svtypes
 from svtypes.checked_imports import _ProjectFinder, _ProjectSourceLoader, checked_project
+
+
+@pytest.mark.parametrize('checked', [False, True])
+def test_import_preserves_native_frame_builtins_and_aliases(tmp_path, checked):
+    source = '''import builtins
+answer = 42
+namespace = globals()
+local_namespace = locals()
+variables = vars()
+evaluate = builtins.eval
+result = evaluate("answer + 1")
+executed = exec("created = answer + 2")
+alias = globals
+aliased_namespace = alias()
+class Ordinary:
+    answer = 7
+    namespace = locals()
+'''
+    (tmp_path / 'ordinary.py').write_text(source, encoding='utf-8')
+    script = tmp_path / 'main.py'
+    script.write_text('''import svtypes
+import ordinary as m
+assert m.namespace is vars(m)
+assert m.local_namespace is vars(m)
+assert m.variables is vars(m)
+assert m.aliased_namespace is vars(m)
+assert m.result == 43 and m.created == 44
+assert m.Ordinary.namespace["answer"] == 7
+''', encoding='utf-8')
+    if checked:
+        body = script.read_text()
+        script.write_text('from pathlib import Path\nfrom svtypes import checked_project\n'
+                          'with checked_project(Path(__file__).parent):\n'
+                          + ''.join('    ' + line + '\n' for line in body.splitlines()))
+    from pathlib import Path
+    env = dict(os.environ, PYTHONPATH=str(Path(svtypes.__file__).resolve().parent.parent))
+    result = subprocess.run([sys.executable, str(script)], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 def test_checked_finder_leaves_other_sources_for_later_finders(tmp_path, monkeypatch):

@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
-from .canonical import _validate_canonical_value, canonical_value, semantic_digest
+from .canonical import _validate_canonical_value, canonical_value, freeze_value, semantic_digest
 
 
 COVERAGE_IR_VERSION = 1
@@ -39,7 +39,7 @@ def _canonical_options(
         # Validate declaration data now, instead of delaying a non-reproducible
         # value failure until a digest happens to be requested.
         _validate_canonical_value(value)
-        normalized.append((name, value))
+        normalized.append((name, freeze_value(value)))
     return tuple(sorted(normalized, key=lambda item: item[0]))
 
 
@@ -90,7 +90,7 @@ class CoverageInitCallIR:
 
     def __post_init__(self) -> None:
         _require_name("coverage initializer covergroup", self.covergroup)
-        _validate_canonical_value(self.actuals)
+        object.__setattr__(self, "actuals", freeze_value(self.actuals))
         object.__setattr__(self, "named_actuals", _canonical_options("coverage initializer actual", self.named_actuals))
 
     def stable_dict(self) -> dict[str, Any]:
@@ -112,6 +112,8 @@ class CoverageInitIR:
     def __post_init__(self) -> None:
         _require_name("coverage initializer", self.name)
         _validate_parameter_names(f"coverage initializer {self.name!r}", self.parameters)
+        object.__setattr__(self, "parameters", tuple(self.parameters))
+        object.__setattr__(self, "calls", tuple(self.calls))
         if not self.calls:
             raise ValueError(f"coverage initializer {self.name!r} has no instantiate calls")
         object.__setattr__(self, "calls", tuple(self.calls))
@@ -137,7 +139,7 @@ class CoverageBinIR:
         if self.kind not in _BIN_KINDS:
             choices = ", ".join(sorted(_BIN_KINDS))
             raise ValueError(f"coverage bin {self.name!r} has unsupported kind {self.kind!r}; expected {choices}")
-        _validate_canonical_value(self.selector)
+        object.__setattr__(self, "selector", freeze_value(self.selector))
 
     def stable_dict(self) -> dict[str, Any]:
         return {
@@ -159,8 +161,8 @@ class CoveragePointIR:
 
     def __post_init__(self) -> None:
         _require_name("point", self.name)
-        _validate_canonical_value(self.expression)
-        _validate_canonical_value(self.iff)
+        object.__setattr__(self, "expression", freeze_value(self.expression))
+        object.__setattr__(self, "iff", freeze_value(self.iff))
         object.__setattr__(self, "bins", _canonical_named_items("bin", self.bins))
         object.__setattr__(self, "options", _canonical_options(f"point {self.name!r}", self.options))
 
@@ -185,7 +187,8 @@ class CrossQueueFunctionIR:
     def __post_init__(self) -> None:
         _require_name("cross queue function", self.name)
         _validate_parameter_names(f"cross queue function {self.name!r}", self.parameters)
-        _validate_canonical_value(self.body)
+        object.__setattr__(self, "parameters", tuple(self.parameters))
+        object.__setattr__(self, "body", freeze_value(self.body))
 
     def stable_dict(self) -> dict[str, Any]:
         return {
@@ -234,13 +237,14 @@ class CoverageCrossIR:
 
     def __post_init__(self) -> None:
         _require_name("cross", self.name)
+        object.__setattr__(self, "members", tuple(self.members))
         if not self.members:
             raise ValueError(f"coverage cross {self.name!r} must have at least one member")
         for member in self.members:
             _require_name("cross member", member)
         if len(set(self.members)) != len(self.members):
             raise ValueError(f"coverage cross {self.name!r} has duplicate members")
-        _validate_canonical_value(self.iff)
+        object.__setattr__(self, "iff", freeze_value(self.iff))
         object.__setattr__(self, "bins", _canonical_named_items("bin", self.bins))
         object.__setattr__(self, "options", _canonical_options(f"cross {self.name!r}", self.options))
         object.__setattr__(self, "queue_functions", _canonical_named_items("cross queue function", self.queue_functions))
@@ -285,6 +289,8 @@ class CoverageIR:
         _validate_parameter_names("constructor", self.constructor_parameters)
         _validate_parameter_names("reference", self.reference_parameters)
         _validate_parameter_names("sample", self.sample_parameters)
+        for field_name in ("constructor_parameters", "reference_parameters", "sample_parameters"):
+            object.__setattr__(self, field_name, tuple(getattr(self, field_name)))
         points = _canonical_named_items("point", self.points)
         crosses = _canonical_named_items("cross", self.crosses)
         point_names = {point.name for point in points}

@@ -1,4 +1,49 @@
-# SvTypes randomization and coverage performance acceptance
+# SvTypes randomization, coverage and checked-execution performance acceptance
+
+## 2026-11-14 checked-execution and coverage qualification
+
+`benchmarks/checked_execution.py` adds reproducible measurements for ordinary
+Python integers, local SvTypes values, checked calls, external storage, explicit
+element borrowing and scoped relocation. Each scenario asserts its final value;
+relocation also asserts that every allocation is released. First use is reported
+separately, normal timing uses three warmed repetitions, and a separate run
+measures Python allocations with `tracemalloc` and retained memory after GC.
+
+```sh
+PYTHONPATH=python:. .venv/bin/python benchmarks/checked_execution.py --operations 1000 --repeats 3 --json
+PYTHONPATH=python:. .venv/bin/python benchmarks/coverage.py --samples 1000 --runs 20 --cross-samples 10 --no-memory --json
+```
+
+This working-tree run used Python 3.14.8 on macOS arm64. Full remote regression
+was active during measurement; these numbers are workload observations, not an
+isolated before/after speed comparison or a release timing threshold.
+
+| Scenario | Median µs/operation | Peak Python bytes | Retained after GC, bytes |
+| --- | ---: | ---: | ---: |
+| Native integer update | 0.012 | 184 | 0 |
+| Local `Int.value` update | 0.77 | 1,320 | 56 |
+| One checked entry per update | 306.75 | 864,311 | 39,409 |
+| 1,000 updates within one checked entry | 8.43 | 97,100 | 1,901 |
+| Memory-backed external value update | 122.47 | 140,509 | 88 |
+| Explicit element borrow per update | 6.32 | 5,262 | 216 |
+| Allocate/relocate/restore/release per update | 211.00 | 158,208 | 60 |
+
+Checked entry and external-storage access have visible costs. The one-entry
+loop measures a different call pattern; it is not permission to bypass carrier
+checks at actual parameter boundaries. Native network/storage transports can
+add their own costs; the in-memory backend does not model them.
+
+The coverage run measured 1,000 scalar samples in 0.00864 s, first construction
+of a 65,536-bin cross in 2.146 s, 10 cross samples in 0.000426 s, and 20 persisted
+decode/merge operations in 0.0344 s. Large-cross JSON/binary output took
+0.160/0.172 s and occupied 29,827,039/29,827,181 bytes; UCIS export took 2.417 s.
+The v2 records retain template and concrete instance definitions to validate
+projection and parameterized UCIS import. This increases persisted size; the
+format is not compressed and no compression benefit is claimed. Large-layout
+construction/export and checked-call entry remain measurable optimization areas,
+not grounds to weaken identity, immutability or parameter contracts.
+
+The following sections retain earlier workloads and their original baselines.
 
 `benchmarks/randomization.py` is the reproducible microbenchmark suite for the
 Python constrained-random engine. It is deliberately separate from pytest:

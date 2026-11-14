@@ -798,13 +798,13 @@ def _solve(
     for var in var_index.values():
         widths[var.path] = (var.width, var.signed)
 
-    signature = tuple(sorted(ir.digest() for ir in enabled))
     randc_paths = [
         path for path, desc, declared_rand in leaves
         if declared_rand and bool(getattr(desc, "randc", False)) and (
             graph.rand_mode(path) if graph is not None else _effective_rand_mode(obj, path)
         ) == 1
     ]
+    signature = tuple(sorted(ir.digest() for ir in enabled)) if randc_paths or packed_cycles else ()
     randc_seen = _prepare_randc_seen(obj, randc_paths + list(packed_cycles), leaves, signature, graph)
 
     assignments: dict[str, Any] = {}

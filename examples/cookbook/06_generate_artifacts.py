@@ -19,9 +19,10 @@ def main() -> None:
     # 教程用临时目录，避免污染工作树；工程中请替换为受管理的输出目录。
     with TemporaryDirectory(prefix="svtypes-cookbook-") as directory:
         output = Path(directory)
-        first = generate(package, output)
+        targets = {"sv", "cpp", "schema", "coverage"}
+        first = generate(package, output, targets=targets)
         # check 不重写文件，只验证生成物没有因声明变化而漂移，适合 CI。
-        check = generate(package, output, mode="check")
+        check = generate(package, output, targets=targets, mode="check")
         assert first.written
         assert not first.failed
         assert check.is_current

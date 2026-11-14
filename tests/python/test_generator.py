@@ -157,7 +157,7 @@ def test_stale_support_cleanup_preserves_user_contents(tmp_path, preserve):
 
 def test_multifile_generator_writes_and_checks_deterministic_artifacts(tmp_path):
     package = _package()
-    first = generate(package, tmp_path)
+    first = generate(package, tmp_path, targets={"sv", "cpp", "schema", "coverage"})
 
     assert {path for path in first.written if not path.startswith("support/")} == {
         "generation_test.hpp",
@@ -176,7 +176,7 @@ def test_multifile_generator_writes_and_checks_deterministic_artifacts(tmp_path)
     assert not first.failed
     assert not first.stale
 
-    check = generate(package, tmp_path, mode="check")
+    check = generate(package, tmp_path, targets={"sv", "cpp", "schema", "coverage"}, mode="check")
     assert check.is_current
     assert set(check.unchanged) == set(first.written)
 
@@ -200,13 +200,13 @@ def test_multifile_generator_writes_and_checks_deterministic_artifacts(tmp_path)
 
 def test_generator_check_reports_modified_and_missing_files_without_writing(tmp_path):
     package = _package()
-    generate(package, tmp_path)
+    generate(package, tmp_path, targets={"sv", "cpp", "schema", "coverage"})
     sv_path = tmp_path / "generation_test.sv"
     sv_path.write_text("user modification\n")
     schema_path = tmp_path / "generation_test.schema.json"
     schema_path.unlink()
 
-    result = generate(package, tmp_path, mode="check")
+    result = generate(package, tmp_path, targets={"sv", "cpp", "schema", "coverage"}, mode="check")
     assert set(result.written) == {
         "generation_test.schema.json",
         "generation_test.sv",

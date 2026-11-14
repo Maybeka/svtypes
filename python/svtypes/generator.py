@@ -76,7 +76,7 @@ def _render_outputs(registry_or_schema: Any, targets: set[str], layout: str, use
 def _render_outputs_inline(registry_or_schema: Any, targets: set[str], layout: str, use_type_reference: bool = False) -> tuple[str, dict[str, bytes], list[dict[str, Any]], list[str]]:
     if layout != "package":
         raise DeclarationError("SvTypes 1.0 generator currently supports only layout='package'")
-    unknown = targets - {"sv", "cpp", "schema"}
+    unknown = targets - {"sv", "cpp", "schema", "coverage"}
     if unknown:
         raise DeclarationError(f"unknown generation targets: {sorted(unknown)}")
     package_name, types = _registered_types(registry_or_schema)
@@ -86,18 +86,19 @@ def _render_outputs_inline(registry_or_schema: Any, targets: set[str], layout: s
     templates = sorted(unified_type_name(value) for value in types
                        if getattr(value, "_SvObject__svtypes_is_template", False))
     schemas = [schema_descriptor(value).to_dict() for value in types
-               if not getattr(value, "_SvObject__svtypes_is_template", False)]
+               if not getattr(value, "_SvObject__svtypes_is_template", False)] if "schema" in targets else []
     outputs: dict[str, bytes] = {}
 
     if "sv" in targets:
-        from .coverage.sv import observation_manifest
-
         renderer = getattr(registry_or_schema, "to_sv_pkg", None)
         if renderer is None:
             body = "\n\n".join(value.to_sv_obj(use_type_reference=use_type_reference) for value in types)
         else:
             body = renderer(use_type_reference=True) if use_type_reference else renderer()
         outputs[f"{stem}.sv"] = (body.rstrip() + "\n").encode("utf-8")
+    if "coverage" in targets:
+        from .coverage.sv import observation_manifest
+
         outputs[f"{stem}.coverage-manifest.json"] = _json_bytes(observation_manifest(types))
     if "cpp" in targets:
         renderer = getattr(registry_or_schema, "to_cpp_pkg", None)
@@ -181,7 +182,7 @@ def generate(
     registry_or_schema: Any,
     output_dir: str | os.PathLike[str],
     *,
-    targets: set[str] | frozenset[str] = frozenset({"sv", "cpp", "schema"}),
+    targets: set[str] | frozenset[str] = frozenset({"sv", "cpp"}),
     layout: str = "package",
     mode: str = "write",
     overwrite_modified: bool = False,
@@ -195,6 +196,9 @@ def generate(
     Check mode remains read-only and reports differences regardless of this flag.
     ``use_type_reference=True`` emits SV type references instead of explicit
     helper types; it does not change C++ or schema output.
+    Targets default to code only. Add ``"schema"`` for full source metadata
+    and/or ``"coverage"`` for a coverage observation manifest. Artifact hashes
+    used to protect hand-edited files remain in the ownership manifest.
     """
     if mode not in {"write", "check"}:
         raise DeclarationError("generation mode must be 'write' or 'check'")

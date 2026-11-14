@@ -43,27 +43,45 @@ And gets, for free:
 
 ### 1.3 Design Principles
 
-The planned generated-code editability work is specified in
+The implemented generated-code editability contract is specified in
 [Generated Code Editability](SVTYPES_GENERATED_CODE_EDITABILITY.md).
 It separates readable design code, shared codec adaptation, and opt-in diagnostics,
 and reduces duplicated layout facts so emergency edits do not require manual
-fingerprint maintenance. This is a design target, not a claim that the current
-runtime has disabled its compatibility checks.
+fingerprint maintenance. Ordinary decoding defaults to diagnostics off; explicit
+checked decoding retains strict diagnostics. Structural bounds, type identity
+and reference-resolution checks remain necessary. Regeneration protects edited
+managed files and unrelated files unless overwrite is explicitly requested.
 
 | Principle | Meaning |
 |---|---|
 | **Define Once, Generate Many** | One Python definition → SV, C++, and one binary protocol |
 | **Binary Contract First** | The serialization format IS the API contract between languages |
 | **Layered Separation** | Model ≠ Codegen ≠ Runtime — each layer is independently testable |
-| **Progressive Disclosure** | Simple things are simple; complex things (inheritance, templates, unions) are possible |
+| **Progressive Disclosure** | Simple declarations stay concise; inheritance, specialization and nested supported types compose |
 | **Simulator Agnostic** | Generated SV/C++ code has zero vendor-specific constructs |
 | **Pythonic First** | The Python DSL feels natural to Python developers, not like writing SV in Python |
+
+Ordinary Python execution remains ordinary Python, including caller-sensitive
+builtins. `run_checked()` rejects identified carrier alias/capture/escape,
+permission and lifetime violations; it is a denylist, not a Python syntax
+whitelist or a security sandbox. Source-only constraint/coverage declarations
+are separate DSL boundaries with their documented grammar.
+
+Coverage declarations own deeply immutable IR. Runtime instances materialize
+their own bin layouts without mutating the template. Detached JSON snapshots
+are the interchange boundary; changes to them cannot change sampling or digests.
+Database identities and compatibility checks are independent of wire encoding.
+Post-2.0 tools consume versioned manifests without becoming core dependencies.
 
 ---
 
 ## 2. System Architecture
 
 ### 2.1 Layer Model
+
+These are logical responsibilities, not a claim that all renderers already live
+outside type classes. Existing model methods still expose rendering entry points;
+the independent backend SDK consumes manifests rather than those internals.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -192,7 +210,8 @@ TypeBase (abstract)
 │
 └── UserDefinedType — User/composite types
     ├── SvObject         — class-based     → SV: class      C++: struct
-    ├── SvStruct         — by-value         → SV: typedef struct packed  C++: struct
+    ├── SvStruct         — unpacked value  → SV: typedef struct         C++: struct
+    ├── SvPackedStruct   — packed value    → SV: typedef struct packed  C++: struct
     └── Enum             — enumeration     → SV: typedef enum  C++: enum class
 ```
 
@@ -315,8 +334,9 @@ the same public descriptors to transports and manifests.
 ### 6.2 Generator implementation
 
 `python/svtypes/generator.py` coordinates deterministic package-level outputs:
-one legal SV package, one C++20 header, one schema JSON file, and one managed
-manifest. `mode="write"` replaces managed artifacts; `mode="check"` reports
+one legal SV package, one C++20 header, support files, and a managed artifact
+manifest by default. The `schema` and `coverage` targets explicitly request
+source-schema and coverage-observation metadata. `mode="write"` replaces managed artifacts; `mode="check"` reports
 differences without writing. The current implementation uses direct renderers
 in `Scope` and the type classes; Jinja2, a template directory, C generation,
 and DPI generation are not part of the 1.0 contract.

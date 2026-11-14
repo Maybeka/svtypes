@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import ast
 import inspect
 import re
@@ -251,7 +253,7 @@ def _expression_domain(
 
 
 def _contains_literal(selector: Any) -> bool:
-    if isinstance(selector, dict):
+    if isinstance(selector, Mapping):
         return selector.get("kind") in {"constant", "typed_literal", "enum_literal"} or any(_contains_literal(value) for value in selector.values())
     if isinstance(selector, (list, tuple)):
         return any(_contains_literal(item) for item in selector)
@@ -314,7 +316,7 @@ def _normalize_literal(
     *,
     enum_type_name: str | None = None,
 ) -> Any:
-    if not isinstance(selector, dict):
+    if not isinstance(selector, Mapping):
         return selector
     kind = selector.get("kind")
     if kind == "values":
@@ -323,7 +325,7 @@ def _normalize_literal(
         lower = _normalize_literal(selector["lower"], domain, point_name, enum_type_name=enum_type_name) if selector["lower"] is not None else None
         upper = _normalize_literal(selector["upper"], domain, point_name, enum_type_name=enum_type_name) if selector["upper"] is not None else None
         if any(
-            isinstance(endpoint, dict)
+            isinstance(endpoint, Mapping)
             and isinstance(endpoint.get("value"), LogicValue)
             and (endpoint["value"].x_mask or endpoint["value"].z_mask)
             for endpoint in (lower, upper)
@@ -396,20 +398,20 @@ def _normalize_literal(
 
 
 def _contains_repeat(selector: Any) -> bool:
-    if isinstance(selector, dict):
+    if isinstance(selector, Mapping):
         return selector.get("kind") == "repeat" or any(_contains_repeat(value) for value in selector.values())
-    if isinstance(selector, list):
+    if isinstance(selector, (list, tuple)):
         return any(_contains_repeat(value) for value in selector)
     return False
 
 
 def _transition_sequence_lengths(selector: Any) -> tuple[int, int]:
     """Return the shortest and longest sequence represented by a transition."""
-    if not isinstance(selector, dict) or selector.get("kind") != "values":
+    if not isinstance(selector, Mapping) or selector.get("kind") != "values":
         raise _error("transition bin selector must be a finite value sequence")
     minimum = maximum = 0
     for item in selector["items"]:
-        if isinstance(item, dict) and item.get("kind") == "repeat":
+        if isinstance(item, Mapping) and item.get("kind") == "repeat":
             minimum += item["minimum"]
             maximum += item["maximum"]
         else:
@@ -433,7 +435,7 @@ def _validate_point_bin_shapes(point_name: str, bins: list[CoverageBinIR]) -> No
 
 
 def _validate_expression_names(expression: Any, allowed_names: set[str], owner: str) -> None:
-    if isinstance(expression, dict):
+    if isinstance(expression, Mapping):
         if expression.get("kind") == "name" and expression["name"] not in allowed_names:
             raise _error(f"coverage {owner} references unknown name {expression['name']!r}")
         for value in expression.values():
@@ -500,7 +502,7 @@ def _array_bin_declaration(
         try:
             values = _split_values(call.func.value.slice)
         except CoverageDeclarationError:
-            if not isinstance(selector, dict) or selector.get("kind") != "range":
+            if not isinstance(selector, Mapping) or selector.get("kind") != "range":
                 raise _error("dynamic bins.split(count) requires one bounded integer range")
             return [CoverageBinIR(
                 name,
@@ -525,7 +527,7 @@ def _array_bin_declaration(
         try:
             values = _split_values(call.func.value.slice)
         except CoverageDeclarationError:
-            if not isinstance(selector, dict) or selector.get("kind") != "range":
+            if not isinstance(selector, Mapping) or selector.get("kind") != "range":
                 raise _error("dynamic bins.split(max_bins=None) requires one bounded integer range")
             return [CoverageBinIR(name, "normal", {"kind": "array_split", "selector": selector})]
         if len(set(values)) != len(values):
@@ -644,7 +646,7 @@ def _automatic_bins(
 
 def _resolve_static_literals(selector: Any, static_ns: dict[str, Any], point_name: str, descriptor: Any) -> Any:
     """Fold declaration-time enum members into the point comparison domain."""
-    if not isinstance(selector, dict):
+    if not isinstance(selector, Mapping):
         return selector
     kind = selector.get("kind")
     if kind == "values":
@@ -673,7 +675,7 @@ def _resolve_static_literals(selector: Any, static_ns: dict[str, Any], point_nam
     if kind != "attribute":
         return selector
     base = selector.get("base")
-    if not isinstance(base, dict) or base.get("kind") != "name":
+    if not isinstance(base, Mapping) or base.get("kind") != "name":
         return selector
     owner = static_ns.get(base["name"])
     if owner is not None and base["name"] == "self":

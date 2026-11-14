@@ -208,11 +208,13 @@ class opcode_mode(Cross, members=(opcode_cp, mode_cp)):
 显式注册类型，再生成：
 
 ```python
-first = generate(package, output)
-check = generate(package, output, mode="check")
+targets = {"sv", "cpp", "schema", "coverage"}
+first = generate(package, output, targets=targets)
+check = generate(package, output, targets=targets, mode="check")
 ```
 
-默认产物包括：SystemVerilog package、C++ header、schema、coverage manifest 和顶层 manifest。生成器按稳定
+本例显式请求 SystemVerilog package、C++ header、schema、coverage manifest 和顶层 manifest；
+默认只生成 SV/C++、辅助文件与产物归属 manifest。生成器按稳定
 依赖顺序发布，并记录受管理文件；`mode="check"` 不写文件，只报告缺失或已变更产物，适合 CI。
 
 实际工程建议：

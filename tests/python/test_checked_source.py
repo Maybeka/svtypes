@@ -631,30 +631,34 @@ def test_checked_import_rejects_alias_before_module_side_effect_and_keeps_other_
     result = _run_script(tmp_path, {
         "project/main.py": """
 from pathlib import Path
-import sys
-from svtypes import CheckedAccessError
+from svtypes import checked_project
+with checked_project(Path(__file__).parent):
+    from pathlib import Path
+    import sys
+    from svtypes import CheckedAccessError
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "dependency"))
-import external
-assert external.alias is external.original
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "dependency"))
+    import external
+    assert external.alias is external.original
 
-try:
-    import broken
-except CheckedAccessError as exc:
-    assert "broken.py:4" in str(exc)
-else:
-    raise AssertionError("module carrier alias was accepted")
-assert "broken" not in sys.modules
-assert not Path("unexpected.txt").exists()
+    try:
+        import broken
+    except CheckedAccessError as exc:
+        assert "broken.py:4" in str(exc)
+    else:
+        raise AssertionError("module carrier alias was accepted")
+    assert "broken" not in sys.modules
+    assert not Path("unexpected.txt").exists()
 
-try:
-    import bad_default
-except CheckedAccessError as exc:
-    assert "bad_default.py:4" in str(exc)
-else:
-    raise AssertionError("a module function saved a carrier as a default")
-assert "bad_default" not in sys.modules
-print("checked")
+    try:
+        import bad_default
+    except CheckedAccessError as exc:
+        assert "bad_default.py:4" in str(exc)
+    else:
+        raise AssertionError("a module function saved a carrier as a default")
+    assert "bad_default" not in sys.modules
+    print("checked")
+
 """,
         "project/broken.py": """
 from svtypes import Int
@@ -1736,21 +1740,25 @@ def test_checked_argument_expansions_pass_values_and_reject_carriers():
 def test_checked_project_import_checks_star_bindings_and_class_declarations(tmp_path):
     result = _run_script(tmp_path, {
         "project/main.py": """
-import sys
-from svtypes import CheckedAccessError
+from pathlib import Path
+from svtypes import checked_project
+with checked_project(Path(__file__).parent):
+    import sys
+    from svtypes import CheckedAccessError
 
-import declarations
-assert declarations.Model.word.value == 3
-assert declarations.delta == 2
-for name, diagnostic in (("bad_star", "(word)"), ("bad_class", "alias = word")):
-    try:
-        __import__(name)
-    except CheckedAccessError as exc:
-        assert diagnostic in str(exc)
-    else:
-        raise AssertionError("an import saved a variable carrier")
-    assert name not in sys.modules
-print("checked")
+    import declarations
+    assert declarations.Model.word.value == 3
+    assert declarations.delta == 2
+    for name, diagnostic in (("bad_star", "(word)"), ("bad_class", "alias = word")):
+        try:
+            __import__(name)
+        except CheckedAccessError as exc:
+            assert diagnostic in str(exc)
+        else:
+            raise AssertionError("an import saved a variable carrier")
+        assert name not in sys.modules
+    print("checked")
+
 """,
         "project/declarations.py": """
 from svtypes import *
@@ -1789,15 +1797,19 @@ raise AssertionError("import should stop at the class binding")
 def test_checked_project_import_restores_rejected_bindings_when_caught(tmp_path):
     result = _run_script(tmp_path, {
         "project/main.py": """
-import svtypes
-import catches
-assert catches.original.value == 1
-assert catches.allowed == 3
-assert not hasattr(catches, "alias")
-assert not hasattr(catches, "extra")
-assert not hasattr(catches, "bad_default")
-assert catches.caught == 4
-print("checked")
+from pathlib import Path
+from svtypes import checked_project
+with checked_project(Path(__file__).parent):
+    import svtypes
+    import catches
+    assert catches.original.value == 1
+    assert catches.allowed == 3
+    assert not hasattr(catches, "alias")
+    assert not hasattr(catches, "extra")
+    assert not hasattr(catches, "bad_default")
+    assert catches.caught == 4
+    print("checked")
+
 """,
         "project/exported.py": """
 from svtypes import Int

@@ -38,6 +38,45 @@ To ensure model integrity, parameters and class-level structures are protected:
 
 ---
 
+## Python Codec Session Ownership
+
+`CodecSession(..., retain_objects=True)` retains its registered objects until
+`remove()`, `clear()` or `close()`, preserving the existing default. A non-owning
+session is selected with `CodecSession(retain_objects=False)`; its read-only
+`retain_objects` property reports the policy. The policy must be a boolean.
+
+In a non-owning session, the identity registry uses weak references. Python
+variables, graph fields and application/framework owners keep their objects live;
+registration alone does not. A surviving object keeps the same object number
+and repeated decoding resolves it to the same instance. Unreachable cycles are
+reclaimed by ordinary Python garbage collection, without a promised collection
+time. Collection removes the registry entry without rewinding the allocator or
+automatically reusing a previously allocated or imported number. Explicit
+allocator resets remain a caller-controlled operation, not a collection action.
+
+`PackContext` and `UnpackContext` preserve in-flight graph objects. Shared edges,
+cycles, collision checks, rollback and wire encoding are unchanged. A complete
+graph can be decoded again after collection; a reference-only record for a
+collected object raises an unresolved-reference error. An object number or raw
+encoded bytes are not an owning reference. External storage or application
+protocols that keep only numbers must provide an actual owner or use an owning
+session. Explicit removal/clear/close remain available under both policies.
+An explicit `PackContext` can span multiple pack calls and retains seen objects
+until the context is released, preventing recycled Python `id()` values from
+producing incorrect reference records. An unpack context releases its temporary
+owners after each top-level success or failure; retaining an idle unpack context
+does not keep the decoded graph alive.
+An explicit `PackContext` may span multiple pack calls and therefore strongly
+retains seen objects for its own lifetime, preventing recycled Python IDs from
+producing false reference records. Releasing that context releases those
+references. The unpack context clears its temporary ownership after top-level
+success or failure; keeping the empty context does not retain decoded objects.
+
+This policy applies to the Python registry only. It does not change portable SV
+strong handles, select the experimental weak-reference SV backend, or dispose
+foreign `RemoteRef` targets. Independently created sessions still require distinct
+origins when their encoded objects share one receiving namespace.
+
 ## Type Implementations
 
 ### 1. The Foundation: `TypeBase` (`python/svtypes/base.py`)
@@ -266,9 +305,14 @@ assert run_checked(main) == 11
 Pass `.value` to ordinary parameters. Checked code rejects storing a slot as
 another variable, passing it to an untyped parameter, or returning it.
 Use independent values in `*args` and `**kwargs`. Pass a slot directly to a
-parameter with a declared direction. The project module loader checks named
-and wildcard imports, class declarations, and function defaults for carrier
-aliases. Place carrier operations in the checked entry or its callees.
+parameter with a declared direction. Importing SvTypes alone leaves ordinary
+Python imports, loaders and bytecode caches unchanged. Use
+`with checked_project(root):` to check fresh project imports explicitly;
+`run_checked()` scopes imports to its entry project while it executes. Within
+that scope, the project loader checks named and wildcard imports, class
+declarations and function defaults for carrier aliases. Nested scopes restore
+on exit; modules already in `sys.modules` are not reloaded. Place carrier
+operations in the checked entry or its callees.
 Tools that record source inputs may use `observe_module_sources(observer)` as
 a context manager. The observer receives `(filename, source_bytes)` for each
 source read by the checked module loader, before parsing or transformation.
@@ -304,6 +348,9 @@ alias/storage/capture or escape, missing or invalid carrier parameter contracts,
 replacement/deletion of declared slots, and invalid lifetime, type or permission
 access. Ordinary annotations are not runtime constraints. Unavailable source or
 an unrecognized syntax form is not evidence of a violation.
+Ordinary module imports follow the same principle: `globals()`, `locals()`,
+`vars()`, `eval()`, `exec()`, `super()` and their aliases execute in the original
+caller frame, not an internal observer's scope after importing SvTypes.
 Readable project source is instrumented to observe these operations; opaque and
 external bodies execute normally, retaining parameter and return checks at the
 boundary. This does not promise inspection inside opaque code. Class annotations,
@@ -556,7 +603,11 @@ packet.count.value = 0x103  # Bit width normalization still applies
 ```
 
 `bind_external_value(descriptor, storage, key)` offers the same semantics for
-a temporary value root.  `close()` invalidates the root and every derived
+a temporary value root. Its optional `diagnostics="strict"` setting checks wire
+fingerprints and expected field counts; the default is `"off"`, including handle
+reads. Child views, element borrows and pop results inherit this setting.
+Handle identity/session resolution, type selection, bounds and exact payload
+consumption remain required. `close()` invalidates the root and every derived
 collection view.  External randomization solves a detached value snapshot and
 publishes each bound root only after success; an unsuccessful solve leaves the
 backend unchanged.
@@ -666,9 +717,44 @@ exact width and sign in generated SV.
 `instance.sample_count` records accepted samples and
 `instance.has_illegal_hits()` reports whether an illegal bin was hit.
 
-Use `CoverageDatabase.import_ucis()` only with explicit bindings to frozen
-declarations. UCIS is an interchange projection with a documented loss report,
-not a replacement for the SvTypes coverage database.
+`CoverageIR` and its nested selectors, expressions, parameters and options are
+deeply immutable: mappings are read-only and sequences are tuples. Obtain detached
+JSON data with `stable_dict()` / `definition_snapshot()`; editing a snapshot
+cannot change a declaration or instance.
+
+`CoverageDatabase.record(instance, logical_instance_key=...)` refreshes a snapshot
+without adding the same samples again. `merge(other)` strictly checks declarations
+across every matching type, even across different instance keys. Matching keys
+also require matching instance layouts. Anonymous records remain independent,
+including cross-run merges after file round-trips.
+
+```python
+report = master.merge(incoming, mode="master", reject_conflicts=False)
+conflicts = report["conflicts"]
+master.write("merged.svtcov")
+```
+
+Explicit master projection retains the master's definitions, hierarchy and bins,
+adding only semantically compatible items. Changed points also block dependent
+crosses. Group semantics, same-key input layouts and unknown types/named instances
+produce conflicts rather than guessed matches. `reject_conflicts=True` fails the
+entire operation on any conflict. Strict merge, projection and UCIS import prepare
+their results before atomic publication. `merge_reports` returns detached copies
+and is persisted. The current binary format writes v2 and reads v1/v2; parameterized
+v1 records lacking concrete definitions cannot participate in projections requiring
+them. `apply_baseline()` restores counts and finite sources, including cross-local
+illegal evidence, but not transition histories or old objects.
+
+`CoverageDatabase.import_ucis(xml, bindings={key: frozen_instance})` requires
+explicit frozen-instance bindings and checks supported bin kinds/ranges, ordered
+cross members/indices and scoring options. Parameterized arrays use materialized
+instance bins. Missing supported bins or incompatible definitions reject the
+whole import. The caller asserts source/iff correspondence through the binding;
+arbitrary SV expressions are not reverse-translated. Missing out-of-subset counts
+are explicitly recorded in the loss report and persisted `import_provenance`,
+not claimed as proven zero hits. Import an existing key into a separate database
+before merging. UCIS is an interchange projection, not a replacement for the
+native SvTypes database.
 
 ## Optional decode diagnostics and generated-code editing
 
@@ -698,9 +784,29 @@ dimensions from the actual field declaration with `$bits` and `$size`. This supp
 and fixed-size edits without `type(expression)`. Encoding category and signedness remain part of
 the generated field's contract and must be updated when the field's category changes. Parameterized
 classes retain explicit types where deriving a type constant is unsupported by the target; their
-shape checks reject incompatible edits instead of silently truncating values.
+shape checks run only in an explicit strict diagnostic context. Editing these
+fields requires updating the explicit codec type as well as the declaration;
+turning diagnostics off does not make an incompatible SV ref connection legal
+or automatically adapt the wire layout.
 `to_sv_obj(use_type_reference=True)`, `to_sv_pkg(use_type_reference=True)`, and
 `generate(..., use_type_reference=True)` select SystemVerilog `type(expression)` in helper code.
+
+`generate()` defaults to `targets={"sv", "cpp"}`. Add `"schema"` for the full
+source schema and `"coverage"` for the coverage observation manifest; these
+metadata targets can also be requested independently. Code-only generation
+skips source-schema traversal and its hashes. The small artifact ownership
+manifest remains for publication and hand-edit protection. Multi-file output
+places framework implementations, including layered randomization, in
+`support/`; single-text APIs remain self-contained with a support section.
+
+Class declaration and ordinary randomization/sampling do not prepare encoding
+fingerprints. The first encoding, generated-code request or explicit encoding
+descriptor query prepares the wire fingerprint once, without source schemas.
+Later requests reuse it; registry changes and declaration refresh invalidate
+affected caches lazily. The existing wire header still carries its fingerprint;
+writing that protocol field is distinct from comparing it during decoding.
+Ordinary randomization computes constraint cycle signatures only when randc
+state is involved.
 
 `generate()` can emit an unbound parameterized class as a target-language template. Since that
 declaration has no concrete source schema, its name appears in `unbound_templates` in the schema

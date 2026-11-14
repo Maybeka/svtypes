@@ -113,9 +113,32 @@ def test_materialized_layout_is_equal_and_isolated_with_validation_only(monkeypa
         baseline = _materialize_ir(template, {"limit": 7}, {})
     assert optimized.definition_snapshot() == baseline.definition_snapshot()
     assert optimized.declaration_semantic_digest == baseline.declaration_semantic_digest
-    optimized.crosses[0].bins[0].selector["items"][0]["bin"] = "changed"
+    with pytest.raises(TypeError):
+        optimized.crosses[0].bins[0].selector["items"][0]["bin"] = "changed"
     assert baseline.crosses[0].bins[0].selector["items"][0]["bin"] == "read"
     assert template.crosses[0].bins[0].selector["items"][0]["bin"] == "read"
+
+
+def test_frozen_ir_owns_nested_input_and_snapshots_are_detached():
+    from copy import deepcopy
+    selector = {"kind": "values", "items": [{"kind": "constant", "value": 1}]}
+    domain = {"width": 8, "signed": False, "four_state": False}
+    point = CoveragePointIR("p", {"kind": "name", "name": "item"},
+                            (CoverageBinIR("one", "normal", selector),),
+                            options=(("comparison_domain", domain),))
+    ir = CoverageIR("Packet", "cg", points=(point,))
+    digest = ir.declaration_semantic_digest
+    selector["items"][0]["value"] = 2
+    domain["width"] = 16
+    assert ir.declaration_semantic_digest == digest
+    with pytest.raises(TypeError):
+        point.bins[0].selector["items"][0]["value"] = 3
+    with pytest.raises(TypeError):
+        dict(point.options)["comparison_domain"]["width"] = 4
+    assert deepcopy(ir).definition_snapshot() == ir.definition_snapshot()
+    snapshot = ir.definition_snapshot()
+    snapshot["points"][0]["bins"][0]["selector"]["items"][0]["value"] = 4
+    assert ir.declaration_semantic_digest == digest
 
 
 def test_static_cross_selector_copy_and_general_fallback_are_equivalent():

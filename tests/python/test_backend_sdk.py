@@ -117,3 +117,68 @@ def test_backend_cli_builds_reference_artifact(tmp_path: Path):
         "build", "--backend", "svtypes_backend_sdk.reference:backend", "--input", str(design), "--out", str(output),
     ]) == 0
     assert (output / "coverage-reference.json").exists()
+
+
+def test_sdk_preserves_unmanaged_and_modified_files_and_stale_edits(tmp_path):
+    output = tmp_path / "generated"
+    output.mkdir()
+    (output / "notes.txt").write_text("user notes")
+    backup_name = tmp_path / ".generated.previous"
+    backup_name.mkdir()
+    (backup_name / "notes").write_text("unrelated sibling")
+    build(_GoodBackend(), _design(), output)
+    assert (output / "notes.txt").read_text() == "user notes"
+    assert (backup_name / "notes").read_text() == "unrelated sibling"
+    edited = output / "nested/result.txt"
+    edited.write_text("emergency fix")
+    manifest = (output / "svtypes-artifacts.json").read_bytes()
+    with pytest.raises(BackendError, match="local edits"):
+        build(_GoodBackend(), _design(), output)
+    assert edited.read_text() == "emergency fix"
+    assert (output / "svtypes-artifacts.json").read_bytes() == manifest
+    build(_GoodBackend(), _design(), output, overwrite_modified=True)
+    assert edited.read_bytes() == b"stable"
+    edited.write_text("keep stale hand edit")
+    backend = load_backend("svtypes_backend_sdk.reference:backend")
+    build(backend, _design(), output)
+    assert edited.read_text() == "keep stale hand edit"
+    assert (output / "notes.txt").exists()
+
+
+def test_sdk_removes_only_unmodified_stale_files_and_rolls_back_publication(tmp_path, monkeypatch):
+    output = tmp_path / "generated"
+    build(_GoodBackend(), _design(), output)
+    backend = load_backend("svtypes_backend_sdk.reference:backend")
+    original = Path.replace
+    def fail_staging(path, target):
+        if ".staging-" in path.name:
+            raise OSError("injected publication failure")
+        return original(path, target)
+    with monkeypatch.context() as context:
+        context.setattr(Path, "replace", fail_staging)
+        with pytest.raises(OSError, match="publication failure"):
+            build(backend, _design(), output)
+    assert (output / "nested/result.txt").read_bytes() == b"stable"
+    build(backend, _design(), output)
+    assert not (output / "nested/result.txt").exists()
+
+
+@pytest.mark.parametrize("path", ["C:\\escape.txt", "..\\escape.txt", "./svtypes-artifacts.json"])
+def test_sdk_checks_platform_independent_paths(tmp_path, path):
+    class Backend(_GoodBackend):
+        def render(self, design, options):
+            return ArtifactSet((Artifact(path, b"bad"),))
+    with pytest.raises(BackendError, match="unsafe artifact"):
+        build(Backend(), _design(), tmp_path / "generated")
+
+
+def test_sdk_rejects_symlink_to_unowned_data(tmp_path):
+    output = tmp_path / "generated"
+    output.mkdir()
+    outside = tmp_path / "user"
+    outside.mkdir()
+    (outside / "result.txt").write_text("user data")
+    (output / "nested").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(BackendError, match="symlink"):
+        build(_GoodBackend(), _design(), output, overwrite_modified=True)
+    assert (outside / "result.txt").read_text() == "user data"

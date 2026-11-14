@@ -906,6 +906,7 @@ class UcisPacket(SvObject):
 @pytest.mark.remote_sv
 def test_remote_target_ucis_export_imports_into_coverage_database() -> None:
     from svtypes import CoverageDatabase
+    from svtypes.coverage import export_ucis
 
     out = REPO_ROOT / ".tmp" / "coverage_ucis"
     if out.exists():
@@ -924,6 +925,12 @@ def test_remote_target_ucis_export_imports_into_coverage_database() -> None:
         json.dumps({"logical_instance_key": "dut.pkt", "covergroup_type_id": type_id}, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+    template = CoverageDatabase()
+    template.record(packet.cg.instance)
+    # A non-native adapter uses these actual frozen bin definitions and replaces
+    # every projected count with this run's observed target count. Placeholder
+    # ranges are not valid interchange evidence.
+    (out / "ucis-template.xml").write_text(export_ucis(template)[0], encoding="utf-8")
     payloads = []
     for (code,) in samples:
         item = UcisPacket()
@@ -989,6 +996,18 @@ endmodule
     assert record["points"]["code_cp"]["hits"]["low"] == 128
     assert record["points"]["code_cp"]["hits"]["high"] == 128
     assert source.stdout.strip() in {"native", "adapter-projection"}
+    # Preserve target-derived records through disk and cross-run aggregation.
+    replay = CoverageDatabase.from_bytes(restored.to_bytes())
+    replay.merge(CoverageDatabase.from_bytes(restored.to_bytes()))
+    assert replay.snapshot_document()["records"][0]["points"]["code_cp"]["hits"] == {"high": 256, "low": 256}
+    from xml.etree import ElementTree as ET
+    changed = ET.fromstring(xml)
+    endpoint = next(item for item in changed.iter() if item.tag.split("}")[-1] == "range")
+    endpoint.set("from", "2")
+    endpoint.set("to", "2")
+    from svtypes import CoverageError
+    with pytest.raises(CoverageError, match="definition differs"):
+        CoverageDatabase().import_ucis(ET.tostring(changed, encoding="unicode"), bindings={"dut.pkt": UcisPacket().cg.instance})
 
 
 def _compare_single_instance_remote(packet: Any, observation: dict[str, Any]) -> None:
@@ -1003,6 +1022,104 @@ def _compare_single_instance_remote(packet: Any, observation: dict[str, Any]) ->
             packet.cg.get_inst_coverage(),
         ),
     )
+
+
+def _merge_parity_type(version):
+    if version == 1:
+        class CoverageMergeTarget(SvObject):
+            code = Bit[2](cov=False)
+            mode = Bit[1](cov=False)
+
+            @covergroup
+            def cg(self):
+                class code_cp(CovPoint, source=self.code):
+                    zero = bins[0]
+                    one = bins[1]
+                class mode_cp(CovPoint, source=self.mode):
+                    zero = bins[0]
+                    one = bins[1]
+                class combined(Cross, members=(code_cp, mode_cp)):
+                    both = bins[code_cp.one, mode_cp.one]
+
+            def __init__(self):
+                super().__init__()
+                self.cg.instantiate()
+    else:
+        class CoverageMergeTarget(SvObject):
+            code = Bit[2](cov=False)
+            mode = Bit[1](cov=False)
+
+            @covergroup
+            def cg(self):
+                class code_cp(CovPoint, source=self.code):
+                    zero = bins[2]
+                    one = bins[1]
+                class mode_cp(CovPoint, source=self.mode):
+                    zero = bins[0]
+                    one = bins[1]
+                class combined(Cross, members=(code_cp, mode_cp)):
+                    both = bins[code_cp.one, mode_cp.one]
+
+            def __init__(self):
+                super().__init__()
+                self.cg.instantiate()
+    return CoverageMergeTarget
+
+
+@pytest.mark.remote_sv
+def test_remote_cross_run_database_and_master_projection_use_target_counts():
+    from copy import deepcopy
+    from svtypes import CoverageDatabase, CoverageError
+
+    class Snapshot:
+        def __init__(self, document):
+            self.document = document
+        def snapshot_document(self):
+            return self.document
+
+    records = []
+    for run, (version, value) in enumerate(((1, 0), (1, 1), (2, 1))):
+        cls = _merge_parity_type(version)
+        out = REPO_ROOT / ".tmp" / f"coverage_merge_contract_{run}"
+        if out.exists():
+            shutil.rmtree(out)
+        out.mkdir(parents=True)
+        packet = cls()
+        payloads = []
+        for _ in range(64):
+            packet.code.value = packet.mode.value = value
+            payloads.append(packet.pack(packet))
+            packet.cg.sample()
+        _write_codec_sync_fixture(out, cls, payloads)
+        observation = _remote_compile_run(out, "coverage_packet.sv tb.sv")["observation"]
+        _compare_single_instance_remote(packet, observation)
+        document = packet.cg.instance.snapshot_document()
+        labels = _labels(observation_manifest([cls]))
+        for name, counters in document["points"].items():
+            counters["hits"] = deepcopy(observation["items"][labels[name]]["hits"])
+            counters["illegal_hits"] = deepcopy(observation["items"][labels[name]]["illegal_hits"])
+        records.append(document)
+    anonymous = CoverageDatabase()
+    for document in records[:2]:
+        source = CoverageDatabase()
+        source.record(Snapshot(document))
+        anonymous.merge(CoverageDatabase.from_bytes(source.to_bytes()))
+    assert len(anonymous.snapshot_document()["records"]) == 2
+    assert anonymous.coverage() == pytest.approx(50)
+    master, incoming = CoverageDatabase(), CoverageDatabase()
+    master.record(Snapshot(records[0]), logical_instance_key="packet")
+    incoming.record(Snapshot(records[2]), logical_instance_key="packet")
+    before = master.to_bytes()
+    with pytest.raises(CoverageError, match="declaration mismatch"):
+        master.merge(incoming)
+    assert master.to_bytes() == before
+    report = master.merge(incoming, mode="master")
+    assert {item["item"] for item in report["conflicts"]} == {"code_cp", "combined"}
+    persisted = CoverageDatabase.from_bytes(master.to_bytes())
+    result = persisted.snapshot_document()["records"][0]
+    assert result["points"]["mode_cp"]["hits"] == {"zero": 64, "one": 64}
+    assert result["points"]["code_cp"]["hits"] == records[0]["points"]["code_cp"]["hits"]
+    assert persisted.merge_reports == (report,)
 
 
 class CrossIffPacket(SvObject):

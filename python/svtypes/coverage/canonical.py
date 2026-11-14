@@ -5,9 +5,56 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any
 
 from ..logic import LogicValue
+
+
+class _FrozenMapping(Mapping):
+    """Owned immutable declaration data; copies can safely share this value."""
+
+    __slots__ = ("_data",)
+
+    def __init__(self, items):
+        object.__setattr__(self, "_data", MappingProxyType(dict(items)))
+
+    def __setattr__(self, name, value):
+        raise TypeError("coverage declaration data is immutable")
+
+    def __delattr__(self, name):
+        raise TypeError("coverage declaration data is immutable")
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self):
+        return len(self._data)
+
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
+        return self
+
+
+def freeze_value(value: Any) -> Any:
+    """Own and recursively freeze canonical semantic data without JSON conversion."""
+    if isinstance(value, _FrozenMapping):
+        return value
+    if value is None or isinstance(value, (bool, int, str, LogicValue)):
+        return value
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise TypeError("coverage canonical mappings require string keys")
+        return _FrozenMapping((key, freeze_value(item)) for key, item in value.items())
+    if isinstance(value, (tuple, list)):
+        return tuple(freeze_value(item) for item in value)
+    _validate_canonical_value(value)
+    return value
 
 
 def _validate_canonical_value(value: Any) -> None:

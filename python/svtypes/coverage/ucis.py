@@ -82,6 +82,8 @@ def import_ucis(xml: str, *, defaults: dict[str, Any] | None = None,
             "logical_instance_key": cg.get("key"),
             "covergroup_type_id": None if cg_id is None else cg_id.get("cgName"),
             "points": {}, "crosses": {}, "options": {},
+            "point_definitions": {}, "cross_definitions": {},
+            "import_losses": [],
         }
         options = _find_child(cg, "options")
         if options is not None:
@@ -89,11 +91,25 @@ def import_ucis(xml: str, *, defaults: dict[str, Any] | None = None,
         for key, value in defaults.items():
             if key not in record["options"]:
                 record["options"][key] = value
-                losses.append({"item": str(record["name"]), "reason": f"SvTypes option {key!r} defaulted during UCIS import"})
+                loss = {"item": str(record["name"]), "reason": f"SvTypes option {key!r} defaulted during UCIS import"}
+                losses.append(loss)
+                record["import_losses"].append(loss)
         for point in _find_children(cg, "coverpoint"):
-            record["points"][point.get("name", "")] = _import_bins(point, "coverpointBin")
+            name = _item_name(point, record["points"])
+            counts, definitions = _import_bins(point, "coverpointBin")
+            record["points"][name] = counts
+            record["point_definitions"][name] = {"bins": definitions, "options": _options(point)}
         for cross in _find_children(cg, "cross"):
-            record["crosses"][cross.get("name", "")] = _import_bins(cross, "crossBin")
+            name = _item_name(cross, {**record["points"], **record["crosses"]})
+            counts, definitions = _import_bins(cross, "crossBin")
+            record["crosses"][name] = counts
+            record["cross_definitions"][name] = {
+                "bins": definitions, "options": _options(cross),
+                "members": [item.text for item in _find_children(cross, "crossExpr")],
+            }
+        if any((item["covergroup_type_id"], item["logical_instance_key"]) ==
+               (record["covergroup_type_id"], record["logical_instance_key"]) for item in imported):
+            raise CoverageError("UCIS contains a duplicate covergroup instance")
         imported.append(record)
     return imported, _loss_report(losses)
 
@@ -104,7 +120,8 @@ def import_ucis_file(path: str | Path, *, config_path: str | Path | None = None)
 
 
 def _export_record(root: ET.Element, index: int, document: dict[str, Any], losses: list[dict[str, str]]) -> None:
-    point_ir = {item["name"]: item for item in document["definition"].get("points", [])}
+    concrete = document.get("instance_definition", document["definition"])
+    point_ir = {item["name"]: item for item in concrete.get("points", [])}
     exported_points = {
         name: _exportable_point_bins(point_ir.get(name, {}), definition)
         for name, definition in document.get("point_definitions", {}).items()
@@ -113,6 +130,9 @@ def _export_record(root: ET.Element, index: int, document: dict[str, Any], losse
     if not exported_points:
         losses.append({"record": str(index), "item": document["covergroup_type_id"], "reason": "covergroup omitted: UCIS requires an exported coverpoint"})
         return
+    for name, point in point_ir.items():
+        if name not in exported_points:
+            _loss(losses, index, name, "", "coverpoint omitted: no losslessly representable bins")
 
     instance = ET.SubElement(root, "instanceCoverages", name="svtypes", key=str(index))
     ET.SubElement(instance, "id", **_SOURCE_ID)
@@ -149,7 +169,7 @@ def _export_record(root: ET.Element, index: int, document: dict[str, Any], losse
             if source["name"] not in bins:
                 _loss(losses, index, point, source["name"], "point bin selector cannot be losslessly projected to UCIS")
 
-    cross_ir = {item["name"]: item for item in document["definition"].get("crosses", [])}
+    cross_ir = {item["name"]: item for item in concrete.get("crosses", [])}
     for cross, definition in document.get("cross_definitions", {}).items():
         ir = cross_ir.get(cross, {})
         members = ir.get("members", [])
@@ -177,11 +197,16 @@ def _export_record(root: ET.Element, index: int, document: dict[str, Any], losse
 
 
 def _exportable_point_bins(ir: dict[str, Any], definition: dict[str, Any]) -> list[str]:
-    source = {bin_["name"]: bin_ for bin_ in ir.get("bins", [])}
-    return [name for name in definition.get("normal_bins", []) if name in source and _integer_ranges(source[name].get("selector")) is not None]
+    return [item["name"] for item in ir.get("bins", [])
+            if item["kind"] in {"normal", "ignore", "illegal"}
+            and _integer_ranges(item.get("selector")) is not None]
 
 
 def _exportable_cross_bins(ir: dict[str, Any], members: list[str], index: dict[str, dict[str, int]]) -> list[str]:
+    if ir.get("member_views"):
+        # The public point's identically named bin is not the cross-local
+        # replacement. This projection does not emit auxiliary coverpoints.
+        return []
     result: list[str] = []
     for bin_ in ir.get("bins", []):
         selector = bin_.get("selector")
@@ -244,12 +269,53 @@ def _find_nested(parent: ET.Element, name: str) -> ET.Element | None:
     return None
 
 
-def _import_bins(parent: ET.Element, tag: str) -> dict[str, int]:
+def _item_name(element, existing):
+    name = element.get("name")
+    if not name or name in existing:
+        raise CoverageError("UCIS contains a missing or duplicate item name")
+    return name
+
+
+def _options(element):
+    item = _find_child(element, "options")
+    return dict(item.attrib) if item is not None else {}
+
+
+def _integer(text, *, nonnegative=False):
+    try:
+        value = int(text)
+    except (ValueError, TypeError) as error:
+        raise CoverageError("UCIS requires an integer value/count") from error
+    if nonnegative and value < 0:
+        raise CoverageError("UCIS coverage counts and indices must be nonnegative")
+    return value
+
+
+def _import_bins(parent: ET.Element, tag: str) -> tuple[dict[str, int], dict[str, Any]]:
     result: dict[str, int] = {}
+    definitions = {}
     for bin_ in _find_children(parent, tag):
-        contents = _find_nested(bin_, "contents")
-        result[bin_.get("name", "")] = int(contents.get("coverageCount", "0")) if contents is not None else 0
-    return result
+        name = _item_name(bin_, result)
+        kind = {"default": "normal", "user": "normal", "bins": "normal", "ignore": "ignore", "illegal": "illegal"}.get(bin_.get("type"))
+        if kind is None:
+            raise CoverageError(f"UCIS bin {name!r} has unsupported kind")
+        contents = _iter_tag(bin_, "contents")
+        if len(contents) != 1:
+            raise CoverageError(f"UCIS bin {name!r} requires one supported aggregate counter")
+        result[name] = _integer(contents[0].get("coverageCount"), nonnegative=True)
+        definition = {"kind": kind}
+        if tag == "coverpointBin":
+            if _find_children(bin_, "sequence"):
+                raise CoverageError(f"UCIS bin {name!r} uses an unsupported sequence projection")
+            ranges = [[_integer(item.get("from")), _integer(item.get("to"))]
+                      for item in _find_children(bin_, "range")]
+            if not ranges or any(low > high for low, high in ranges):
+                raise CoverageError(f"UCIS bin {name!r} has invalid/missing ranges")
+            definition["ranges"] = ranges
+        else:
+            definition["indices"] = [_integer(item.text, nonnegative=True) for item in _find_children(bin_, "index")]
+        definitions[name] = definition
+    return result, definitions
 
 
 def _read_import_defaults(path: str | Path) -> dict[str, Any]:
@@ -260,6 +326,75 @@ def _read_import_defaults(path: str | Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise CoverageError("UCIS import configuration must be a JSON object")
     return payload
+
+
+def validate_binding(external: dict[str, Any], document: dict[str, Any]) -> list[dict[str, str]]:
+    """Check the representable semantics before accepting external counters.
+
+    Explicit binding identifies the source expression/iff declaration; names
+    alone never establish bin/range/cross/score compatibility. Omitted selectors
+    outside our interchange subset are reported as missing data, not proven zero.
+    """
+    concrete = document.get("instance_definition", document["definition"])
+    losses = []
+    def options(actual, expected, fields):
+        for field, default in fields.items():
+            value = actual.get(field, default)
+            if value in ("true", "false"):
+                value = int(value == "true")
+            if _integer(value, nonnegative=True) != int(expected.get(field, default)):
+                raise CoverageError(f"UCIS option {field!r} differs from the bound instance")
+    options(external["options"], {**document.get("options", {}), **document.get("type_options", {})},
+            {"weight": 1, "goal": 100, "at_least": 1, "per_instance": 0, "merge_instances": 0})
+    known = {item["name"] for category in ("points", "crosses") for item in concrete.get(category, [])}
+    if (set(external["points"]) | set(external["crosses"])) - known:
+        raise CoverageError("UCIS has coverage items absent from the bound instance")
+    for category, definitions_key in (("points", "point_definitions"), ("crosses", "cross_definitions")):
+        for item in concrete.get(category, []):
+            name = item["name"]
+            imported = external[definitions_key].get(name, {"bins": {}, "options": {}})
+            bins = {bin_["name"]: bin_ for bin_ in item.get("bins", [])}
+            if set(imported["bins"]) - set(bins):
+                raise CoverageError(f"UCIS has unknown bins for {name!r}")
+            if name in external[definitions_key]:
+                options(imported["options"], document[definitions_key][name], {"weight": 1, "goal": 100, "at_least": 1})
+            for bin_name, bin_ in bins.items():
+                expected = None
+                if category == "points":
+                    ranges = _integer_ranges(bin_["selector"])
+                    if bin_["kind"] in {"normal", "ignore", "illegal"} and ranges is not None:
+                        expected = {"kind": bin_["kind"], "ranges": [list(pair) for pair in ranges]}
+                else:
+                    selector = bin_["selector"]
+                    if (not item.get("member_views") and bin_["kind"] in {"normal", "ignore"} and isinstance(selector, dict)
+                            and selector.get("kind") == "cross_bin_refs"):
+                        if name not in external[definitions_key] or imported.get("members") != item["members"]:
+                            raise CoverageError(f"UCIS cross {name!r} member order differs or is missing")
+                        expected_refs = [(ref["point"], ref["bin"]) for ref in selector["items"]]
+                        actual = imported["bins"].get(bin_name)
+                        if actual is None:
+                            raise CoverageError(f"UCIS is missing supported bin {name}.{bin_name}")
+                        actual_refs = []
+                        if len(actual["indices"]) != len(item["members"]):
+                            raise CoverageError(f"UCIS cross {name!r} index arity differs")
+                        for member, index in zip(item["members"], actual["indices"]):
+                            member_bins = list(external["point_definitions"].get(member, {}).get("bins", {}))
+                            if index >= len(member_bins):
+                                raise CoverageError(f"UCIS cross {name!r} bin index is out of range")
+                            actual_refs.append((member, member_bins[index]))
+                        if actual["kind"] != bin_["kind"] or actual_refs != expected_refs:
+                            raise CoverageError(f"UCIS bin {name}.{bin_name} definition differs")
+                        continue
+                actual = imported["bins"].get(bin_name)
+                if expected is None:
+                    if actual is not None:
+                        raise CoverageError(f"UCIS bin {name}.{bin_name} cannot be proven equivalent")
+                    losses.append({"item": name, "bin": bin_name, "reason": "bin outside the supported projection; count unavailable"})
+                elif actual is None:
+                    raise CoverageError(f"UCIS is missing supported bin {name}.{bin_name}")
+                elif actual != expected:
+                    raise CoverageError(f"UCIS bin {name}.{bin_name} definition differs")
+    return losses
 
 
 def _loss(losses: list[dict[str, str]], record: int, item: str, bin_name: str, reason: str) -> None:

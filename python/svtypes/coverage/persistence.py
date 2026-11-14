@@ -17,14 +17,14 @@ from typing import Any
 from ..errors import CoverageError
 
 MAGIC = b"SVTCOVDB"
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 _HEADER = struct.Struct("<8sHH")
 _CHUNK = struct.Struct("<4sI32s")
 
 
 def encode_database(document: dict[str, Any]) -> bytes:
     """Encode one deterministic, self-validating coverage database image."""
-    if set(document) != {"records"} or not isinstance(document["records"], list):
+    if not _valid_document(document):
         raise CoverageError("coverage database document is invalid")
     meta = _json({"format": "svtypes.coverage.database", "version": FORMAT_VERSION})
     records = _json(document)
@@ -38,7 +38,7 @@ def decode_database(data: bytes) -> dict[str, Any]:
     magic, version, flags = _HEADER.unpack_from(data)
     if magic != MAGIC:
         raise CoverageError("coverage database magic is invalid")
-    if version != FORMAT_VERSION or flags != 0:
+    if version not in {1, FORMAT_VERSION} or flags != 0:
         raise CoverageError(f"unsupported coverage database format version {version}")
     offset = _HEADER.size
     chunks: dict[bytes, bytes] = {}
@@ -63,11 +63,18 @@ def decode_database(data: bytes) -> dict[str, Any]:
         document = json.loads(chunks[b"RECS"])
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise CoverageError("coverage database JSON chunk is invalid") from error
-    if meta != {"format": "svtypes.coverage.database", "version": FORMAT_VERSION}:
+    if meta != {"format": "svtypes.coverage.database", "version": version}:
         raise CoverageError("coverage database metadata is unsupported")
-    if not isinstance(document, dict) or set(document) != {"records"} or not isinstance(document["records"], list):
+    if not _valid_document(document):
         raise CoverageError("coverage database records chunk is invalid")
     return document
+
+
+def _valid_document(document: Any) -> bool:
+    return (isinstance(document, dict) and "records" in document
+            and set(document).issubset({"records", "merge_reports"})
+            and isinstance(document["records"], list)
+            and isinstance(document.get("merge_reports", []), list))
 
 
 def write_database(path: str | Path, document: dict[str, Any]) -> None:

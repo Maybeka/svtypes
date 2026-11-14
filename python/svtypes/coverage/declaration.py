@@ -228,6 +228,7 @@ class CoverGroupInstance:
         self.option.name = name
 
     def snapshot_document(self) -> dict[str, Any]:
+        definition = self.declaration.ir.definition_snapshot()
         point_definitions = {}
         assert self.instance_ir is not None
         for point in self.instance_ir.points:
@@ -238,8 +239,8 @@ class CoverGroupInstance:
                 "weight": int(options.get("weight", 1)),
                 "normal_bins": [
                     bin_.name for bin_ in point.bins
-                    if bin_.kind in {"normal", "default"}
-                    and not (isinstance(bin_.selector, dict) and bin_.selector.get("kind") == "values" and not bin_.selector.get("items"))
+                    if bin_.kind in {"normal", "default", "transition"}
+                    and not (isinstance(bin_.selector, Mapping) and bin_.selector.get("kind") == "values" and not bin_.selector.get("items"))
                 ],
             }
         cross_definitions = {}
@@ -254,12 +255,13 @@ class CoverGroupInstance:
         return {
             "covergroup_type_id": self.declaration.ir.covergroup_type_id,
             "declaration_semantic_digest": self.declaration.ir.declaration_semantic_digest,
-            "definition": self.declaration.ir.definition_snapshot(),
+            "definition": definition,
+            "instance_definition": self.instance_ir.definition_snapshot(),
             "instance_layout_digest": self.instance_layout_digest,
             "instance_name": self.option.name if self.option is not None else None,
             "comment": self.option.comment if self.option is not None else "",
-            "options": dict(self.declaration.ir.options),
-            "type_options": dict(self.declaration.ir.type_options),
+            "options": definition["options"],
+            "type_options": definition["type_options"],
             "source_limit": self.runtime.source_limit,
             "sample_count": self.runtime.sample_count,
             "point_definitions": point_definitions,
@@ -621,7 +623,7 @@ def _materialize_value(
     bindings: dict[str, Any],
     parameter_bindings: Mapping[str, Any],
 ) -> Any:
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         if value.get("kind") == "parameter_ref":
             name = value["name"]
             if name not in parameter_bindings:
@@ -706,7 +708,7 @@ def _materialize_point_bins(
         selector = _materialize_value(bin_.selector, bindings, parameter_bindings)
         if comparison_domain is not None:
             selector = _normalize_literal(selector, comparison_domain, point.name)
-        if not isinstance(selector, dict) or selector.get("kind") != "array_split":
+        if not isinstance(selector, Mapping) or selector.get("kind") != "array_split":
             result.append(replace(bin_, selector=selector))
             continue
         range_selector = selector["selector"]
@@ -755,7 +757,7 @@ def _materialize_cross(
     bins: list[CoverageBinIR] = []
     for bin_ in cross.bins:
         selector = _materialize_cross_selector(bin_.selector, bindings, parameter_bindings)
-        if isinstance(selector, dict) and selector.get("kind") == "cross_queue_call":
+        if isinstance(selector, Mapping) and selector.get("kind") == "cross_queue_call":
             function = functions.get(selector["function"])
             if function is None:
                 raise CoverageError(f"coverage cross {cross.name!r} references unknown queue function {selector['function']!r}")
@@ -784,11 +786,11 @@ def _materialize_cross_selector(
     selector: Any, bindings: dict[str, Any], parameter_bindings: Mapping[str, Any]
 ) -> Any:
     """Clone static reference tuples without recursively resolving strings."""
-    if (type(selector) is dict and selector.get("kind") == "cross_bin_refs"
+    if (isinstance(selector, Mapping) and selector.get("kind") == "cross_bin_refs"
             and selector.keys() == {"kind", "items"}
-            and type(selector["items"]) is list):
+            and isinstance(selector["items"], (list, tuple))):
         items = selector["items"]
-        if all(type(item) is dict and item.keys() == {"point", "bin"}
+        if all(isinstance(item, Mapping) and item.keys() == {"point", "bin"}
                and type(item["point"]) is str and type(item["bin"]) is str for item in items):
             # Every instance still owns its dictionaries and list. Only strings,
             # which cannot contain constructor/Parameter expression nodes, share.

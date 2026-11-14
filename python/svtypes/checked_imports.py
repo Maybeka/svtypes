@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
@@ -12,6 +13,7 @@ from importlib.util import decode_source
 from pathlib import Path
 import sys
 import sysconfig
+from threading import RLock
 
 from .checked_call import CheckedAccessError, _contains_carrier
 from ._checked_callbacks import is_library_source
@@ -20,6 +22,8 @@ from .checked_source import _variable_factory
 
 _active_root: ContextVar[Path | None] = ContextVar("svtypes_checked_project", default=None)
 _source_observers: ContextVar[tuple] = ContextVar("svtypes_source_observers", default=())
+_finder_lock = RLock()
+_finder_users = 0
 _library = Path(__file__).resolve().parent
 _dependency_roots = tuple(
     Path(sysconfig.get_path(kind)).resolve()
@@ -54,12 +58,28 @@ def owns_source(root: Path, filename: str) -> bool:
 
 
 @contextmanager
-def checked_project(root: Path):
-    token = _active_root.set(root)
+def checked_project(root: str | Path):
+    """Opt into carrier checks for fresh imports below ``root`` in this scope.
+
+    Ordinary imports keep their native loader and bytecode cache. Already
+    imported modules are not reloaded. Nested and concurrent scopes compose.
+    ``run_checked`` selects its entry project's scope automatically.
+    """
+    global _finder_users
+    token = _active_root.set(Path(root).resolve())
+    with _finder_lock:
+        if not _finder_users:
+            index = next((i for i, finder in enumerate(sys.meta_path) if finder is PathFinder), len(sys.meta_path))
+            sys.meta_path.insert(index, _project_finder)
+        _finder_users += 1
     try:
         yield
     finally:
         _active_root.reset(token)
+        with _finder_lock:
+            _finder_users -= 1
+            if not _finder_users and _project_finder in sys.meta_path:
+                sys.meta_path.remove(_project_finder)
 
 
 @contextmanager
@@ -88,6 +108,14 @@ class _ModuleGuards:
         return value
 
     def declare(self, function, site):
+        # Keep frame-sensitive builtins at the original call site, including
+        # aliases. A wrapper would make them observe this module's frame.
+        if any(function is native for native in (
+            builtins.locals, builtins.globals, builtins.vars,
+            builtins.eval, builtins.exec, builtins.super,
+        )):
+            return function
+
         def call(*args, **kwargs):
             self.value(args, site)
             self.value(kwargs, site)
@@ -240,13 +268,7 @@ class _ProjectFinder(MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         root = _active_root.get()
         if root is None:
-            main = sys.modules.get("__main__")
-            filename = getattr(main, "__file__", None)
-            if not isinstance(filename, str) or filename.startswith("<"):
-                return None
-            root = project_root(filename, getattr(main, "__package__", None))
-            if not owns_source(root, filename):
-                return None
+            return None
         spec = PathFinder.find_spec(fullname, path, target)
         if (
             spec is not None
@@ -258,10 +280,4 @@ class _ProjectFinder(MetaPathFinder):
         return None
 
 
-def _install():
-    for index, finder in enumerate(sys.meta_path):
-        if isinstance(finder, _ProjectFinder):
-            return
-        if finder is PathFinder:
-            sys.meta_path.insert(index, _ProjectFinder())
-            return
+_project_finder = _ProjectFinder()

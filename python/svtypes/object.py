@@ -17,18 +17,17 @@ from .enum import Enum
 from .errors import DeclarationError, EncodeError, RegistryError, ResourceLimitError, UnsupportedTypeError
 from .limits import DecodeLimits
 
-_prepared_codec_types: weakref.WeakSet = weakref.WeakSet()
 _encoding_type_dependents: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 _encoding_registry_dependents: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 def _refresh_encoding_dependents(*, changed_type=None, registry=None, name=None) -> None:
-    """Refresh only snapshots whose descriptors observed the changed input."""
+    """Invalidate only cached wire metadata that observed the changed input."""
     owners = set(_encoding_type_dependents.get(changed_type, ())) if changed_type else set()
     if registry is not None:
         owners.update(_encoding_registry_dependents.get(registry, {}).get(name, ()))
     for owner in owners:
-        owner._prepare_encoding_metadata()
+        owner._SvObject__svtypes_prepared_encoding_fingerprint = None
 
 
 def _index_encoding_dependencies(owner, types, registries) -> None:
@@ -166,7 +165,7 @@ def _sv_explicit_type_declarations(members, prefix, indent, reserved=(), owner='
 
 
 def _sv_static_shape_guards(desc, expression):
-    """Reject edited shapes when the target cannot derive parameterized types."""
+    """Optional diagnostics for shapes the target cannot derive automatically."""
     from .bit import Bit
     from .logic import Logic
     from .enum import Enum
@@ -249,14 +248,24 @@ SVX_OBJECT_ID_COUNTER_MASK = (1 << 48) - 1
 
 
 class CodecSession:
-    """Own object numbers and the runtime object registry for one synchronization session."""
+    """Own object numbers and a configurable owning/non-owning identity registry."""
 
-    def __init__(self, *, origin: int = SVTYPES_OBJECT_NUMBER_ORIGIN, counter_start: int = 1) -> None:
+    def __init__(self, *, origin: int = SVTYPES_OBJECT_NUMBER_ORIGIN, counter_start: int = 1,
+                 retain_objects: bool = True) -> None:
         if not 0 < origin <= 0xFFFF:
             raise ValueError(f"Invalid SvTypes object number origin: {origin}")
+        if not isinstance(retain_objects, bool):
+            raise TypeError('CodecSession retain_objects must be a bool')
         self.origin = origin
-        self._objects: dict[int, SvObject] = {}
+        self._retain_objects = retain_objects
+        self._objects: dict[int, SvObject] | weakref.WeakValueDictionary[int, SvObject] = (
+            {} if retain_objects else weakref.WeakValueDictionary()
+        )
         self.reset_object_number_allocator(counter_start)
+
+    @property
+    def retain_objects(self) -> bool:
+        return self._retain_objects
 
     def allocate_object_number(self) -> int:
         while ((self.origin << 48) | self._next_object_counter) in self._objects:
@@ -311,6 +320,10 @@ class PackContext:
     def __init__(self, session: CodecSession | None = None) -> None:
         self.session = session or _default_session
         self.seen: dict[int, int] = {}
+        # A context may span several pack calls. Keep seen objects alive until
+        # that context is released, including with a non-owning session, so a
+        # recycled Python id cannot be mistaken for an already encoded object.
+        self._retained_objects: dict[int, SvObject] = {}
 
 
 class UnpackContext:
@@ -1401,9 +1414,9 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 super(cls, instance).__init__(*args, **kwargs)
 
         cls.__init__ = _managed_constructor(original_init)
-        if cls.__name__ not in ("SvStruct", "SvPackedStruct"):
-            cls._prepare_encoding_metadata()
-            _prepared_codec_types.add(cls)
+        # Most classes are only randomized or sampled. Wire metadata is needed
+        # only when encoding, generating code, or explicitly querying it.
+        cls.__svtypes_prepared_encoding_fingerprint = None
 
     @classmethod
     def refresh_declarations(cls) -> None:
@@ -1423,7 +1436,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             else:
                 cls.__init__ = initializer
         # A by-value member's layout contributes to its owners' wire metadata.
-        # Refresh preparation snapshots before any subsequent value operation.
+        # Invalidate snapshots; rebuild them only when next requested.
         _refresh_encoding_dependents(changed_type=cls)
 
     @classmethod
@@ -1609,24 +1622,21 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         dependencies = (set(), set())
         token = _encoding_dependency_collector.set(dependencies)
         try:
-            _, encoding = _descriptors(cls, set(), allow_template=True)
+            _, encoding = _descriptors(cls, set(), allow_template=True, encoding_only=True)
         finally:
             _encoding_dependency_collector.reset(token)
         cls.__svtypes_prepared_encoding_fingerprint = _fingerprint(encoding)
         _index_encoding_dependencies(cls, *dependencies)
 
     @classmethod
+    def _encoding_fingerprint(cls) -> bytes:
+        if cls.__dict__.get("_SvObject__svtypes_prepared_encoding_fingerprint") is None:
+            cls._prepare_encoding_metadata()
+        return cls.__svtypes_prepared_encoding_fingerprint
+
+    @classmethod
     def _encoding_fingerprint_hex(cls) -> str:
-        if cls.__svtypes_is_template:
-            # Templates share the parameter-independent encoding fingerprint
-            # with every specialization; only the encoding type name varies.
-            from .schema import _descriptors, _fingerprint
-
-            _, encoding = _descriptors(cls, set(), allow_template=True)
-            return _fingerprint(encoding).hex()
-        from .schema import schema_descriptor
-
-        return schema_descriptor(cls).encoding_fingerprint_hex
+        return cls._encoding_fingerprint().hex()
 
     @classmethod
     def _sv_encoding_type_expr(cls) -> str:
@@ -2190,20 +2200,22 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             render_layered_randomize_context,
         )
 
+        layered_support = []
         if "_SvObject__svtypes_emit_specialization_class" not in cls.__dict__:
             # Constraints render only on the class that declares them. A
             # specialize() product inherits the template's blocks (written with
             # parameter names) via extends and must not re-declare them;
             # templates and ParamRef-forwarding subclasses render their own.
-            lines.extend(render_layered_randomize_context(ind_str, cls.IND))
+            layered_support.extend(render_layered_randomize_context(ind_str, cls.IND))
             lines.extend(render_constraint_blocks(cls, ind_str, cls.IND))
-            lines.extend(render_layered_randomize(cls, ind_str, cls.IND))
+            layered_support.extend(render_layered_randomize(cls, ind_str, cls.IND))
 
         # Keep executable design declarations ahead of runtime plumbing.
         # Sections are assembled from renderer-owned lists, never by parsing
         # generated text (which would be unsafe for user declarations).
         design_lines = lines
-        lines = [f"{ind_str}{cls.IND}// SvTypes support: descriptors, plusargs, display, and wire codecs."]
+        lines = [f"{ind_str}{cls.IND}// SvTypes support: layered randomization, descriptors, plusargs, display, and wire codecs."]
+        lines.extend(layered_support)
         lines.append("")
         lines.append(f"{ind_str}{cls.IND}static function svtypes_pkg::encoding_descriptor svtypes_encoding_descriptor();")
         lines.append(f"{ind_str}{cls.IND}{cls.IND}svtypes_pkg::encoding_descriptor descriptor;")
@@ -2223,6 +2235,8 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
             lines.append(f"{ind_str}{cls.IND}// One ordered field list for wire operations, display and plusargs.")
             lines.append(f"{ind_str}{cls.IND}function int __svtypes_apply_fields(input int action, ref byte unsigned bytes[$], ref int offset, ref string result, input string prefix = \"\");")
             lines.append(f"{ind_str}{cls.IND * 2}int count = 0;")
+            if _sv_explicit_types.get() is not None and not _sv_derive_shapes.get():
+                lines.append(f"{ind_str}{cls.IND * 2}bit __svtypes_check_shapes = svtypes_pkg::strict_decode_diagnostics();")
             for field_name, desc in cls.__svtypes_members:
                 expression = f"this.{field_name}"
                 field_declarations = explicit_declarations.get(field_name, [])
@@ -2232,7 +2246,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 field_indent = cls.IND * (3 if field_declarations else 2)
                 if _sv_explicit_types.get() is not None and not _sv_derive_shapes.get():
                     for condition in _sv_static_shape_guards(desc, expression):
-                        lines.append(f'{ind_str}{field_indent}if ({condition}) $fatal(2, "SvTypes field shape changed: {field_name}");')
+                        lines.append(f'{ind_str}{field_indent}if (__svtypes_check_shapes && ({condition})) $fatal(2, "SvTypes field shape changed: {field_name}");')
                 codec = cls._sv_field_packer_expr(desc, expression)
                 is_collection = type(desc) in collection_types
                 is_handle = is_object_handle(desc)
@@ -2546,6 +2560,8 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         lines.append(f"{ind_str}{cls.IND}// Ordered wire fields shared by pack and unpack.")
         lines.append(f"{ind_str}{cls.IND}function int __svtypes_transfer_fields(ref byte unsigned bytes[$], ref int offset, input bit decode, input bit count_only = 0);")
         lines.append(f"{ind_str}{cls.IND * 2}int count = 0;")
+        if not shared_field_operations and _sv_explicit_types.get() is not None and not _sv_derive_shapes.get():
+            lines.append(f"{ind_str}{cls.IND * 2}bit __svtypes_check_shapes = svtypes_pkg::strict_decode_diagnostics();")
         if shared_field_operations:
             lines.append(f'{ind_str}{cls.IND * 2}string __svtypes_result = "";')
             lines.append(f"{ind_str}{cls.IND * 2}count = __svtypes_apply_fields(count_only ? 0 : (decode ? 2 : 1), bytes, offset, __svtypes_result);")
@@ -2559,7 +2575,7 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
                 field_indent = cls.IND * (3 if field_declarations else 2)
                 if _sv_explicit_types.get() is not None and not _sv_derive_shapes.get():
                     for condition in _sv_static_shape_guards(desc, expression):
-                        lines.append(f'{ind_str}{field_indent}if ({condition}) $fatal(2, "SvTypes field shape changed: {name}");')
+                        lines.append(f'{ind_str}{field_indent}if (__svtypes_check_shapes && ({condition})) $fatal(2, "SvTypes field shape changed: {name}");')
                 codec = cls._sv_field_packer_expr(desc, expression)
                 field_type = (cls._sv_type_expr(desc)
                               if isinstance(desc, ObjectDescriptor) or (isinstance(desc, SvObject) and not isinstance(desc, SvStruct))
@@ -2993,10 +3009,11 @@ class SvObject(UserDefinedType, metaclass=ReadOnlyMetaclass):
         if id(value) in ctx.seen:
             return b"\x02" + struct.pack("<Q", value.svtypes_object_number)
         ctx.seen[id(value)] = value.svtypes_object_number
+        ctx._retained_objects[id(value)] = value
 
         b = b'\x01' + self._pack_object_header(
             self.__class__._encoding_type_name(),
-            self.__class__.__svtypes_prepared_encoding_fingerprint,
+            self.__class__._encoding_fingerprint(),
             len(self.__svtypes_fields),
             value.svtypes_object_number,
         )

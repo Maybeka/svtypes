@@ -561,7 +561,8 @@ def _token_borrow(binding, storage, token, codec) -> ElementBorrow:
     def read():
         binding._check_open()
         payload = storage.read_borrow(token)
-        return _snapshot(codec, _unpack_exact(codec, payload, session=binding.session, resolve_only=handles))
+        return _snapshot(codec, _unpack_exact(codec, payload, session=binding.session, resolve_only=handles,
+                                            diagnostics=binding.diagnostics))
 
     def prepare(value):
         binding._check_writable()
@@ -580,7 +581,7 @@ def _token_borrow(binding, storage, token, codec) -> ElementBorrow:
             return ExternalValueBinding(
                 _ExternalBinding(
                     adapter, token, FieldDescriptor(codec), readonly=binding.readonly,
-                    state=binding.state, session=binding.session,
+                    state=binding.state, session=binding.session, diagnostics=binding.diagnostics,
                 )
             )
 

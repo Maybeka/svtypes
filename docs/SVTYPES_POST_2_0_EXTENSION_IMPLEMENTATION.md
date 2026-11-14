@@ -5,7 +5,7 @@
 | 阶段 | 交付物 | 验证 |
 | --- | --- | --- |
 | E0 | `svtypes-design-manifest`：v1 JSON Schema、fixture、确定性 bridge、显式类型 CLI | 确定性、摘要、provenance、篡改、CLI 测试 |
-| E1 | `svtypes-backend-sdk`：显式发现、冻结输入、capability 检查、安全原子 artifact writer、参考 JSON 后端 | 输入不可变、路径逃逸、重复/缺 capability、原输出保留、CLI 测试 |
+| E1 | `svtypes-backend-sdk`：显式发现、冻结输入、capability 检查、按 manifest 归属保护手改和无关文件的原子 artifact writer、参考 JSON 后端 | 输入不可变、跨平台路径/符号链接、重复/缺 capability、手改保护/显式覆盖、过期产物处理、发布失败回滚、CLI 测试 |
 | E2 | `svtypes-coverage-tools` scanner 与 catalog：独立子进程导入、部分扫描诊断、静态类型/字段引用层次与 coverage tree | 子进程 PID、错误不覆盖旧清单、稳定 ID/catalog 摘要、CLI 与层次关系测试 |
 | E3 | 持续运行的 loopback 设计 GUI：扫描会话、静态类型/字段引用层次、声明详情、筛选与源码信息 | GUI service 不导入用户设计；scanner child PID、节点 API、层次节点与 loopback 限制测试 |
 | E4 | `coverage-proposal/v1`、review 文本、严格显式 source apply adapter | proposal 摘要、相对源码锚点、fresh catalog digest、原文匹配、`confirm=True` 测试 |
@@ -17,6 +17,8 @@
 - scanner 只在 child process 导入用户设计，且不创建业务实例；GUI 不读取 coverage database 或运行结果。类型层次只表示声明中的字段引用，不表示对象实例或运行时路径。
 - GUI 只维护设计期扫描会话和当前选择，并提供只读的实例布局预览。proposal CLI 先生成和审阅，再由用户提供重新扫描后的 catalog 和 `--confirm` 执行精确的文本替换；GUI 不创建、审阅或应用 proposal。coverpoint 详情里的[值域编辑器](SVTYPES_COVERAGE_GUI_DOMAIN_EDITOR.md)是页内草稿原型：可改显示形状，不写源码、不进入 catalog digest。
 - 参考后端只证明 SDK 协议；既有 SvTypes SV/C++ generator 不被替换、不发现插件，也不依赖任何扩展包。
+- 核心 `CoverageIR` 的嵌套 selector、表达式、参数和选项已深度冻结；bridge 读取只读声明，
+  JSON 导出仍是独立的可序列化副本。SDK 的输出文件保护发生在生成阶段，不增加产物运行时校验。
 
 ## 延后事项
 

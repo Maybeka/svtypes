@@ -255,7 +255,7 @@ def test_cross_may_reference_a_fixed_array_bin():
 
     cross = Packet.cg.freeze().crosses[0]
     assert cross.bins[0].name == "first_band_read"
-    assert cross.bins[0].selector == {
+    assert cross.bins[0].stable_dict()["selector"] == {
         "kind": "cross_bin_refs",
         "items": [
             {"point": "opcode_cp", "bin": "band[0]"},
@@ -292,7 +292,7 @@ def test_cross_queue_function_materializes_per_instance_and_classifies_values():
 
     packet = Packet(2)
     cross = packet.cg.instance.instance_ir.crosses[0]
-    assert cross.bins[0].selector == {
+    assert cross.bins[0].stable_dict()["selector"] == {
         "kind": "cross_queue_values", "items": [[0, 0], [1, 1]],
     }
     assert packet.cg.instance.instance_layout_digest != Packet(3).cg.instance.instance_layout_digest

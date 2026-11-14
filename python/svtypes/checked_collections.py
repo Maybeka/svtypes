@@ -196,7 +196,8 @@ class _ExternalEdits:
         codec = child.leaf.codec
         handles = _has_handle(codec)
         return _snapshot(codec, _unpack_exact(codec, returned,
-                         session=child.session if handles else None, resolve_only=handles))
+                         session=child.session if handles else None, resolve_only=handles,
+                         diagnostics=child.diagnostics))
 
     def pop_key(self, key, default=_MISSING, /):
         key = _prepare(self.codec._key_template, key)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from collections import Counter
 from dataclasses import dataclass, field
 from itertools import product
@@ -163,7 +165,7 @@ def _matches_cross_selector(
     queue_values: set[tuple[Any, ...]] | None = None,
 ) -> bool:
     """Match a frozen static or concrete-queue cross tuple."""
-    if not isinstance(selector, dict):
+    if not isinstance(selector, Mapping):
         raise CoverageError("unsupported frozen cross selector")
     if selector.get("kind") == "cross_bin_refs":
         return all(
@@ -179,7 +181,7 @@ def _matches_cross_selector(
 
 
 def _static_integer(selector: Any) -> int | None:
-    if isinstance(selector, dict) and selector.get("kind") in {"constant", "enum_literal", "parameter_literal"}:
+    if isinstance(selector, Mapping) and selector.get("kind") in {"constant", "enum_literal", "parameter_literal"}:
         value = selector.get("value")
         if type(value) is int:
             return value
@@ -188,7 +190,7 @@ def _static_integer(selector: Any) -> int | None:
 
 def _singleton_values(selector: Any) -> set[int] | None:
     """Index only frozen integer singleton sets; never evaluate user context."""
-    if not isinstance(selector, dict):
+    if not isinstance(selector, Mapping):
         return None
     kind = selector.get("kind")
     if kind in {"constant", "enum_literal", "parameter_literal"}:
@@ -226,13 +228,13 @@ def _static_ranges(selector: Any) -> list[tuple[int, int]] | None:
     values = _singleton_values(selector)
     if values is not None:
         ranges = [(value, value) for value in values]
-    elif isinstance(selector, dict) and selector.get("kind") == "range":
+    elif isinstance(selector, Mapping) and selector.get("kind") == "range":
         low = _static_integer(selector.get("lower"))
         high = _static_integer(selector.get("upper"))
         if low is None or high is None:
             return None
         ranges = [(low, high)] if low <= high else []
-    elif isinstance(selector, dict) and selector.get("kind") == "values":
+    elif isinstance(selector, Mapping) and selector.get("kind") == "values":
         ranges = []
         for item in selector["items"]:
             child = _static_ranges(item)
@@ -314,7 +316,7 @@ def _cross_index(cross: CoverageCrossIR) -> tuple[dict[tuple[str, ...], list[Any
         if bin_.kind not in {"normal", "ignore"}:
             continue
         selector = bin_.selector
-        refs = selector.get("items", ()) if isinstance(selector, dict) and selector.get("kind") == "cross_bin_refs" else ()
+        refs = selector.get("items", ()) if isinstance(selector, Mapping) and selector.get("kind") == "cross_bin_refs" else ()
         by_point = {ref["point"]: ref["bin"] for ref in refs}
         if len(refs) == len(cross.members) and len(by_point) == len(refs) and set(by_point) == set(cross.members):
             key = tuple(by_point[member] for member in cross.members)
@@ -359,7 +361,7 @@ class CoverageRuntime:
             (cross.name, bin_.name): {tuple(item) for item in bin_.selector["items"]}
             for cross in self.ir.crosses
             for bin_ in cross.bins
-            if isinstance(bin_.selector, dict) and bin_.selector.get("kind") == "cross_queue_values"
+            if isinstance(bin_.selector, Mapping) and bin_.selector.get("kind") == "cross_queue_values"
         }
         self.cross_local_illegal_hits = {}
         self.cross_local_illegal_source_ids = {}
@@ -562,7 +564,7 @@ class CoverageRuntime:
             for name, counter in sorted(self.counters.items())
         }
 
-    def restore_counter_snapshot(self, snapshot: dict[str, Any]) -> None:
+    def restore_counter_snapshot(self, snapshot: dict[str, Any], *, cross_local_illegal: dict[str, Any] | None = None) -> None:
         """Install persisted aggregate counters as a new sampling baseline.
 
         This deliberately does not restore transition histories, sample logs,
@@ -573,11 +575,11 @@ class CoverageRuntime:
             raise CoverageError("coverage baseline point layout mismatch")
         restored: dict[str, PointCounters] = {}
         for name, document in snapshot.items():
-            if not isinstance(document, dict):
+            if not isinstance(document, Mapping):
                 raise CoverageError(f"coverage baseline counter {name!r} is invalid")
             def counts(field: str) -> Counter[str]:
                 value = document.get(field, {})
-                if not isinstance(value, dict) or any(
+                if not isinstance(value, Mapping) or any(
                     not isinstance(key, str) or not isinstance(count, int) or isinstance(count, bool) or count < 0
                     for key, count in value.items()
                 ):
@@ -585,7 +587,7 @@ class CoverageRuntime:
                 return Counter(value)
             def sources(field: str) -> dict[str, list[str]]:
                 value = document.get(field, {})
-                if not isinstance(value, dict) or any(
+                if not isinstance(value, Mapping) or any(
                     not isinstance(key, str) or not isinstance(ids, list) or any(not isinstance(item, str) for item in ids)
                     for key, ids in value.items()
                 ):
@@ -599,7 +601,20 @@ class CoverageRuntime:
                 source_ids=sources("source_ids"), illegal_source_ids=sources("illegal_source_ids"),
                 samples=samples,
             )
+        local_hits = {}
+        local_sources = {}
+        for cross, members in (cross_local_illegal or {}).items():
+            for member, bins in members.items():
+                for name, counter in bins.items():
+                    hits, sources = counter.get("hits"), counter.get("source_ids", [])
+                    if (not isinstance(hits, int) or isinstance(hits, bool) or hits < 0
+                            or not isinstance(sources, list) or any(not isinstance(item, str) for item in sources)):
+                        raise CoverageError("coverage baseline cross-local illegal counter is invalid")
+                    key = (cross, member, name)
+                    local_hits[key], local_sources[key] = hits, list(sources)
         self.counters = restored
+        self.cross_local_illegal_hits = local_hits
+        self.cross_local_illegal_source_ids = local_sources
         self.histories = {point.name: [] for point in self.ir.points}
 
     def point_coverage(self, point_name: str) -> float:
@@ -614,7 +629,7 @@ class CoverageRuntime:
             if item.kind in {"normal", "default", "transition"}
             and not (
                 item.kind != "transition"
-                and isinstance(item.selector, dict)
+                and isinstance(item.selector, Mapping)
                 and item.selector.get("kind") == "values"
                 and not item.selector.get("items")
             )
@@ -655,11 +670,11 @@ class CoverageRuntime:
 
 
 def _transition_sequences(selector: Any, context: dict[str, Any]) -> list[list[Any]]:
-    if not isinstance(selector, dict) or selector.get("kind") != "values":
+    if not isinstance(selector, Mapping) or selector.get("kind") != "values":
         raise CoverageError("transition bin selector must be a finite value sequence")
     sequences: list[list[Any]] = [[]]
     for item in selector["items"]:
-        if isinstance(item, dict) and item.get("kind") == "repeat":
+        if isinstance(item, Mapping) and item.get("kind") == "repeat":
             values = _transition_sequences({"kind": "values", "items": [item["term"]]}, context)
             if len(values) != 1 or len(values[0]) != 1:
                 raise CoverageError("repeat() term must resolve to one transition value")

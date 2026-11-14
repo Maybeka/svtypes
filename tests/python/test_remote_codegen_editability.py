@@ -2771,6 +2771,49 @@ endmodule
 
 
 @pytest.mark.remote_sv
+@pytest.mark.parametrize('strict', [False, True])
+def test_remote_parameterized_shape_diagnostics_are_explicit(strict):
+    class EditedParameter(SvObject):
+        WIDTH = Parameter[Int](8)
+        value = Bit[8](rand=False, cov=False)
+
+    source = EditedParameter.to_sv_obj()
+    # The explicit parameterized fallback needs both declaration and codec
+    # types updated. Leave its old diagnostic shape snapshot untouched.
+    source = source.replace('bit [7:0] value;', 'bit [15:0] value;')
+    source = source.replace('bit_field_operations#(bit [7:0], svtypes_pkg::bit_packer#(bit [7:0]))',
+                            'bit_field_operations#(bit [15:0], svtypes_pkg::bit_packer#(bit [15:0]))')
+    assert 'if (__svtypes_check_shapes && ($bits(this.value)' in source
+    assert source.count('bit __svtypes_check_shapes = svtypes_pkg::strict_decode_diagnostics();') == 1
+    bench = r'''
+module tb;
+  initial begin
+    EditedParameter#(.WIDTH(8)) sent, received;
+    svtypes_pkg::decode_context policy, previous;
+    byte unsigned bytes[$];
+    int offset = 0;
+    string display_text;
+    sent = new(); received = new(); sent.value = 16'hbeef;
+    if (svtypes_pkg::strict_decode_diagnostics()) $fatal(1, "diagnostics enabled by default");
+    if (__STRICT__) begin
+      policy = new(svtypes_pkg::DIAGNOSTICS_STRICT);
+      previous = svtypes_pkg::begin_decode_context(policy);
+    end
+    display_text = sent.svtypes_sprint();
+    sent.pack_body(bytes); received.unpack_body(bytes, offset);
+    if (received.value !== 16'hbeef || offset != bytes.size()) $fatal(1, "edited roundtrip failed");
+    if (__STRICT__) $display("UNEXPECTED_ACCEPTANCE");
+    else $display("SVTYPES_PARAMETER_DIAGNOSTICS_OFF_PASS");
+    $finish;
+  end
+endmodule
+'''.replace('__STRICT__', '1' if strict else '0')
+    _run_target('codegen-parameter-diagnostics-' + ('strict' if strict else 'off'), source + bench,
+                'SVTYPES_PARAMETER_DIAGNOSTICS_OFF_PASS',
+                expected_error='SvTypes field shape changed: value' if strict else None)
+
+
+@pytest.mark.remote_sv
 def test_remote_parameterized_explicit_types_reject_edited_unsupported_shape():
     class GuardedParameter(SvObject):
         WIDTH = Parameter[Int]()
@@ -2786,7 +2829,10 @@ module tb;
   initial begin
     GuardedParameter#(.WIDTH(8)) instance;
     byte unsigned bytes[$];
+    svtypes_pkg::decode_context diagnostic_context, previous;
     instance = new(); instance.value = 16'hbeef;
+    diagnostic_context = new(svtypes_pkg::DIAGNOSTICS_STRICT);
+    previous = svtypes_pkg::begin_decode_context(diagnostic_context);
     instance.pack_body(bytes);
     $display("UNEXPECTED_ACCEPTANCE");
     $finish;

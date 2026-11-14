@@ -127,7 +127,7 @@ def test_database_binary_rejects_corruption_and_unknown_version() -> None:
     with pytest.raises(CoverageError, match="checksum"):
         CoverageDatabase.from_bytes(data[:-1] + bytes([data[-1] ^ 1]))
     incompatible = bytearray(data)
-    incompatible[8:10] = (2).to_bytes(2, "little")
+    incompatible[8:10] = (999).to_bytes(2, "little")
     with pytest.raises(CoverageError, match="format version"):
         CoverageDatabase.from_bytes(bytes(incompatible))
 

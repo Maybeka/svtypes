@@ -711,11 +711,12 @@ merge 的信息：`merge_instances=0` 时，类型级公开结果是加权平均
 诊断；它们不参与声明兼容性、实例身份或 merge 对齐。illegal hit 始终是独立的诊断事实，不被解释成
 weighted type bin。声明语义定义快照只含声明语义，不含 source location、实例 actual 或其他 provenance。
 
-覆盖率库只存计数与有限来源，不存每次 sample 的取值。可选 sample 日志为独立分帧二进制
-（字符串表 + 按帧 zstd/lz4），默认关闭，并设 `max_records` / `max_bytes`。二进制 coverage
-database 的公开 chunk/schema/version 契约与 UCIS projection/loss-report 一并留待 **1.10** 冻结；
-1.8–1.9 仅承诺内存 DB、严格 merge 语义和供测试使用的确定性 JSON snapshot，不对持久化二进制
-格式作兼容性承诺。
+覆盖率库只存计数与有限来源，不存每次 sample 的取值。可选 sample 日志独立存储，默认关闭，
+并设 `max_records` / `max_bytes`。当前二进制库为 `SVTCOVDB` v2：固定头和带校验和的
+`META` / `RECS` JSON chunk；写出 v2，读取 v1/v2，未知版本明确失败。v2 的 record 同时保留
+模板 `definition` 与具体 `instance_definition`，数据库级 `merge_reports` 保存投影合并报告。
+v1 若缺少参数化实例的具体定义，仍可读入和作原有严格合并，但不能据名称猜测投影兼容性。
+这些是持久化契约，不改变 DSL、声明摘要或数据编解码协议。
 
 ### 6.2 merge 规则
 
@@ -744,6 +745,18 @@ database 的公开 chunk/schema/version 契约与 UCIS projection/loss-report �
 - UCIS 或仿真器导入的数据必须标记来源、转换损失和原始覆盖组类型 ID；不可证明等价时保留为独立
   覆盖组类型，不自动与 Python 覆盖组类型合并。
 - 用例来源按 §6.3 合并：先到先得，额满丢弃新 ID，hits 仍相加。
+
+公开调用为 `master.merge(incoming)`（默认严格）或
+`master.merge(incoming, mode="master", reject_conflicts=False)`（显式投影）。两种模式均先完成
+校验和合并准备，再一次性发布。`reject_conflicts=True` 使投影冲突成为异常，整个数据库及其报告
+保持不变。返回报告含类型/实例键、冲突 item、两侧定义、依赖项和成功累加项；投影报告还进入
+只读副本属性 `merge_reports` 并随数据库持久化。
+
+匿名记录始终作为独立贡献者保留，加载文件或跨 run 合并不会用临时序号对齐，也不会与用户字符串键
+碰撞。严格模式允许相同模板下不同命名实例有各自的 input 布局；同键必须布局一致。
+主数据库模式不新增输入的未知类型或命名实例，报告这些缺失项；匿名贡献者使用匹配的主库布局，
+若无法唯一选定则报告冲突。覆盖组级语义变化不拆成 point 投影；同模板但实例布局不同也不强行合并。
+cross 局部 illegal 计数与有限来源按其所属 cross 保留、合并和恢复基线。
 
 ### 6.3 有限用例来源
 
@@ -777,6 +790,16 @@ UCIS 1.0 定义覆盖数据库抽象、API 和 XML interchange；SvTypes 不在 
    导回。adapter 在原生 dump 不可用时，把同一 run 的 target 计数投影为 UCIS 1.0（identity 来自
    manifest/bindings）。这不是 1.9 observation JSON 的替代品，而是 UCIS interchange 夹具；该原生 dump
    能力恢复后，同一测试应优先消费原生 XML。
+
+绑定导入必须校验子集内的 bin 种类与闭区间、cross 成员顺序及 bin 索引、weight/goal/at_least
+和实例计算选项；缺少可表示 bin、计数为负或重复身份均失败，不能只按同名接收。
+`CoverInput` bins 依据绑定实例的具体定义而非模板比较。source/iff 的对应关系由调用者的显式冻结
+绑定保证，不尝试把任意外部 SV 表达式反解析为 Python DSL。子集外缺失计数记为 unavailable loss，
+不得声称它是已证实的零命中；来源与 loss 随 record 持久化。整次导入也是原子的，已有同键记录时
+先导入独立数据库，再明确调用 merge。远程投影夹具的范围来自冻结定义，计数必须来自同一次实际
+target run，禁止用占位范围绕过语义校验。
+当前 XML 子集不为 cross 局部覆盖点生成辅助 point：这类 cross 的计数作为转换损失报告，
+不得借用公开 point 的同名 bin 伪装等价。导入时，同样拒绝这种无法证明等价的索引。
 
 1.9 为 Python/SV parity 读取外部 adapter 的规范化 observation JSON；这只是测试观测通道。1.10 的 UCIS XML
 import/export 才是 SvTypes 对外的覆盖率 interchange 能力，不能以 adapter 取代。

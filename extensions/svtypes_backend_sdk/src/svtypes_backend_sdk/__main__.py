@@ -17,10 +17,12 @@ def main(argv: list[str] | None = None) -> int:
     build_parser.add_argument("--input", required=True, type=Path, help="Design Manifest JSON")
     build_parser.add_argument("--out", required=True, type=Path, help="artifact directory")
     build_parser.add_argument("--options", default="{}", help="backend-private JSON object")
+    build_parser.add_argument("--overwrite-modified", action="store_true", help="explicitly replace conflicting artifact files")
     args = parser.parse_args(argv)
     try:
         options = json.loads(args.options)
-        result = build_from_files(args.backend, args.input, args.out, options=options)
+        result = build_from_files(args.backend, args.input, args.out, options=options,
+                                  overwrite_modified=args.overwrite_modified)
     except (BackendError, ValueError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))

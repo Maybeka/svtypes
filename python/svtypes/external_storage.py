@@ -190,6 +190,7 @@ class _ExternalBinding:
     readonly: bool = False
     state: _BindingState | None = None
     session: Any = None
+    diagnostics: str = "off"
 
     def _check_open(self) -> None:
         if self.state is not None and self.state.closed:
@@ -211,7 +212,7 @@ class _ExternalBinding:
     def _replace_path(self, path: FieldPath) -> "_ExternalBinding":
         # Validate before publishing a derived view to a backend.
         self.root.resolve_path(path)
-        return _ExternalBinding(self.storage, self.key, self.root, path, self.readonly, self.state, self.session)
+        return _ExternalBinding(self.storage, self.key, self.root, path, self.readonly, self.state, self.session, self.diagnostics)
 
     def _decode_value(self, payload: bytes, *, resolve_only: bool | None = None) -> Any:
         from .variable_access import _has_handle
@@ -219,7 +220,7 @@ class _ExternalBinding:
         if resolve_only is None:
             resolve_only = _has_handle(self.leaf.codec)
         return _unpack_exact(self.leaf.codec, payload, session=self.session if resolve_only else None,
-                             resolve_only=resolve_only)
+                             resolve_only=resolve_only, diagnostics=self.diagnostics)
 
     def read_value(self, *, resolve_only: bool | None = None) -> Any:
         self._check_open()
@@ -367,11 +368,12 @@ def _pack_value(descriptor: Any, value: Any) -> bytes:
 
 def _unpack_exact(
     descriptor: Any, payload: bytes, *, session: Any | None = None, resolve_only: bool = False,
+    diagnostics: str = "off",
 ) -> Any:
     from .object import SvObject, UnpackContext
 
     try:
-        context = UnpackContext(session, diagnostics="strict" if resolve_only else "off")
+        context = UnpackContext(session, diagnostics=diagnostics)
         context._resolve_only = resolve_only
         value, count = SvObject._unpack_field_value(descriptor, payload, context)
     except Exception as exc:
@@ -635,13 +637,16 @@ def bind_external_value(
     *,
     readonly: bool = False,
     session: Any = None,
+    diagnostics: str = "off",
 ) -> ExternalValueBinding:
-    """Bind a value root, optionally selecting the session for handle reads."""
+    """Bind a value root; optional strict codec diagnostics default to off."""
 
+    if diagnostics not in {"off", "strict"}:
+        raise ValueError("diagnostics must be 'off' or 'strict'")
     if not isinstance(storage, ExternalFieldStorage):
         raise TypeError("storage must implement ExternalFieldStorage.read/write")
     field = descriptor if isinstance(descriptor, FieldDescriptor) else FieldDescriptor(descriptor)
-    return ExternalValueBinding(_ExternalBinding(storage, key, field, readonly=readonly, state=_BindingState(), session=session))
+    return ExternalValueBinding(_ExternalBinding(storage, key, field, readonly=readonly, state=_BindingState(), session=session, diagnostics=diagnostics))
 
 
 class MemoryExternalFieldStorage:
@@ -684,8 +689,16 @@ class MemoryExternalFieldStorage:
             actual, payload = self._roots[key]
         except KeyError as exc:
             raise ExternalStorageError("external storage key is not initialized") from exc
-        if actual.encoding_descriptor != descriptor.encoding_descriptor:
-            raise CompatibilityError("external storage descriptor does not match bound field")
+        if actual.codec is not descriptor.codec:
+            from .schema import _descriptors
+
+            # Selecting the wrong codec is a storage contract error, not an
+            # optional wire diagnostic. Compare the layout directly; ordinary
+            # reads need neither source schemas nor diagnostic hashes.
+            if (actual.unified_type_name != descriptor.unified_type_name
+                    or _descriptors(actual.codec, set(), encoding_only=True)[1]
+                    != _descriptors(descriptor.codec, set(), encoding_only=True)[1]):
+                raise CompatibilityError("external storage descriptor does not match bound field")
         return actual, payload
 
 

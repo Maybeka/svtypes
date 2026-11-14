@@ -1,17 +1,17 @@
 # SvTypes 功能覆盖率实现审阅（1.8–1.10）
 
-## 当前结论（1.4.1 基线）
+## 当前结论（1.6.0 发布复查）
 
 路线图在当前配置 target 上可观测的 1.8 / 1.9 / 1.10 要求已经落地。三个里程碑仍受已记录的 capability gate 约束，因此不得表述为无门的 target parity 已完成。
 
-下表是本文件唯一的当前状态判断；证据见第 18 节。第 1–17 节保留为历史审阅依据，
-其中的“缺口”“未完成”等结论均已被第 18 节复查取代，不得作为当前待办引用。
+下表是本文件唯一的当前状态判断；覆盖率实现证据见第 18 节，本次数据库与不可变性修复见
+第 19 节。第 1–17 节保留为历史审阅依据，不得把其中阶段性结论作为当前待办引用。
 
 | 里程碑 | 当前实现 | 能否宣布完成 | 剩余约束 |
 |---|---|---|---|
-| 1.8 Python core | 声明、采样、内存库、比较域、transition 与 target 微型对照均已交付。 | **Python 语义完成** | 显式 4-state value bin 的 target 具名 hit 有 capability gate。 |
+| 1.8 Python core | 声明、采样、深度不可变 IR、比较域、transition 及其数据库计分、严格/master 合并均已交付。 | **已列 Python 语义完成** | 显式 4-state value bin 的 target 具名 hit 有 capability gate。 |
 | 1.9 cross 与 SV parity | 远程 10⁴ 次 codec-sync、实例覆盖率、cross 规则、`CoverInput`/`CoverRef` 与 `repeat` 对照均已交付。 | **受支持 target 子集完成** | illegal 非零 hit 中止仿真；`CrossQueueType`、`get_inst_coverage=1` 为生成期 gate。 |
-| 1.10 UCIS bridge | 二进制库、UCIS 子集导入/导出、外部样本诊断和 target-run 计数导回均已交付。 | **受支持 interchange 子集完成** | 原生 UCIS dump 不一定可用；adapter 可投影同一 run 的 target 计数。 |
+| 1.10 UCIS bridge | v2 库（读 v1/v2）、原子合并/导入、实例定义校验、持久化冲突/loss、外部样本和 target-run 计数导回均已交付。 | **已列 interchange 子集完成** | 原生 UCIS dump 不一定可用；adapter 可投影同一 run 的 target 计数。 |
 
 相对上次审阅已关闭的条目：§5.12 target 微型对照并写回路线图；`per_instance=1` 远程实例对拍；外部 UCIS 样本与不兼容诊断；target 计数的 UCIS 导入；transition 与 value bin 同 point 分类；§5.9 / §5.13 / §10 所列剩余 target 微型夹具；§5.13 无损扩展条文。其余见第 18 节。
 
@@ -365,3 +365,40 @@ Python 侧已有：有界序列、`repeat(term, m, n)`、首次 sample 不命中
 - illegal 非零 hit 的完整 target 对拍。
 - 4-state value bin 的 target 具名 hit。
 - 原生 UCIS dump（在配置恢复该能力之前）。
+
+## 19. 全项目复查后的覆盖率修复
+
+本节取代第 18 节中仅凭旧 round-trip 用例判断数据库兼容性的结论。核心原则仍是：
+声明定义唯一、实例布局独立、按 SV 语义采样和计分、不能证明等价就明确报告。
+
+| 复查问题 | 当前行为 | 回归证据 |
+| --- | --- | --- |
+| frozen dataclass 内部 dict/list 可变 | IR 深度冻结；外部输入和 JSON 快照修改不影响摘要或运行实例 | `test_coverage_ir.py`，前端、索引和生成器回归 |
+| 匿名实例落盘后临时序号碰撞 | 匿名贡献者逐条保留，不用于跨 run 对齐，不与用户键碰撞 | `test_coverage_merge_contract.py` |
+| 不同实例键绕过类型声明检查；失败前部分修改库 | record/load/strict merge 按类型检查；整次 merge 原子发布 | 同上，含先插入兼容记录再遇不兼容记录的失败路径 |
+| 已承诺的主数据库合并没有公开实现 | `mode="master"` 只累加兼容项；保留 master 全部定义与 bins；point 冲突传播至 cross | 同上，定义差异/依赖报告、`reject_conflicts`、报告持久化 |
+| UCIS 只按名称和数量接收 | 检查范围、种类、成员顺序/索引和计分选项；缺失可表示 bin 失败 | `test_coverage_ucis_contract.py`，含多记录导入原子性 |
+| cross 局部 point 的同名 bin 被误投影为公开 point bin | 当前子集显式报告转换损失；拒绝不可证明等价的导入 | 同上，局部 point 与公开 point 同名但不同范围的测试 |
+| 参数化实例布局与导入损失未完整保存 | v2 保留具体定义及 provenance/loss，读 v1/v2；参数数组按实例名称导入 | 合并/UCIS 契约测试及 v1 迁移测试 |
+| transition 在数据库汇总中被漏出分母 | 数据库与运行实例按同一 normal/transition 计分集合汇总 | transition 未命中/已命中和落盘恢复测试 |
+| cross 局部 illegal 证据在合并/基线中丢失 | 计数与有限来源按所属 cross 保留、合并、恢复 | 合并契约测试 |
+
+新增的远程证据为三次独立 SystemVerilog 采样：两个相同声明 run 和一个改变 point 定义的 run。
+先对照 Python/target hit 和百分比，再将实际 target 计数用于匿名落盘合并、严格拒绝和主库投影。
+目标 UCIS 导入测试也使用冻结的真实范围，导入后保存/加载/合并，并确认篡改范围被拒绝。
+adapter 的存在不表示原生 UCIS dump gate 已关闭。子集外缺失计数以 loss 标记为不可用，
+不能将旧文中的“default 为 0 hit”解释为外部报告已证明零命中。
+
+验收结果（2026-11-14）：
+
+- 全量基线 **1305 通过**，包含全部 **173 项远程** SystemVerilog 用例，无 skip/xfail。
+- 随后纳入非拥有型 Python 会话和最后的 UCIS 边界修复：最终本地 **1147 通过**（含 C++ 编译运行），
+  受影响远程专项 **7 通过**，包含新增的非拥有型会话解码共享/循环图及句柄容器。
+  该轮验收时远程集合为 174 项；后加修复按上述专项复验，不冒称又执行了第二轮全量远程。
+- 独立安装核心与三个扩展的最终 wheel，Python **3.11 / 3.14 各 488 通过**，并确认库来自
+  安装目录而非 checkout；远程 Linux / Python **3.13 的 110 项契约测试通过**。
+- 源码及两种安装环境的公开接口 Pyright 检查通过；中英参考文档摘要、公开内容中立性检查及
+  无关未跟踪文件的内容保持检查通过。新增受检执行基准及覆盖率基准见性能验收文档。
+
+最终代码在上述补充验证期间保持不变；所有执行过的最终测试均无失败或跳过。
+原有 target capability gates 保持不变。本次不代表 2.0 RC 门槛或独立 GUI/第三方后端功能全部完成。

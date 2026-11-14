@@ -249,6 +249,7 @@ def _descriptors(
     codec_or_type: Any,
     active: set[type[Any]],
     allow_template: bool = False,
+    *, encoding_only: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     from .bit import Bit
     from .collection import AssocArray, DynArray, Queue, Array
@@ -280,28 +281,6 @@ def _descriptors(
                     raise DeclarationError(
                         f"{codec.__name__} is a parameterized template; bind every Parameter with specialize() first"
                     )
-                # A template has no concrete source schema, but its positional
-                # encoding layout is parameter-independent and identical to every
-                # specialization, so it can still yield an encoding fingerprint.
-                declared_fields = []
-                encoding_fields = []
-                for name, member in codec._SvObject__svtypes_members:
-                    member_schema, member_encoding = _descriptors(member, active, allow_template=True)
-                    entry = {
-                        "name": name,
-                        "policies": _policies(member) if isinstance(member, TypeBase) else {},
-                        "type": member_schema,
-                    }
-                    declared_fields.append(entry)
-                    if not isinstance(member, TypeBase) or member.pack_bytes:
-                        encoding_fields.append({"type": member_encoding})
-                encoding = {
-                    "kind": "object",
-                    "binary_format_version": BINARY_FORMAT_VERSION,
-                    "object_envelope_version": OBJECT_ENVELOPE_VERSION,
-                    "fields": encoding_fields,
-                }
-                return {}, encoding
             if codec in active:
                 ref = {"kind": "type_ref", "type_name": unified_type_name(codec)}
                 return ref, ref
@@ -310,17 +289,29 @@ def _descriptors(
                 declared_fields = []
                 encoding_fields = []
                 for name, member in codec._SvObject__svtypes_members:
-                    member_schema, member_encoding = _descriptors(member, active)
-                    entry = {
-                        "name": name,
-                        "policies": _policies(member) if isinstance(member, TypeBase) else {},
-                        "type": member_schema,
-                    }
-                    declared_fields.append(entry)
-                    if not isinstance(member, TypeBase) or member.pack_bytes:
-                        # Field names are part of the normalized source schema,
-                        # not the positional object encoding layout.
+                    packed = not isinstance(member, TypeBase) or member.pack_bytes
+                    if encoding_only and not packed:
+                        continue
+                    member_schema, member_encoding = _descriptors(
+                        member, active, allow_template, encoding_only=encoding_only,
+                    )
+                    if not encoding_only:
+                        declared_fields.append({
+                            "name": name,
+                            "policies": _policies(member) if isinstance(member, TypeBase) else {},
+                            "type": member_schema,
+                        })
+                    if packed:
                         encoding_fields.append({"type": member_encoding})
+                kind = "struct" if issubclass(codec, SvStruct) else "object"
+                encoding = {
+                    "kind": kind,
+                    "binary_format_version": BINARY_FORMAT_VERSION,
+                    "object_envelope_version": OBJECT_ENVELOPE_VERSION if kind == "object" else None,
+                    "fields": encoding_fields,
+                }
+                if encoding_only or getattr(codec, "_SvObject__svtypes_is_template", False):
+                    return {}, encoding
                 params = []
                 overrides = getattr(codec, "_SvObject__svtypes_parameter_overrides", {})
                 for name, parameter in getattr(codec, "_SvObject__svtypes_params", []):
@@ -340,7 +331,6 @@ def _descriptors(
                         if is_type:
                             entry["kind"] = "type"
                         params.append(entry)
-                kind = "struct" if issubclass(codec, SvStruct) else "object"
                 common = {
                     "kind": kind,
                     "type_name": unified_type_name(codec),
@@ -368,12 +358,6 @@ def _descriptors(
                     schema["rand_layers"] = layers_schema_entries(codec)
                 else:
                     schema["packed"] = codec._svtypes_packed
-                encoding = {
-                    "kind": kind,
-                    "binary_format_version": BINARY_FORMAT_VERSION,
-                    "object_envelope_version": OBJECT_ENVELOPE_VERSION if kind == "object" else None,
-                    "fields": encoding_fields,
-                }
                 return schema, encoding
             finally:
                 active.remove(codec)
@@ -403,7 +387,7 @@ def _descriptors(
     if isinstance(codec, SymbolicArrayField):
         if not allow_template:
             raise DeclarationError("symbolic array layout must be specialized before schema generation")
-        element_schema, element_encoding = _descriptors(codec._element(), active, allow_template=True)
+        element_schema, element_encoding = _descriptors(codec._element(), active, allow_template=True, encoding_only=encoding_only)
         symbolic = {
             "kind": "symbolic_array",
             "dimensions": list(codec._render_dimensions()),
@@ -417,7 +401,7 @@ def _descriptors(
         from .typespec import materialize_type
 
         members = [
-            _descriptors(materialize_type(item, "symbolic collection member"), active, allow_template=True)
+            _descriptors(materialize_type(item, "symbolic collection member"), active, allow_template=True, encoding_only=encoding_only)
             for item in codec.args
         ]
         symbolic = {
@@ -428,7 +412,7 @@ def _descriptors(
         encoding = {**symbolic, "members": [encoding for _, encoding in members]}
         return symbolic, encoding
     if isinstance(codec, SvObject):
-        return _descriptors(codec.__class__, active)
+        return _descriptors(codec.__class__, active, allow_template, encoding_only=encoding_only)
     if isinstance(codec, Logic):
         common = {
             "kind": "bits",
@@ -439,7 +423,7 @@ def _descriptors(
             "type_name": unified_type_name(codec),
             "width": codec.width,
         }
-        schema = {
+        schema = {} if encoding_only else {
             **common,
             "policies": _policies(codec),
             "sv_declaration_style": codec.sv_declaration_style,
@@ -479,15 +463,15 @@ def _descriptors(
             "width": codec.width,
         }
     elif isinstance(codec, Array):
-        elem_schema, elem_encoding = _descriptors(codec._elem_template, active)
+        elem_schema, elem_encoding = _descriptors(codec._elem_template, active, allow_template, encoding_only=encoding_only)
         common = {"kind": "array", "size": codec._size, "type_name": unified_type_name(codec)}
-        schema = {**common, "element": elem_schema, "policies": _policies(codec)}
+        schema = {} if encoding_only else {**common, "element": elem_schema, "policies": _policies(codec)}
         encoding = {**common, "binary_format_version": BINARY_FORMAT_VERSION, "element": elem_encoding}
         return schema, encoding
     elif isinstance(codec, Queue):
-        elem_schema, elem_encoding = _descriptors(codec._elem_template, active)
+        elem_schema, elem_encoding = _descriptors(codec._elem_template, active, allow_template, encoding_only=encoding_only)
         common = {"kind": "queue", "type_name": unified_type_name(codec)}
-        schema = {
+        schema = {} if encoding_only else {
             **common,
             "decoder_max_length": codec._max_length,
             "element": elem_schema,
@@ -496,9 +480,9 @@ def _descriptors(
         encoding = {**common, "binary_format_version": BINARY_FORMAT_VERSION, "element": elem_encoding}
         return schema, encoding
     elif isinstance(codec, DynArray):
-        elem_schema, elem_encoding = _descriptors(codec._elem_template, active)
+        elem_schema, elem_encoding = _descriptors(codec._elem_template, active, allow_template, encoding_only=encoding_only)
         common = {"kind": "dyn_array", "type_name": unified_type_name(codec)}
-        schema = {
+        schema = {} if encoding_only else {
             **common,
             "decoder_max_length": codec._max_length,
             "element": elem_schema,
@@ -507,10 +491,10 @@ def _descriptors(
         encoding = {**common, "binary_format_version": BINARY_FORMAT_VERSION, "element": elem_encoding}
         return schema, encoding
     elif isinstance(codec, AssocArray):
-        key_schema, key_encoding = _descriptors(codec._key_template, active)
-        value_schema, value_encoding = _descriptors(codec._val_template, active)
+        key_schema, key_encoding = _descriptors(codec._key_template, active, allow_template, encoding_only=encoding_only)
+        value_schema, value_encoding = _descriptors(codec._val_template, active, allow_template, encoding_only=encoding_only)
         common = {"kind": "assoc_array", "ordering": "encoded-key-bytes", "type_name": unified_type_name(codec)}
-        schema = {
+        schema = {} if encoding_only else {
             **common,
             "decoder_max_length": codec._max_length,
             "key": key_schema,
@@ -527,8 +511,8 @@ def _descriptors(
     else:
         raise DeclarationError(f"unsupported schema codec: {codec!r}")
 
-    schema = {**common, "policies": _policies(codec)}
-    if isinstance(codec, String):
+    schema = {} if encoding_only else {**common, "policies": _policies(codec)}
+    if isinstance(codec, String) and not encoding_only:
         schema["decoder_max_bytes"] = codec._max_bytes
     encoding = {**common, "binary_format_version": BINARY_FORMAT_VERSION}
     return schema, encoding
@@ -547,7 +531,15 @@ def schema_descriptor(codec_or_type: Any) -> SchemaDescriptor:
 
 
 def encoding_descriptor(codec_or_type: Any) -> EncodingDescriptor:
-    return schema_descriptor(codec_or_type).encoding_descriptor
+    from .object import SvObject
+
+    cls = codec_or_type if isinstance(codec_or_type, type) else type(codec_or_type)
+    if issubclass(cls, SvObject) and not cls._SvObject__svtypes_is_template:
+        fingerprint = cls._encoding_fingerprint()
+    else:
+        _, encoding = _descriptors(codec_or_type, set(), encoding_only=True)
+        fingerprint = _fingerprint(encoding)
+    return EncodingDescriptor(unified_type_name(codec_or_type), fingerprint)
 
 
 def sv_type_expression(codec: Any) -> str:

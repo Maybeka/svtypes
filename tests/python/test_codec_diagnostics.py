@@ -253,15 +253,16 @@ int main() {
     subprocess.run([str(executable)], check=True, capture_output=True, text=True)
 
 
-def test_first_and_repeated_python_pack_do_not_compute_diagnostic_hashes(monkeypatch):
+def test_first_pack_prepares_wire_metadata_once_and_repeated_pack_reuses_it(monkeypatch):
     import svtypes.schema as schema
 
     class PreparedValue(SvObject):
         number = Bit[32]()
 
     value = PreparedValue()
-    monkeypatch.setattr(schema, "_fingerprint", lambda _: pytest.fail("pack computed a hash"))
+    assert PreparedValue._SvObject__svtypes_prepared_encoding_fingerprint is None
     first = value.to_bytes()
+    monkeypatch.setattr(schema, "_fingerprint", lambda _: pytest.fail("repeated pack computed a hash"))
     assert value.to_bytes() == first
 
 
@@ -328,7 +329,7 @@ def test_metadata_refresh_tracks_nested_handles_and_ignores_unrelated_types(monk
                         classmethod(lambda cls: pytest.fail("unrelated metadata was refreshed")))
 
     def stored_fingerprint():
-        return Owner._SvObject__svtypes_prepared_encoding_fingerprint
+        return encoding_descriptor(Owner).encoding_fingerprint
 
     before = stored_fingerprint()
     registry.register(Child)
@@ -352,6 +353,8 @@ def test_metadata_dependency_index_does_not_keep_temporary_classes_alive():
     def make_type():
         class Temporary(SvObject):
             value = Bit[8]()
+        encoding_descriptor(Temporary)
+        assert Temporary._SvObject__svtypes_prepared_encoding_fingerprint is not None
         return weakref.ref(Temporary)
 
     reference = make_type()
@@ -373,7 +376,7 @@ def test_registration_elsewhere_refreshes_handles_to_the_renamed_type():
     class Owner(SvObject):
         child = Object["Child"](registry=first)
 
-    before = Owner._SvObject__svtypes_prepared_encoding_fingerprint
+    before = encoding_descriptor(Owner).encoding_fingerprint
     second.register(Child)
     expected = encoding_descriptor(Owner).encoding_fingerprint
     assert expected != before

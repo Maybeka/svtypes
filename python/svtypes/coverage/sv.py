@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import json
 import re
 from contextvars import ContextVar
@@ -156,7 +158,7 @@ def _selector(selector: Any) -> str:
 
 def _transition_selector(selector: Any) -> str:
     """Render a finite transition sequence as ``(a => b[*m:n] => c)``."""
-    if not isinstance(selector, dict):
+    if not isinstance(selector, Mapping):
         return _selector(selector)
     kind = selector.get("kind")
     if kind == "values":
@@ -169,7 +171,7 @@ def _transition_selector(selector: Any) -> str:
 
 def _dynamic_slot_guard(expression: Any) -> str | None:
     """Skip out-of-range dynamic slots the same way Python IndexError does."""
-    if not isinstance(expression, dict):
+    if not isinstance(expression, Mapping):
         return None
     if expression.get("indices"):
         return f"($size({expression['path']}) > {expression['indices'][0]})"
@@ -177,7 +179,7 @@ def _dynamic_slot_guard(expression: Any) -> str | None:
         return f"($size({expression['path']}) > {expression['index']})"
     if expression.get("kind") == "subscript":
         index = expression.get("index")
-        if isinstance(index, dict) and index.get("kind") == "constant" and isinstance(index.get("value"), int):
+        if isinstance(index, Mapping) and index.get("kind") == "constant" and isinstance(index.get("value"), int):
             return f"($size({_expr(expression['base'])}) > {index['value']})"
     return None
 
@@ -205,7 +207,7 @@ def _point_bin_lines(bin_: CoverageBinIR, indent: str) -> list[str]:
     name = _identifier(bin_.name)
     if bin_.kind == "default":
         return [f"{indent}bins {name} = default;"]
-    if bin_.kind == "normal" and isinstance(bin_.selector, dict) and bin_.selector.get("kind") == "array_split":
+    if bin_.kind == "normal" and isinstance(bin_.selector, Mapping) and bin_.selector.get("kind") == "array_split":
         count = bin_.selector.get("count")
         size = "[]" if count is None else f"[{count}]"
         return [f"{indent}bins {name}{size} = {{{_selector(bin_.selector['selector'])}}};"]
